@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Jobs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1 class="page-title">Generate a video</h1>
+  <p class="page-sub">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
+
+  <div class="card">
+    <label for="urls">YouTube URLs</label>
+    <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
+    <div class="row" style="margin-top:14px">
+      <div style="min-width:230px">
+        <label for="artstyle">Art style</label>
+        <select id="artstyle"></select>
+      </div>
+      <div style="min-width:230px">
+        <label for="ar">Aspect ratio</label>
+        <select id="ar"></select>
+      </div>
+      <button class="btn" id="go">Generate</button>
+    </div>
+  </div>
+
+  <div class="card" style="padding:20px 20px 8px">
+    <h2>Jobs <span class="count" id="count"></span></h2>
+    <div id="jobs"><div class="empty">No jobs yet — submit a URL above.</div></div>
+  </div>
+</main>
+<script src="/js/common.js"></script>
+<script>
+document.getElementById("nav").outerHTML = navbar("home");
+
+async function submit() {
+  const urls = $("#urls").value.split("\n").map(s => s.trim()).filter(Boolean);
+  if (!urls.length) { toast("Enter at least one URL", true); return; }
+  $("#go").disabled = true;
+  try {
+    const jobs = await api("/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls, aspect_ratio: $("#ar").value, art_style: $("#artstyle").value }) });
+    $("#urls").value = "";
+    toast(`${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`);
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#go").disabled = false; }
+}
+
+async function cancelJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  if (!confirm("Cancel this running job?")) return;
+  try { await api(`/jobs/${id}/cancel`, { method: "POST" }); toast("Cancelling job"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function archiveJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  try { await api(`/jobs/${id}/archive`, { method: "POST" }); toast("Job archived"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function removeJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  if (!confirm("Delete this job and all its files?")) return;
+  try { await api(`/jobs/${id}`, { method: "DELETE" }); toast("Job deleted"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+function jobCard(j) {
+  const canDelete = ["done", "failed"].includes(j.status);
+  const detail = j.error || j.detail || "";
+  return `<a class="jobcard" href="/job/${j.id}">
+    <div class="jc-main">
+      <div class="jc-title">${esc(j.title || j.url)}</div>
+      <div class="jc-url">${esc(j.url)}</div>
+      <div class="jc-meta">
+        <span class="jid">${j.id}</span>
+        ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
+        <span>${esc(j.aspect_ratio || "")}</span>
+        ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
+        ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
+           return n ? `<span style="color:var(--warn);font-weight:600">${n} clip${n>1?"s":""} need${n>1?"":"s"} regeneration</span>` : ""; })()}
+        <span>${timeAgo(j.created)}</span>
+      </div>
+    </div>
+    <div class="jc-side">
+      <div style="display:flex;gap:8px;align-items:center">
+        ${canDelete ? `<button class="btn secondary sm" onclick="archiveJob(event,'${j.id}')">Archive</button>
+                       <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>`
+                    : `<button class="btn danger sm" onclick="cancelJob(event,'${j.id}')">Cancel</button>`}
+        ${pillHTML(j)}
+      </div>
+      <div class="bar"><i style="width:${pct(j)}%"></i></div>
+      <div class="jc-detail ${j.error ? "error" : ""}">${esc(detail)}</div>
+    </div>
+  </a>`;
+}
+
+async function refresh() {
+  try {
+    const jobs = await api("/jobs");
+    $("#count").textContent = jobs.length ? `(${jobs.length})` : "";
+    $("#jobs").innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No jobs yet — submit a URL above.</div>`;
+  } catch (e) { console.error(e); }
+}
+
+async function loadOptions() {
+  const o = await api("/options");
+  $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
+  $("#artstyle").innerHTML = o.art_styles.map(a => `<option ${a === o.default_art_style ? "selected" : ""}>${a}</option>`).join("");
+}
+
+$("#go").onclick = submit;
+loadOptions();
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

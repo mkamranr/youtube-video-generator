@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Archive</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1 class="page-title">Archived jobs</h1>
+  <p class="page-sub">Finished jobs you've archived. Their files stay in <code>output/&lt;job_id&gt;/</code>; unarchive to bring them back to the main list, or delete to remove the files for good.</p>
+  <div id="jobs"><div class="empty">No archived jobs.</div></div>
+</main>
+<script src="/js/common.js"></script>
+<script>
+document.getElementById("nav").outerHTML = navbar("archive");
+
+async function unarchiveJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  try { await api(`/jobs/${id}/unarchive`, { method: "POST" }); toast("Job restored to the main list"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function removeJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  if (!confirm("Delete this job and all its files permanently?")) return;
+  try { await api(`/jobs/${id}`, { method: "DELETE" }); toast("Job deleted"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
+function jobCard(j) {
+  return `<a class="jobcard" href="/job/${j.id}">
+    <div class="jc-main">
+      <div class="jc-title">${esc(j.title || j.url)}</div>
+      <div class="jc-url">${esc(j.url)}</div>
+      <div class="jc-meta">
+        <span class="jid">${j.id}</span>
+        <span>${esc(j.aspect_ratio || "")}</span>
+        ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
+        <span>${timeAgo(j.created)}</span>
+      </div>
+    </div>
+    <div class="jc-side">
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn secondary sm" onclick="unarchiveJob(event,'${j.id}')">Unarchive</button>
+        <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>
+        ${pillHTML(j)}
+      </div>
+      <div class="jc-detail ${j.error ? "error" : ""}">${esc(j.error || "")}</div>
+    </div>
+  </a>`;
+}
+
+async function refresh() {
+  try {
+    const jobs = await api("/jobs?archived=true");
+    $("#jobs").innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No archived jobs.</div>`;
+  } catch (e) { console.error(e); }
+}
+refresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Settings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <h1 class="page-title">Settings</h1>
+  <p class="page-sub">Applied to new jobs immediately; stored in <code>settings.json</code> next to the app.</p>
+
+  <div class="card">
+    <h2>Service health</h2>
+    <div class="health" id="health">
+      <div class="health-row"><span class="dot"></span> checking…</div>
+    </div>
+    <div style="margin-top:14px"><button class="btn secondary sm" id="recheck">Re-check</button></div>
+  </div>
+
+  <form id="form">
+    <div class="card">
+      <h2>Services</h2>
+      <div class="form-grid">
+        <div class="field"><label for="COMFY_URL">ComfyUI URL</label><input type="text" id="COMFY_URL"><div class="hint">Base URL of the ComfyUI server</div></div>
+        <div class="field"><label for="FISH_URL">Fish TTS URL</label><input type="text" id="FISH_URL"><div class="hint">Gradio URL of Fish Speech</div></div>
+        <div class="field"><label for="VLLM_URL">vLLM URL</label><input type="text" id="VLLM_URL"><div class="hint">OpenAI-compatible base URL (…/v1)</div></div>
+        <div class="field"><label for="VLLM_MODEL">vLLM model id</label><input type="text" id="VLLM_MODEL"><div class="hint">Model name served by vLLM</div></div>
+        <div class="field"><label for="CHANNEL_NAME">Channel name</label><input type="text" id="CHANNEL_NAME"><div class="hint">Videos are branded for this channel; source channel/brand names are replaced with it</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Generation</h2>
+      <div class="form-grid">
+        <div class="field">
+          <label for="DEFAULT_ASPECT_RATIO">Default aspect ratio</label>
+          <select id="DEFAULT_ASPECT_RATIO"></select>
+          <div class="hint">Preselected aspect ratio for new jobs</div>
+        </div>
+        <div class="field">
+          <label for="DEFAULT_ART_STYLE">Default art style</label>
+          <select id="DEFAULT_ART_STYLE"></select>
+          <div class="hint">Preselected art style for new jobs</div>
+        </div>
+        <div class="field">
+          <label for="NARRATION_WORDS">Narration length (words)</label>
+          <input type="number" id="NARRATION_WORDS" min="30" max="500" step="10">
+          <div class="hint">~2.5 words ≈ 1 s of speech; narration length decides the clip count</div>
+        </div>
+        <div class="field">
+          <label for="CLIP_SECONDS">Clip length (seconds)</label>
+          <input type="number" id="CLIP_SECONDS" min="2" max="15" step="1">
+          <div class="hint">Duration of each generated clip</div>
+        </div>
+        <div class="field">
+          <label for="CLIP_AUDIO_VOLUME">Clip ambience volume</label>
+          <input type="number" id="CLIP_AUDIO_VOLUME" min="0" max="1" step="0.05">
+          <div class="hint">Volume of the clips' own audio under the narration (0 = mute, 1 = full)</div>
+        </div>
+        <div class="field">
+          <label for="CLIP_RETRIES">Clip retries</label>
+          <input type="number" id="CLIP_RETRIES" min="0" max="5" step="1">
+          <div class="hint">Retries per failed clip before the job fails</div>
+        </div>
+        <div class="field">
+          <label for="MUSIC_VOLUME">Music volume</label>
+          <input type="number" id="MUSIC_VOLUME" min="0" max="1" step="0.05">
+          <div class="hint">Background music level under the narration (0-1)</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="LIGHTNING_LORA"><span class="track"></span>
+            Lightning LoRA (fast preview)</label>
+          <div class="hint">8-step turbo sampling: ~3× faster, lower quality</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="COMFY_CLEANUP"><span class="track"></span>
+            Clean up ComfyUI</label>
+          <div class="hint">Scrub each job's rendered files and uploaded frames on the ComfyUI server (storage reclaimed) and delete its history, as soon as artifacts are downloaded</div>
+        </div>
+        <div class="field">
+          <label for="AUDIO_MODE">Audio mode</label>
+          <select id="AUDIO_MODE">
+            <option value="music">Music only (song drives the video)</option>
+            <option value="narration">Narration only</option>
+            <option value="narration+music">Narration + background music</option>
+          </select>
+          <div class="hint">music: the generated song is the only audio; its length sets the clip count and its lyrics drive each clip's scene</div>
+        </div>
+        <div class="field">
+          <label for="MIN_TRANSCRIPT_WORDS">Min transcript words</label>
+          <input type="number" id="MIN_TRANSCRIPT_WORDS" min="0" max="2000" step="10">
+          <div class="hint">Videos with fewer transcript words are refused</div>
+        </div>
+        <div class="field">
+          <label for="MIN_TRANSCRIPT_WPM">Min transcript words/minute</label>
+          <input type="number" id="MIN_TRANSCRIPT_WPM" min="0" max="200" step="5">
+          <div class="hint">Refuse sparse transcripts (music / little speech) relative to video length</div>
+        </div>
+        <div class="field">
+          <label for="TARGET_VIDEO_SECONDS">Target video length (s)</label>
+          <input type="number" id="TARGET_VIDEO_SECONDS" min="0" max="300" step="5">
+          <div class="hint">Music mode: requested song length. <b>0 = no target</b> — the song covers the full content, up to 6 min</div>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn" type="submit" id="save">Save settings</button>
+  </form>
+</main>
+<script src="/js/common.js"></script>
+<script>
+document.getElementById("nav").outerHTML = navbar("settings");
+const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "CHANNEL_NAME",
+                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP"];
+
+async function load() {
+  const d = await api("/api/settings");
+  $("#DEFAULT_ASPECT_RATIO").innerHTML = d.aspect_ratios.map(a => `<option>${a}</option>`).join("");
+  $("#DEFAULT_ART_STYLE").innerHTML = d.art_styles.map(a => `<option>${a}</option>`).join("");
+  for (const k of FIELDS) {
+    const el = document.getElementById(k);
+    if (el.type === "checkbox") el.checked = !!d.settings[k];
+    else el.value = d.settings[k];
+  }
+}
+
+async function checkHealth() {
+  const box = $("#health");
+  box.innerHTML = `<div class="health-row"><span class="dot"></span> checking…</div>`;
+  try {
+    const h = await api("/api/health");
+    const names = { comfyui: "ComfyUI (clip generation)", vllm: "vLLM (script writing)", fish: "Fish Speech (narration)" };
+    box.innerHTML = Object.entries(h).map(([k, v]) => `
+      <div class="health-row">
+        <span class="dot ${v.ok ? "ok" : "bad"}"></span>
+        <span>${names[k] || k}</span>
+        ${v.ok ? `<span class="ms">${v.ms} ms</span>` : `<span class="err-msg">${esc(v.error || "unreachable")}</span>`}
+      </div>`).join("");
+  } catch (e) { box.innerHTML = `<div class="health-row"><span class="dot bad"></span> ${esc(e.message)}</div>`; }
+}
+
+$("#form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const body = {};
+  for (const k of FIELDS) {
+    const el = document.getElementById(k);
+    body[k] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+  }
+  $("#save").disabled = true;
+  try {
+    await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    toast("Settings saved");
+    checkHealth();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#save").disabled = false; }
+});
+
+load().catch(e => toast(e.message, true));
+checkHealth();
+</script>
+</body>
+</html>

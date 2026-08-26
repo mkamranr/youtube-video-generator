@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Job</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .clip-grid figure { position: relative; }
+  .clip-select {
+    position: absolute; top: 6px; left: 6px; z-index: 2; display: none;
+    background: rgba(11, 14, 20, .8); border-radius: 6px; padding: 4px 7px; cursor: pointer;
+  }
+  .clip-grid.selectable .clip-select { display: block; }
+  .clip-select input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; display: block; }
+  .clip-grid figure.sel video { outline: 2px solid var(--accent); }
+  .clips-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .clips-head h2 { margin: 0; }
+  .clips-head .spacer { flex: 1; }
+  .warn { color: var(--warn); font-size: 13px; }
+  .scene-head { display: flex; gap: 10px; align-items: center; }
+  .scene-head .spacer { flex: 1; }
+  .badge-stale { color: var(--warn); font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
+  .scene textarea { width: 100%; min-height: 120px; margin-top: 8px; }
+  .scene .row { margin-top: 8px; }
+  .clip-grid figure.stale video { outline: 2px solid var(--warn); }
+  .stale-badge {
+    position: absolute; top: 6px; right: 6px; z-index: 2; display: none;
+    background: var(--warn); color: #1a1403; font-size: 10.5px; font-weight: 800;
+    letter-spacing: .4px; text-transform: uppercase; padding: 3px 8px; border-radius: 99px;
+  }
+  .clip-grid figure.stale .stale-badge { display: block; }
+  .clip-grid figure.stale figcaption { color: var(--warn); font-weight: 600; }
+  .clip-regen { margin: 6px auto 0; display: none; }
+  .clip-grid.selectable figure.stale .clip-regen { display: inline-flex; }
+</style>
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <a class="back" href="/">← All jobs</a>
+  <div class="job-head">
+    <h1 id="title">…</h1>
+    <span id="pill"></span>
+    <button class="btn danger sm" id="cancelBtn" hidden>Cancel</button>
+  </div>
+  <div class="job-meta">
+    <span class="jid" id="jobIdLabel"></span>
+    <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
+    <span id="artStyleLabel"></span>
+    <span id="aspect"></span>
+    <span id="created"></span>
+  </div>
+
+  <div class="card">
+    <ol class="stepper" id="stepper"></ol>
+    <div class="bar"><i id="progress" style="width:0"></i></div>
+    <div class="statusline" id="statusline"></div>
+  </div>
+
+  <section class="card" id="finalSec" hidden>
+    <h2>Final video</h2>
+    <div class="warn" id="assembleHint" hidden style="margin-bottom:10px">⚠ clips were regenerated since this final video was assembled — reassemble to include them</div>
+    <video class="final-video" id="finalVideo" controls></video>
+    <div class="row" style="margin-top:12px">
+      <a class="btn secondary sm" id="finalDl" download>Download final.mp4</a>
+      <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
+    </div>
+  </section>
+
+  <section class="card" id="seoSec" hidden>
+    <h2>Video title &amp; description <span class="count">(SEO, ready to publish)</span></h2>
+    <h4 style="margin:0 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Title</h4>
+    <pre class="box" id="seoTitle" style="max-height:none"></pre>
+    <h4 style="margin:14px 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Description</h4>
+    <pre class="box" id="seoDesc" style="max-height:none"></pre>
+  </section>
+
+  <section class="card" id="thumbSec" hidden>
+    <h2>Thumbnail <span class="count">(1280x720, ready for YouTube)</span></h2>
+    <img id="thumbImg" alt="thumbnail" style="max-width:480px;width:100%;border-radius:8px;display:block">
+    <div style="margin-top:12px"><a class="btn secondary sm" id="thumbDl" download>Download thumbnail.jpg</a></div>
+  </section>
+
+  <section class="card" id="clipsSec" hidden>
+    <div class="clips-head">
+      <h2>Clips <span class="count" id="clipCount"></span></h2>
+      <span class="warn" id="staleCount" hidden></span>
+      <div class="spacer"></div>
+      <button class="btn sm" id="regenBtn" hidden>Regenerate selected</button>
+    </div>
+    <div class="hint" id="regenHint" hidden style="margin:-6px 0 12px">Select clips with the checkboxes to re-render them from the same scene with a new seed. The following clip's opening may no longer match exactly — regenerate it too if needed.</div>
+    <div class="clip-grid" id="clipGrid"></div>
+  </section>
+
+  <section class="card" id="audioSec" hidden>
+    <h2>Narration audio</h2>
+    <audio id="narrAudio" controls preload="none"></audio>
+  </section>
+
+  <section class="card" id="musicSec" hidden>
+    <h2>Music track</h2>
+    <audio id="musicAudio" controls preload="none"></audio>
+    <details style="border:0;padding-top:10px"><summary>caption &amp; lyrics</summary>
+      <pre class="box" id="musicCaption" style="margin-top:8px"></pre>
+      <pre class="box" id="musicLyrics" style="margin-top:8px"></pre>
+    </details>
+  </section>
+
+  <div class="grid2">
+    <section class="card" id="narrSec" hidden>
+      <h2>Narration script <span class="count">(vLLM)</span></h2>
+      <pre class="box" id="narrText"></pre>
+    </section>
+    <section class="card" id="styleSec" hidden>
+      <h2>Visual style</h2>
+      <pre class="box" id="styleText"></pre>
+    </section>
+  </div>
+
+  <section class="card" id="scenesSec" hidden>
+    <h2>Scene prompts <span class="count" id="sceneCount"></span></h2>
+    <div id="sceneList"></div>
+  </section>
+
+  <section class="card" id="transcriptSec" hidden>
+    <h2>Transcript <span class="count" id="transcriptCount"></span></h2>
+    <pre class="box" id="transcriptText"></pre>
+  </section>
+
+  <section class="card">
+    <h2>Log</h2>
+    <pre class="box" id="logText" style="max-height:260px"></pre>
+  </section>
+
+  <section class="card" id="filesSec" hidden>
+    <h2>Files</h2>
+    <div class="filelist" id="fileList"></div>
+  </section>
+</main>
+<script src="/js/common.js"></script>
+<script>
+document.getElementById("nav").outerHTML = navbar("home");
+const jobId = location.pathname.split("/").pop();
+const F = name => `/jobs/${jobId}/files/${name}`;
+
+const shownClips = new Set();
+const selected = new Set();          // clip numbers picked for regeneration
+let detailsStamp = null;             // job.updated value details were last fetched at
+let finalShown = false, audioShown = false, musicShown = false, thumbShown = false;
+let finalVer = null;                 // cache-buster used for the current final video
+let prevStatus = null;
+let pollTimer = null;
+
+function startPolling() {
+  if (!pollTimer) pollTimer = setInterval(refresh, 3000);
+}
+
+function renderStepper(j) {
+  const failed = j.status === "failed";
+  const order = orderFor(j);
+  const cur = order.indexOf(failed ? (j.clips_total ? "clips" : "queued") : j.status);
+  const items = order.slice(1).map((s, i) => {
+    const idx = i + 1;
+    let cls = "";
+    if (j.status === "done") cls = "done";
+    else if (idx < cur) cls = "done";
+    else if (idx === cur) cls = failed ? "error" : "current";
+    const label = s === "clips" && j.clips_total ? `Clips ${j.clips_done}/${j.clips_total}` : STEP_LABELS[s];
+    return `<li class="${cls}">${label}</li>`;
+  });
+  $("#stepper").innerHTML = items.join("");
+}
+
+async function loadDetails(j) {
+  if (detailsStamp === j.updated) return;
+  const d = await api(`/jobs/${jobId}/details`);
+  detailsStamp = j.updated;
+  if (d.transcript) {
+    $("#transcriptSec").hidden = false;
+    $("#transcriptCount").textContent = `(${d.transcript.split(/\s+/).length} words)`;
+    $("#transcriptText").textContent = d.transcript;
+  }
+  if (d.plan) {
+    if (d.plan.seo_title || d.plan.seo_description) {
+      $("#seoSec").hidden = false;
+      $("#seoTitle").textContent = d.plan.seo_title || "";
+      $("#seoDesc").textContent = d.plan.seo_description || "";
+    }
+    if (d.plan.narration) { $("#narrSec").hidden = false; $("#narrText").textContent = d.plan.narration; }
+    if (d.plan.style) { $("#styleSec").hidden = false; $("#styleText").textContent = d.plan.style; }
+    if (d.plan.music) {
+      $("#musicCaption").textContent = d.plan.music.caption || "";
+      $("#musicLyrics").textContent = d.plan.music.lyrics || "";
+    }
+    if (Array.isArray(d.plan.scenes) && d.plan.scenes.length) {
+      $("#scenesSec").hidden = false;
+      $("#sceneCount").textContent = `(${d.plan.scenes.length})`;
+      renderScenes(d.plan.scenes);
+    }
+  }
+  $("#logText").textContent = (d.log || []).join("\n");
+}
+
+let lastJob = null;
+
+function renderScenes(scenes) {
+  const stale = new Set((lastJob && lastJob.stale_clips) || []);
+  const editable = lastJob && lastJob.status === "done";
+  $("#sceneList").innerHTML = "";
+  scenes.forEach((text, idx) => {
+    const n = idx + 1;
+    const div = document.createElement("div");
+    div.className = "scene";
+    div.innerHTML = `
+      <div class="scene-head"><b>Clip ${n}</b>
+        ${stale.has(n) ? '<span class="badge-stale">edited - regenerate clip</span>' : ""}
+        <span class="spacer"></span>
+        ${editable ? '<button class="btn secondary sm edit-btn">Edit</button>' : ""}
+      </div>
+      <div class="scene-text" style="margin-top:6px">${esc(text)}</div>
+      <div class="scene-editor" hidden>
+        <textarea></textarea>
+        <div class="row"><button class="btn sm save-btn">Save scene</button>
+        <button class="btn secondary sm cancel-btn">Cancel</button></div>
+      </div>`;
+    if (editable) {
+      const editor = div.querySelector(".scene-editor"), ta = div.querySelector("textarea");
+      div.querySelector(".edit-btn").onclick = () => {
+        ta.value = text; editor.hidden = false;
+        div.querySelector(".scene-text").hidden = true;
+      };
+      div.querySelector(".cancel-btn").onclick = () => {
+        editor.hidden = true; div.querySelector(".scene-text").hidden = false;
+      };
+      div.querySelector(".save-btn").onclick = async () => {
+        const val = ta.value.trim();
+        if (!val) { toast("Scene must not be empty", true); return; }
+        try {
+          await api(`/jobs/${jobId}/scenes`, { method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ updates: { [n]: val } }) });
+          toast(`Scene ${n} saved - clip ${n} marked for regeneration`);
+          detailsStamp = null; refresh();
+        } catch (e) { toast(e.message, true); }
+      };
+    }
+    $("#sceneList").appendChild(div);
+  });
+}
+
+async function regenOne(n) {
+  if (!confirm(`Regenerate clip ${n} with its updated scene? Takes ~3 minutes.`)) return;
+  try {
+    await api(`/jobs/${jobId}/regen`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clips: [n] }) });
+    toast(`Regeneration of clip ${n} queued`);
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function updateRegenBtn() {
+  const btn = $("#regenBtn");
+  btn.hidden = selected.size === 0;
+  btn.textContent = `Regenerate selected (${selected.size})`;
+}
+
+function addClipFigure(c, i, ver) {
+  const num = i + 1;
+  const fig = document.createElement("figure");
+  fig.dataset.clip = num;
+  fig.innerHTML = `<label class="clip-select"><input type="checkbox" data-clip="${num}"></label>
+    <span class="stale-badge">needs regeneration</span>
+    <video src="${F(c)}?v=${ver}" muted controls preload="metadata"></video><figcaption>Clip ${num}</figcaption>
+    <button class="btn sm clip-regen">Regenerate</button>`;
+  fig.querySelector(".clip-regen").onclick = () => regenOne(num);
+  fig.querySelector("input").addEventListener("change", ev => {
+    if (ev.target.checked) selected.add(num); else selected.delete(num);
+    fig.classList.toggle("sel", ev.target.checked);
+    updateRegenBtn();
+  });
+  $("#clipGrid").appendChild(fig);
+}
+
+function update(j) {
+  document.title = `VideoGen — ${j.title || j.id}`;
+  $("#title").textContent = j.title || j.id;
+  $("#pill").outerHTML = `<span id="pill">${pillHTML(j)}</span>`;
+  $("#jobIdLabel").textContent = j.id;
+  $("#srcUrl").href = j.url;
+  $("#srcUrl").textContent = j.url.length > 60 ? j.url.slice(0, 60) + "…" : j.url;
+  $("#artStyleLabel").textContent = j.art_style || "";
+  $("#aspect").textContent = j.aspect_ratio || "";
+  $("#created").textContent = "created " + timeAgo(j.created);
+  $("#progress").style.width = pct(j) + "%";
+  const sl = $("#statusline");
+  sl.textContent = j.error || j.detail || "";
+  sl.classList.toggle("error", !!j.error);
+  renderStepper(j);
+  $("#cancelBtn").hidden = ["done", "failed"].includes(j.status);
+
+  // when a regeneration/reassembly finishes, rebuild the media with cache-busters
+  const cameBackDone = prevStatus && !["done", "failed"].includes(prevStatus) && j.status === "done";
+  if (cameBackDone) {
+    shownClips.clear(); selected.clear(); updateRegenBtn();
+    $("#clipGrid").innerHTML = "";
+    finalShown = false;
+    detailsStamp = null;
+  }
+
+  const clips = j.clips || [];
+  if (clips.length) {
+    $("#clipsSec").hidden = false;
+    $("#clipCount").textContent = `(${clips.length}${j.clips_total ? " / " + j.clips_total : ""})`;
+    clips.forEach((c, i) => {
+      if (shownClips.has(c)) return;
+      shownClips.add(c);
+      addClipFigure(c, i, j.updated);
+    });
+  }
+  const done = j.status === "done";
+  lastJob = j;
+  const markedSet = new Set([...(j.stale_clips || []), ...(j.regen_queue || [])]);
+  document.querySelectorAll("#clipGrid figure").forEach(f => {
+    f.classList.toggle("stale", markedSet.has(Number(f.dataset.clip)));
+  });
+  $("#clipGrid").classList.toggle("selectable", done);
+  $("#regenHint").hidden = !done;
+  if (!done) { selected.clear(); updateRegenBtn(); }
+
+  const marked = [...markedSet].sort((a, b) => a - b);
+  $("#staleCount").hidden = marked.length === 0;
+  $("#staleCount").textContent = marked.length
+    ? `clip${marked.length > 1 ? "s" : ""} ${marked.join(", ")} marked for regeneration`
+    : "";
+  $("#assembleBtn").hidden = !(done && j.needs_assemble);
+  $("#assembleHint").hidden = !(done && j.needs_assemble);
+
+  if ((j.files || []).includes("narration.wav") && !audioShown) {
+    audioShown = true;
+    $("#audioSec").hidden = false;
+    $("#narrAudio").src = F("narration.wav");
+  }
+  if ((j.files || []).includes("thumbnail.jpg") && !thumbShown) {
+    thumbShown = true;
+    $("#thumbSec").hidden = false;
+    $("#thumbImg").src = F("thumbnail.jpg");
+    $("#thumbDl").href = F("thumbnail.jpg");
+  }
+  if ((j.files || []).includes("music.mp3") && !musicShown) {
+    musicShown = true;
+    $("#musicSec").hidden = false;
+    $("#musicAudio").src = F("music.mp3");
+  }
+  if (j.final && !finalShown) {
+    finalShown = true;
+    finalVer = j.updated;
+    $("#finalSec").hidden = false;
+    $("#finalVideo").src = `${F(j.final)}?v=${finalVer}`;
+    $("#finalDl").href = F(j.final);
+  }
+  const files = j.files || [];
+  if (files.length) {
+    $("#filesSec").hidden = false;
+    $("#fileList").innerHTML = files.map(f => `<a href="${F(f)}" target="_blank">${esc(f)}</a>`).join("");
+  }
+  loadDetails(j).catch(console.error);
+  prevStatus = j.status;
+
+  if (["done", "failed"].includes(j.status) && pollTimer) {
+    clearInterval(pollTimer); pollTimer = null;
+  }
+}
+
+async function refresh() {
+  try { update(await api(`/jobs/${jobId}`)); }
+  catch (e) {
+    $("#title").textContent = "Job not found";
+    $("#statusline").textContent = e.message;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
+}
+
+$("#cancelBtn").onclick = async () => {
+  if (!confirm("Cancel this running job?")) return;
+  try { await api(`/jobs/${jobId}/cancel`, { method: "POST" }); toast("Cancelling job"); refresh(); }
+  catch (e) { toast(e.message, true); }
+};
+
+$("#regenBtn").onclick = async () => {
+  const clips = [...selected].sort((a, b) => a - b);
+  if (!clips.length) return;
+  if (!confirm(`Regenerate clip${clips.length > 1 ? "s" : ""} ${clips.join(", ")}? Each takes ~3 minutes.`)) return;
+  try {
+    await api(`/jobs/${jobId}/regen`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clips }) });
+    toast(`Regeneration of ${clips.length} clip${clips.length > 1 ? "s" : ""} queued`);
+    selected.clear(); updateRegenBtn();
+    document.querySelectorAll(".clip-select input").forEach(cb => { cb.checked = false; });
+    document.querySelectorAll(".clip-grid figure").forEach(f => f.classList.remove("sel"));
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#assembleBtn").onclick = async () => {
+  try {
+    await api(`/jobs/${jobId}/assemble`, { method: "POST" });
+    toast("Reassembly queued");
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+refresh();
+startPolling();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+services:
+  videogen:
+    build: .
+    image: videogen:latest
+    container_name: videogen
+    ports:
+      - "8080:8080"
+    environment:
+      # Point these at your GPU services. Use the Docker host's LAN IP or
+      # host.docker.internal - NOT localhost (that would be the container itself).
+      VIDEOGEN_COMFY_URL: "http://host.docker.internal:8188"
+      VIDEOGEN_VLLM_URL: "http://host.docker.internal:8000/v1"
+      VIDEOGEN_VLLM_MODEL: "agents-a1"
+      VIDEOGEN_FISH_URL: "http://host.docker.internal:7860/"
+      VIDEOGEN_CHANNEL_NAME: "Habibi Kids Channel"
+      # Any setting can be overridden the same way, e.g.:
+      # VIDEOGEN_AUDIO_MODE: "music"
+      # VIDEOGEN_TARGET_VIDEO_SECONDS: "0"
+      # VIDEOGEN_DEFAULT_ART_STYLE: "Pixar-like 3D"
+    volumes:
+      # Generated videos, thumbnails and job state (enables resume across restarts)
+      - ./data/output:/app/output
+      # faster-whisper model cache (downloaded once on first lyric transcription)
+      - whisper-cache:/root/.cache/huggingface
+      # Optional: persist Settings-page changes across container recreation.
+      # Create an empty file first: echo {} > data/settings.json
+      # - ./data/settings.json:/app/settings.json
+    restart: unless-stopped
+
+volumes:
+  whisper-cache:

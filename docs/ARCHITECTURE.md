@@ -1,0 +1,71 @@
+# Architecture
+
+## Module map
+
+```
+app.py                 FastAPI app: HTTP API, page routes, no-cache middleware, settings/health endpoints
+pipeline.py            Job model, serial worker (JobManager), the generation pipeline and the
+                       maintenance pipeline (clip regeneration / reassembly), pause & resume logic
+config.py              Defaults + runtime-editable settings (EDITABLE_SETTINGS, persisted to settings.json),
+                       art-style presets, workflow node ids
+services/
+  transcript.py        YouTube captions via youtube-transcript-api with yt-dlp fallback; cue-tag cleaning;
+                       caption coverage seconds for quality gating
+  llm.py               All vLLM prompting: story plan, per-clip scenes, music caption/lyrics, SEO metadata,
+                       thumbnail prompt; kid-safety and channel-branding rules live in the system prompt
+  tts.py               Fish Speech synthesis (chunked <=300 chars/request, GPU-OOM aware), audio duration
+  lyrics.py            faster-whisper word-timestamp transcription -> words heard per clip window
+  comfy.py             ComfyUI client: queue/wait (websocket + polling), cancel-aware waiting, output
+                       download with node auto-detection, targeted interrupt, server-side scrubbing
+  video.py             ffmpeg helpers: last-frame extraction, thumbnail crop (1280x720), clip concat,
+                       N-way audio mix (narration / ambience / music)
+  ffbin.py             Locates modern ffmpeg/ffprobe (static-ffmpeg bundle, env override, PATH fallback)
+static/                Web UI: index (submit + job list), job (detail/revision), archive, settings;
+                       shared css/app.css and js/common.js (nav, status pills, mode-aware stepper)
+workflows/             ComfyUI API-format workflow JSONs (text-to-video, first-frame video, music)
+start_server.bat       Watchdog: relaunches uvicorn whenever it exits; logs to server.log
+```
+
+## Job lifecycle
+
+Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → clips → assembling → done | failed`.
+
+- One background worker thread processes the queue serially (single GPU). Queued jobs' `detail` is computed live at request time (position, what is running).
+- **music mode** (default): the song is generated *first*; its measured duration decides the clip count (`ceil(duration / CLIP_SECONDS)`); faster-whisper assigns the sung words to each clip's time window; scenes are then written **one LLM call per clip** from exactly those words (one-call-per-scene prevents alignment drift on long videos). The final mix is the song alone.
+- **narration modes**: Fish TTS narration length decides the clip count; scenes come from evenly split narration segments; final mix = narration (full) + clip ambience + optional music bed.
+- Clips: clip 1 uses the T2V workflow; clips 2..N use the first-frame workflow seeded with the previous clip's last frame (ffmpeg extraction → ComfyUI image upload), giving visual continuity.
+- Assembly: ffmpeg concat (stream-copy with re-encode fallback) + filtergraph audio mix; video length ≈ audio length (count is the ceiling of the audio duration).
+
+## Resume & idempotency
+
+Every pipeline step checks for its artifact before doing work: `transcript.txt`, `plan.json` (story, scenes, music plan, SEO, thumbnail prompt), `music.mp3`, `narration.wav`, `thumbnail.jpg`, each `clip_NN.mp4`. On server start, non-terminal jobs are re-queued and re-run `_run()`, which skips everything already done — a crash or restart costs at most the in-flight render. Job state persists in `output/<id>/job.json` after every mutation.
+
+## Cancel, pause, priority
+
+- **Cancel** sets a flag checked at every step boundary, inside every progress callback, and continuously inside the ComfyUI wait loop (`should_stop`); the in-flight ComfyUI prompt is interrupted only after verifying it belongs to the job (filename-prefix match). Cancelled full runs become `failed`; cancelled revision runs return to `done`.
+- **Priority regeneration**: a regen request is inserted at the *front* of the queue and the running job gets `pause_requested`. `JobPaused` deliberately subclasses `BaseException` so no broad `except Exception` handler can swallow it; the paused job stops at its next checkpoint (clip boundary — no GPU work wasted), is re-inserted right after the regen job, and resumes via the normal resume path.
+- **Reassembly** (`POST /assemble`) is pure-local ffmpeg, so it runs immediately in a dedicated thread rather than the GPU queue.
+
+## Revision (maintenance) pipeline
+
+`run_job` dispatches to `_run_maintenance` when `regen_queue` or `assemble_requested` is set on a finished job. It re-renders each requested clip with the current (possibly edited) scene prompt via the shared `_generate_clip` helper (same retry/cancel/cleanup behavior as the main loop), clears the clip's `stale_clips` entry, sets `needs_assemble`, and optionally reassembles. Errors or cancellation during maintenance always return the job to `done` with an explanatory detail — a finished video is never flipped to `failed` by a revision.
+
+## ComfyUI server cleanup
+
+The ComfyUI build in use has no file-deletion API (its files route is GET-only), so cleanup **scrubs**: each rendered output and uploaded chaining frame is overwritten with a 73-byte PNG stub through the upload API (storage reclaimed; a zero-size name remains listed), and the prompt's history entry is deleted. This runs per artifact immediately after download (`COMFY_CLEANUP` setting) — long jobs never accumulate data on the render server. GPU-VRAM sharing is also managed: before TTS the app asks ComfyUI to unload models (`POST /free`), since Fish/vLLM/ComfyUI share one GPU.
+
+## Transcript quality gate
+
+Before any generation, captions are cleaned of cue tags (`[Music]` etc.) and validated: minimum word count and minimum words-per-minute of caption coverage (computed from caption timestamps, so it works even when video metadata is unavailable). Failing videos are refused with a clear user-facing message and consume no GPU time.
+
+## Storage
+
+```
+output/<job_id>/
+  job.json            persisted job state (resume source of truth)
+  transcript.txt      plan.json           music.mp3          narration.wav
+  clip_01..NN.mp4     frame_NN.jpg        thumbnail.jpg      thumb_raw.mp4
+  clips_joined.mp4    final.mp4
+```
+
+`settings.json` (repo root, untracked) holds runtime setting overrides applied on top of `config.py` defaults at import and on every save.

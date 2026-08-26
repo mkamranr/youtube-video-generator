@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+requests
+websocket-client
+gradio_client
+youtube-transcript-api
+yt-dlp
+openai
+static-ffmpeg
+faster-whisper

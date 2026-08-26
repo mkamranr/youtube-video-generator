@@ -1,0 +1,13 @@
+# generated media and job state
+output/
+
+# local runtime configuration
+settings.json
+
+# server logs
+server.log
+server.err.log
+
+# python
+__pycache__/
+*.pyc

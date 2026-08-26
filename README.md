@@ -1,0 +1,167 @@
+# VideoGen — AI Video Generator for Habibi Kids Channel
+
+VideoGen turns any YouTube video into a brand-new, kid-safe animated video — complete with an original soundtrack, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — using locally hosted AI services end to end.
+
+Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
+
+## Features
+
+- **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail.
+- **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
+- **Channel branding** — a configurable channel name (default: *Habibi Kids Channel*) replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
+- **Three audio modes**
+  - `music` (default): an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals.
+  - `narration`: a TTS voiceover drives the video.
+  - `narration+music`: voiceover plus a background music bed.
+- **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each 5-second clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
+- **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
+- **Thumbnail generation** — an LLM-designed hero-shot prompt rendered through the video model, delivered as an exact 1280×720 JPG.
+- **SEO metadata** — a keyword-optimized YouTube title and description (with hashtags and a subscribe call-to-action) generated for every video.
+- **Full revision workflow** — edit any scene prompt in the UI, regenerate exactly the clips you want (they're clearly badged), then reassemble the final video with one click. Regenerations **jump the queue**, pausing the running job at a clip boundary and resuming it afterwards.
+- **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup, transcript quality gating, and a self-restarting server watchdog.
+- **Job management UI** — job list with live progress, rich per-job detail pages, archive, delete, and a runtime-editable settings page with service health checks.
+
+## Architecture
+
+```
+YouTube URL
+    │
+    ▼
+┌─────────────┐   captions    ┌──────────────┐  title/style/story  ┌──────────────┐
+│ Transcript   │──────────────▶│  Story plan  │────────────────────▶│  Soundtrack  │
+│ (yt captions │  quality gate │  (vLLM LLM)  │   + SEO metadata    │              │
+│  + yt-dlp)   │               └──────────────┘                     │ music mode:  │
+└─────────────┘                                                     │  MiniMax     │
+                                                                    │  Music3 song │
+                                                                    │ narration:   │
+                                                                    │  Fish Speech │
+                                                                    └──────┬───────┘
+                                                                           │ actual duration
+                                                                           ▼
+┌──────────────┐   1280x720   ┌──────────────┐  1 scene per clip  ┌──────────────┐
+│  Thumbnail   │◀─────────────│    Scenes    │◀───────────────────│ Lyric timing │
+│ (LLM prompt  │              │ (vLLM, one   │   audio window     │(faster-      │
+│  + 5-frame   │              │  call per    │                    │ whisper word │
+│  T2V render) │              │  clip)       │                    │ timestamps)  │
+└──────┬───────┘              └──────┬───────┘                    └──────────────┘
+       │                             ▼
+       │                      ┌──────────────┐  last frame chains  ┌──────────────┐
+       │                      │    Clips     │────────────────────▶│   Assemble   │
+       └─────────────────────▶│ (ComfyUI     │   clip N → N+1      │ (ffmpeg      │
+                              │  MiniMax H3  │                     │  concat +    │
+                              │  T2V / I2V)  │                     │  audio mix)  │
+                              └──────────────┘                     └──────┬───────┘
+                                                                          ▼
+                                              final.mp4 + thumbnail.jpg + SEO metadata
+```
+
+### External services
+
+| Service | Purpose | Default endpoint |
+|---|---|---|
+| ComfyUI (MiniMax H3 T2V/I2V + Music3 workflows) | Video clips, music, thumbnail renders | `http://<gpu-host>:8188` |
+| vLLM (OpenAI-compatible) | Story, scenes, lyrics, SEO, thumbnail prompts | `http://<gpu-host>:8000/v1` |
+| Fish Speech (Gradio) | TTS narration (narration modes) | `http://<gpu-host>:7860` |
+| faster-whisper (local, CPU) | Word-timestamped lyric transcription | in-process |
+| ffmpeg/ffprobe (bundled via `static-ffmpeg`) | Frame extraction, concat, audio mixing | local |
+
+See **docs/ARCHITECTURE.md** for module-level detail and **docs/API.md** for the HTTP API.
+
+## Installation
+
+Requirements: Windows or Linux, Python 3.10+, network access to the three GPU services.
+
+```bash
+pip install -r requirements.txt
+```
+
+`static-ffmpeg` downloads modern ffmpeg/ffprobe binaries on first use; `faster-whisper` downloads its `base` model on first transcription. The three ComfyUI workflow JSONs ship in `workflows/` and require the corresponding MiniMax H3 / Music3 models installed on the ComfyUI server.
+
+Point the app at your services in `config.py` (defaults) or later at runtime via the Settings page.
+
+## Running
+
+```bash
+# with auto-restart watchdog (recommended, Windows)
+start_server.bat
+
+# or directly
+python -m uvicorn app:app --host 127.0.0.1 --port 8080
+```
+
+Open **http://localhost:8080**.
+
+### Docker
+
+A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting can be supplied as a `VIDEOGEN_*` environment variable. See **docs/DOCKER.md** for the full deployment guide.
+
+## Usage
+
+1. **Submit** — paste one or more YouTube URLs (one per line), pick an **Art style** and **Aspect ratio**, click *Generate*. Each URL becomes a job; jobs run one at a time on the GPU.
+2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
+3. **Publish** — when done, download `final.mp4`, `thumbnail.jpg` (1280×720), and copy the SEO title/description from the job page.
+
+### Revising a finished video
+
+1. On the job page, click **Edit** on any scene prompt, change it, **Save scene** — the matching clip is badged *needs regeneration*.
+2. Click **Regenerate** on the badged clip (or checkbox-select any clips and *Regenerate selected*). Regenerations take priority: a running job pauses at its next clip boundary and resumes afterwards.
+3. When satisfied, click **Reassemble final video** — a new `final.mp4` is produced in seconds (reassembly never waits behind GPU work).
+
+Note: a regenerated clip keeps its opening continuity (seeded from the previous clip's last frame) but its new ending may differ slightly from the next clip's opening — regenerate the following clip too if that matters.
+
+### Managing jobs
+
+- **Cancel** a queued or running job (takes effect within seconds; the in-flight GPU render is aborted).
+- **Archive** finished jobs to keep the main list clean (Archived Jobs page; unarchive anytime).
+- **Delete** removes a job and all its local files permanently.
+
+## Configuration
+
+All settings are editable at runtime on the **Settings** page (persisted to `settings.json`, applied to new jobs immediately). Defaults live in `config.py`.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `COMFY_URL` | `http://…:8188` | ComfyUI base URL |
+| `VLLM_URL` | `http://…:8000/v1` | OpenAI-compatible LLM endpoint |
+| `VLLM_MODEL` | `agents-a1` | Model id served by vLLM |
+| `FISH_URL` | `http://…:7860/` | Fish Speech Gradio URL |
+| `CHANNEL_NAME` | `Habibi Kids Channel` | Channel branding; replaces source channel/brand names |
+| `DEFAULT_ART_STYLE` | `Pixar-like 3D` | Preselected art style for new jobs |
+| `DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` | Preselected aspect ratio |
+| `AUDIO_MODE` | `music` | `music` / `narration` / `narration+music` |
+| `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
+| `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
+| `NARRATION_WORDS` | `170` | Narration length target (narration modes) |
+| `CLIP_AUDIO_VOLUME` | `0.3` | Clips' own ambience level under narration (0–1) |
+| `MUSIC_VOLUME` | `0.25` | Music level under narration (narration+music mode) |
+| `LIGHTNING_LORA` | `off` | 8-step turbo sampling: ~3× faster, lower quality |
+| `CLIP_RETRIES` | `1` | Retries per failed clip before the job fails |
+| `MIN_TRANSCRIPT_WORDS` | `50` | Refuse videos with fewer transcript words |
+| `MIN_TRANSCRIPT_WPM` | `20` | Refuse transcripts too sparse for the video length |
+| `COMFY_CLEANUP` | `on` | Scrub rendered files/uploads/history from ComfyUI once downloaded |
+
+Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
+
+## Output layout
+
+Each job writes to `output/<job_id>/`:
+
+```
+transcript.txt      cleaned source captions
+plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO
+music.mp3           generated song            narration.wav   TTS voiceover (narration modes)
+clip_01..NN.mp4     generated clips           frame_NN.jpg    chaining frames
+thumbnail.jpg       1280x720 YouTube thumbnail
+clips_joined.mp4    concatenated clips        final.mp4       finished video with mixed audio
+job.json            job state (enables crash-safe resume)
+```
+
+`output/` and `settings.json` are intentionally untracked.
+
+## Troubleshooting
+
+- **"This video cannot be processed: no proper transcript available"** — the source video has no captions, or too few words for its length (music videos, ambience). Adjust `MIN_TRANSCRIPT_WORDS` / `MIN_TRANSCRIPT_WPM` if needed.
+- **Fish TTS CUDA out-of-memory** — Fish, vLLM and ComfyUI share the GPU. The app pre-empts this by asking ComfyUI to unload models before synthesis and retries on OOM; long texts are chunked automatically.
+- **Server died / machine rebooted** — just start it again (`start_server.bat` restarts automatically). Interrupted jobs are re-queued and **resume**: every completed artifact (transcript, plan, song, scenes, finished clips) is reused; at most the in-flight render is lost.
+- **A song mentions another channel** — shouldn't happen (channel branding rule), but resubmit the video or regenerate the affected clips.
+- **Service health** — the Settings page pings ComfyUI, vLLM and Fish Speech and shows latency or the exact error.
