@@ -24,8 +24,10 @@ def last_frame(video: Path, out_jpg: Path) -> Path:
     return out_jpg
 
 
-def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 720) -> Path:
-    """First frame of the video, cover-cropped to exactly width x height, saved as JPG."""
+def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 720,
+                   logo: Path | None = None) -> Path:
+    """First frame of the video, cover-cropped to width x height; optionally overlays the
+    channel logo in the top-right corner. Saved as JPG."""
     out_jpg = Path(out_jpg)
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
     _run([ffmpeg(), "-y", "-v", "error", "-i", str(video),
@@ -34,6 +36,19 @@ def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 
           "-frames:v", "1", "-q:v", "2", str(out_jpg)])
     if not out_jpg.exists():
         raise RuntimeError("could not extract thumbnail frame")
+    if logo is not None and Path(logo).exists():
+        try:
+            from PIL import Image
+            base = Image.open(out_jpg).convert("RGB")
+            lg = Image.open(logo).convert("RGBA")
+            lw = max(1, int(base.width * 0.16))
+            lh = max(1, int(lg.height * lw / lg.width))
+            lg = lg.resize((lw, lh), Image.LANCZOS)
+            margin = max(8, int(base.width * 0.025))
+            base.paste(lg, (base.width - lw - margin, margin), lg)
+            base.save(out_jpg, "JPEG", quality=92)
+        except Exception as e:  # noqa: BLE001 - logo overlay must never break the pipeline
+            print(f"logo overlay failed: {e}")
     return out_jpg
 
 

@@ -121,6 +121,10 @@ label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
 .btn.danger:hover { border-color: var(--err); background: rgba(248, 113, 113, .08); }
 .btn.sm { padding: 6px 12px; font-size: 13px; }
 .btn svg.icon { width: 16px; height: 16px; }
+/* anchor-based buttons: keep button text color on hover (beats the global a:hover) */
+a.btn, a.btn:hover { color: #fff; }
+a.btn.secondary, a.btn.secondary:hover { color: var(--fg); }
+a.btn.danger, a.btn.danger:hover { color: var(--err); }
 .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
 .row > .grow { flex: 1; min-width: 220px; }
 

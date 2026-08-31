@@ -82,7 +82,8 @@
     <div class="warn" id="assembleHint" hidden style="margin-bottom:10px">⚠ clips were regenerated since this final video was assembled — reassemble to include them</div>
     <video class="final-video" id="finalVideo" controls></video>
     <div class="row" style="margin-top:12px">
-      <a class="btn secondary sm" id="finalDl" download>Download final.mp4</a>
+      <a class="btn secondary sm" id="finalDl">Download video</a>
+      <a class="btn sm" id="bundleDl">Download bundle (ZIP)</a>
       <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
     </div>
   </section>
@@ -96,9 +97,12 @@
   </section>
 
   <section class="card" id="thumbSec" hidden>
-    <h2>Thumbnail <span class="count">(1280x720, ready for YouTube)</span></h2>
+    <h2>Thumbnail <span class="count">(matches the video aspect, ready for YouTube)</span></h2>
     <img id="thumbImg" alt="thumbnail" style="max-width:480px;width:100%;border-radius:8px;display:block">
-    <div style="margin-top:12px"><a class="btn secondary sm" id="thumbDl" download>Download thumbnail.jpg</a></div>
+    <div class="row" style="margin-top:12px">
+      <a class="btn secondary sm" id="thumbDl">Download thumbnail</a>
+      <button class="btn sm" id="thumbRegen" hidden>Regenerate thumbnail</button>
+    </div>
   </section>
 
   <section class="card" id="clipsSec" hidden>
@@ -341,6 +345,7 @@ function update(j) {
     shownClips.clear(); selected.clear(); updateRegenBtn();
     $("#clipGrid").innerHTML = "";
     finalShown = false;
+    thumbShown = false;
     detailsStamp = null;
   }
 
@@ -380,9 +385,10 @@ function update(j) {
   if ((j.files || []).includes("thumbnail.jpg") && !thumbShown) {
     thumbShown = true;
     $("#thumbSec").hidden = false;
-    $("#thumbImg").src = F("thumbnail.jpg");
-    $("#thumbDl").href = F("thumbnail.jpg");
+    $("#thumbImg").src = `${F("thumbnail.jpg")}?v=${j.updated}`;
+    $("#thumbDl").href = `/jobs/${jobId}/download/thumbnail`;
   }
+  $("#thumbRegen").hidden = j.status !== "done";
   if ((j.files || []).includes("music.mp3") && !musicShown) {
     musicShown = true;
     $("#musicSec").hidden = false;
@@ -393,7 +399,8 @@ function update(j) {
     finalVer = j.updated;
     $("#finalSec").hidden = false;
     $("#finalVideo").src = `${F(j.final)}?v=${finalVer}`;
-    $("#finalDl").href = F(j.final);
+    $("#finalDl").href = `/jobs/${jobId}/download/video`;
+    $("#bundleDl").href = `/jobs/${jobId}/download/bundle`;
   }
   const files = j.files || [];
   if (files.length) {
@@ -455,6 +462,15 @@ $("#regenBtn").onclick = async () => {
     selected.clear(); updateRegenBtn();
     document.querySelectorAll(".clip-select input").forEach(cb => { cb.checked = false; });
     document.querySelectorAll(".clip-grid figure").forEach(f => f.classList.remove("sel"));
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#thumbRegen").onclick = async () => {
+  if (!confirm("Generate a new thumbnail? A fresh concept and image are created (~1 minute).")) return;
+  try {
+    await api(`/jobs/${jobId}/regen-thumbnail`, { method: "POST" });
+    toast("Thumbnail regeneration started");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
 };

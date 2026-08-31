@@ -22,6 +22,17 @@
   </div>
 
   <div class="card">
+    <h2>Channel logo</h2>
+    <div class="hint" style="margin-bottom:10px">Overlaid on the top-right corner of every generated thumbnail. PNG with transparency recommended.</div>
+    <div class="row">
+      <img id="logoPreview" alt="channel logo" hidden style="height:56px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);padding:6px">
+      <input type="file" id="logoFile" accept="image/*" style="max-width:280px">
+      <button class="btn secondary sm" id="logoUpload" type="button">Upload logo</button>
+      <button class="btn danger sm" id="logoRemove" type="button" hidden>Remove</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Art style previews</h2>
     <div class="hint" style="margin-bottom:10px">Renders one sample image per art style with your video model (~30 s each, runs in the background, skips already-generated ones). Shown on the submit form when picking a style.</div>
     <div class="row">
@@ -207,9 +218,37 @@ $("#genPreviews").onclick = async () => {
   previewStatus(true);
 };
 
+async function refreshLogo() {
+  const r = await fetch("/channel-logo?v=" + Date.now());
+  const has = r.ok;
+  $("#logoPreview").hidden = !has;
+  $("#logoRemove").hidden = !has;
+  if (has) $("#logoPreview").src = "/channel-logo?v=" + Date.now();
+}
+
+$("#logoUpload").onclick = async () => {
+  const f = $("#logoFile").files[0];
+  if (!f) { toast("Choose an image file first", true); return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const r = await fetch("/api/channel-logo", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "upload failed");
+    toast("Channel logo saved - it will appear on new thumbnails");
+    refreshLogo();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#logoRemove").onclick = async () => {
+  if (!confirm("Remove the channel logo?")) return;
+  try { await api("/api/channel-logo", { method: "DELETE" }); toast("Logo removed"); refreshLogo(); }
+  catch (e) { toast(e.message, true); }
+};
+
 load().catch(e => toast(e.message, true));
 checkHealth();
 previewStatus(true);
+refreshLogo();
 </script>
 </body>
 </html>

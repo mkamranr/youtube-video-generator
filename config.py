@@ -12,6 +12,7 @@ WORKFLOWS_DIR = BASE_DIR / "workflows"
 OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
 SETTINGS_FILE = BASE_DIR / "settings.json"
+LOGO_FILE = BASE_DIR / "channel_logo.png"   # uploaded via Settings; overlaid on thumbnails
 
 # ---- service endpoints (placeholders) -------------------------------------
 # Set your real service URLs via the Settings page (persisted to settings.json)
@@ -90,6 +91,18 @@ DEFAULT_SOURCE = "url"
 
 def video_length_range(name: str):
     return VIDEO_LENGTHS.get(name)
+
+# Thumbnail dimensions per aspect ratio (long side <= 1280)
+THUMB_SIZES = {
+    "16:9 (Widescreen)": (1280, 720),
+    "9:16 (Portrait Widescreen)": (720, 1280),
+    "1:1 (Square)": (1080, 1080),
+    "4:3 (Standard)": (1280, 960),
+    "3:4 (Portrait Standard)": (960, 1280),
+    "3:2 (Photo)": (1200, 800),
+    "2:3 (Portrait Photo)": (800, 1200),
+    "21:9 (Ultrawide)": (1260, 540),
+}
 
 ASPECT_RATIOS = [
     "16:9 (Widescreen)", "9:16 (Portrait Widescreen)", "1:1 (Square)", "4:3 (Standard)",

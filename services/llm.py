@@ -297,11 +297,14 @@ def write_thumbnail(title: str, narration: str, style: str) -> dict:
 Its story: \"\"\"{narration[:1500]}\"\"\"
 Its visual style: {style}
 
-Design ONE eye-catching YouTube thumbnail image for it. Return JSON with key:
-- "thumbnail_prompt": a prompt for an image generator describing a single dramatic hero shot:
-  the video's main subject large and instantly recognizable, bold vivid saturated colors,
-  strong contrast and lighting, shallow depth, clean uncluttered background, composition with
-  the subject slightly off-center leaving some negative space. Same world/style as the video.
+Design ONE eye-catching YouTube thumbnail image for it. A viewer glancing for half a second
+must INSTANTLY understand what the video is about. Return JSON with key:
+- "thumbnail_prompt": a prompt for an image generator describing a single dramatic scene that
+  SHOWS THE VIDEO'S SUBJECT: the main character(s) and the key objects of the story, front and
+  center, caught mid-action with big expressive joyful emotion. Bold composition, exaggerated
+  scale, vivid saturated colors, strong contrast and lighting, simple readable background.
+  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
+  Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system()}, {"role": "user", "content": user}])

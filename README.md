@@ -16,7 +16,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
   - `narration+music`: voiceover plus a background music bed.
 - **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each 5-second clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
 - **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
-- **Thumbnail generation** — an LLM-designed hero-shot prompt rendered through the video model, delivered as an exact 1280×720 JPG.
+- **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with your **channel logo** (uploaded in Settings) overlaid top-right. One-click regeneration on any finished job.
 - **SEO metadata** — a keyword-optimized YouTube title and description (with hashtags and a subscribe call-to-action) generated for every video.
 - **Full revision workflow** — edit any scene prompt in the UI, regenerate exactly the clips you want (they're clearly badged), then reassemble the final video with one click. Regenerations **jump the queue**, pausing the running job at a clip boundary and resuming it afterwards.
 - **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup, transcript quality gating, and a self-restarting server watchdog.
@@ -101,7 +101,7 @@ A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting
 1. **Submit** — choose a source in *Create from*, and optionally a **Video length** (Auto, 30-45 s, 45-60 s, 1-2 min, 2-3 min) — a soft target that guides the script length and the generated song/narration duration: paste YouTube URLs (one per line), enter a **topic**, or write a **description / short script** (one job per topic/description submission). Pick an **Art style** and **Aspect ratio**, click *Generate*. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
    - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
-3. **Publish** — when done, download `final.mp4`, `thumbnail.jpg` (1280×720), and copy the SEO title/description from the job page.
+3. **Publish** — when done, download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
 
 ### Revising a finished video
 

@@ -3,11 +3,12 @@ import json
 import re
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -58,7 +59,8 @@ def _queued_detail(job_id: str) -> str:
 def _job_json(job):
     d = asdict(job)
     d["log"] = d["log"][-40:]
-    d["files"] = [f.name for f in sorted(job.dir.glob("*")) if f.is_file() and f.name != "job.json"]
+    d["files"] = [f.name for f in sorted(job.dir.glob("*"))
+                  if f.is_file() and f.name not in ("job.json", "bundle.zip")]
     if job.status == "queued":
         d["detail"] = _queued_detail(job.id)
     return d
@@ -240,6 +242,56 @@ def job_file(job_id: str, name: str):
     return FileResponse(path)
 
 
+def _safe_filename(title: str, fallback: str) -> str:
+    """Filesystem-safe download name derived from the video title."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title or "").strip()
+    name = re.sub(r"\s+", " ", name).rstrip(". ")
+    return name[:120] or fallback
+
+
+@app.get("/jobs/{job_id}/download/{kind}")
+def download(job_id: str, kind: str):
+    """Downloads named after the video title: video, thumbnail, or the full ZIP bundle."""
+    job = manager.jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    d = job.dir
+    title = _safe_filename(job.title, job.id)
+    if kind == "video":
+        f = d / "final.mp4"
+        if not f.exists():
+            raise HTTPException(404, "the final video has not been generated yet")
+        return FileResponse(f, filename=f"{title}.mp4", media_type="video/mp4")
+    if kind == "thumbnail":
+        f = d / "thumbnail.jpg"
+        if not f.exists():
+            raise HTTPException(404, "the thumbnail has not been generated yet")
+        return FileResponse(f, filename=f"{title}.jpg", media_type="image/jpeg")
+    if kind == "bundle":
+        final = d / "final.mp4"
+        if not final.exists():
+            raise HTTPException(404, "the final video has not been generated yet")
+        plan = {}
+        try:
+            plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+        zpath = d / "bundle.zip"
+        with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as z:
+            z.write(final, f"{title}.mp4")
+            if (d / "thumbnail.jpg").exists():
+                z.write(d / "thumbnail.jpg", f"{title}.jpg")
+            if (d / "music.mp3").exists():
+                z.write(d / "music.mp3", f"{title} - music.mp3")
+            if (d / "narration.wav").exists():
+                z.write(d / "narration.wav", f"{title} - narration.wav")
+            text = (f"Title: {plan.get('seo_title') or plan.get('title') or job.title}\r\n\r\n"
+                    f"Description:\r\n{plan.get('seo_description', '')}\r\n")
+            z.writestr(f"{title}.txt", text)
+        return FileResponse(zpath, filename=f"{title}.zip", media_type="application/zip")
+    raise HTTPException(404, "unknown download kind")
+
+
 # ---- options / settings / health ------------------------------------------
 @app.get("/options")
 def options():
@@ -265,6 +317,52 @@ def put_settings(body: dict):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"settings": settings}
+
+
+@app.post("/api/channel-logo")
+async def upload_channel_logo(file: UploadFile):
+    """Store the channel logo (converted to PNG with alpha); overlaid on all thumbnails."""
+    from PIL import Image
+    import io as _io
+    data = await file.read()
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(400, "logo too large (max 5 MB)")
+    try:
+        img = Image.open(_io.BytesIO(data))
+        img.load()
+        img = img.convert("RGBA")
+    except Exception:
+        raise HTTPException(400, "not a valid image file")
+    if img.width > 1024:
+        img = img.resize((1024, max(1, int(img.height * 1024 / img.width))), Image.LANCZOS)
+    img.save(config.LOGO_FILE, "PNG")
+    return {"ok": True, "size": [img.width, img.height]}
+
+
+@app.delete("/api/channel-logo")
+def delete_channel_logo():
+    try:
+        config.LOGO_FILE.unlink(missing_ok=True)
+    except OSError as e:
+        raise HTTPException(500, str(e))
+    return {"ok": True}
+
+
+@app.get("/channel-logo")
+def get_channel_logo():
+    if not config.LOGO_FILE.exists():
+        raise HTTPException(404, "no channel logo uploaded")
+    return FileResponse(config.LOGO_FILE, media_type="image/png")
+
+
+@app.post("/jobs/{job_id}/regen-thumbnail")
+def regen_thumbnail(job_id: str):
+    try:
+        return _job_json(manager.regen_thumbnail(job_id))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.get("/api/health")

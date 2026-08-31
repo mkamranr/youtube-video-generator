@@ -3,6 +3,7 @@ output/
 
 # local runtime configuration
 settings.json
+channel_logo.png
 
 # server logs
 server.log

@@ -372,12 +372,15 @@ def _run(job: Job):
             tclient = comfy.ComfyClient()
             twf = tclient.build_thumbnail(tclient.load_workflow(config.T2V_WORKFLOW),
                                           f"{plan['style']}\n\n{plan['thumbnail_prompt']}",
-                                          f"videogen/{job.id}/thumb")
+                                          f"videogen/{job.id}/thumb",
+                                          aspect_ratio=job.aspect_ratio)
             traw = tclient.run(twf, d / "thumb_raw.mp4", on_progress=_progress(job, "thumbnail"),
                                should_stop=lambda: job.cancel_requested,
                                cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
-            video.make_thumbnail(traw, thumb)
-            job.add_log("thumbnail ready (1280x720)")
+            tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
+            video.make_thumbnail(traw, thumb, tw, th,
+                                 logo=config.LOGO_FILE if config.LOGO_FILE.exists() else None)
+            job.add_log(f"thumbnail ready ({tw}x{th})")
         except JobCancelled:
             raise
         except Exception as e:  # noqa: BLE001
@@ -624,6 +627,41 @@ class JobManager:
             job.set("drafting", "rewriting script with the LLM")
         self._start_draft(job, feedback=feedback)
         return job
+
+    def regen_thumbnail(self, job_id: str) -> Job:
+        """Re-render the thumbnail with a fresh concept and seed. Runs in a side thread -
+        it is a single ~30 s render, so it does not go through the job queue."""
+        with self.lock:
+            job = self._maintenance_target(job_id)
+            job.set("thumbnail", "regenerating the thumbnail")
+        threading.Thread(target=self._regen_thumbnail, args=(job,), daemon=True).start()
+        return job
+
+    def _regen_thumbnail(self, job: Job):
+        d = job.dir
+        try:
+            plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
+            job.set("thumbnail", "designing a new thumbnail with vLLM")
+            plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
+                                            plan.get("style", "")))
+            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            job.set("thumbnail", "rendering the new thumbnail")
+            client = comfy.ComfyClient()
+            twf = client.build_thumbnail(client.load_workflow(config.T2V_WORKFLOW),
+                                         f"{plan['style']}\n\n{plan['thumbnail_prompt']}",
+                                         f"videogen/{job.id}/thumb",
+                                         aspect_ratio=job.aspect_ratio)
+            traw = client.run(twf, d / "thumb_raw.mp4",
+                              on_progress=_progress(job, "thumbnail"),
+                              cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
+            tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
+            video.make_thumbnail(traw, d / "thumbnail.jpg", tw, th,
+                                 logo=config.LOGO_FILE if config.LOGO_FILE.exists() else None)
+            job.set("done", "thumbnail regenerated")
+            job.add_log(f"thumbnail regenerated ({tw}x{th})")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"thumbnail regeneration failed: {e}")
+            job.set("done", f"thumbnail regeneration failed: {e}")
 
     def _maintenance_target(self, job_id: str):
         job = self.jobs.get(job_id)

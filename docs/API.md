@@ -47,6 +47,9 @@ Large payload for the job page: full `transcript` text, the parsed `plan` (narra
 ### `GET /jobs/{id}/files/{name}`
 Download any artifact from the job folder (clips, `final.mp4`, `thumbnail.jpg`, `music.mp3`, `narration.wav`, `plan.json`, `transcript.txt`, …).
 
+### `GET /jobs/{id}/download/{kind}`
+Publish-ready downloads named after the video title. `kind`: `video` (`<Title>.mp4`), `thumbnail` (`<Title>.jpg`), or `bundle` — a ZIP (`<Title>.zip`) built on request containing the video, thumbnail, audio track(s), and `<Title>.txt` with the SEO title and description. `404` while the underlying artifact doesn't exist yet.
+
 ### `DELETE /jobs/{id}`
 Delete the job and all its local files. `409` if it is currently running.
 
@@ -71,6 +74,9 @@ Regenerate specific clips of a finished job with their (possibly edited) scene p
 ```
 The request goes to the **front of the queue**; a currently running job pauses at its next clip boundary and automatically resumes afterwards. Regenerated clips clear their stale flag and set `needs_assemble`.
 
+### `POST /jobs/{id}/regen-thumbnail`
+Generate a brand-new thumbnail for a finished job (fresh LLM concept + render, ~1 minute; runs in a side thread, not the job queue). The channel logo, if uploaded, is overlaid top-right. `409` if the job is running, queued, or archived.
+
 ### `POST /jobs/{id}/assemble`
 Re-concatenate all clips and remix the audio into a new `final.mp4`. Runs **immediately in a background thread** (pure ffmpeg, no GPU) — it never waits behind rendering jobs. Clears `needs_assemble`.
 
@@ -92,6 +98,11 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 
 - `POST /jobs/{id}/archive` — hide a finished job from the main list.
 - `POST /jobs/{id}/unarchive` — bring it back.
+
+## Channel logo
+
+- `POST /api/channel-logo` — multipart upload (`file`); stored as PNG (max 5 MB, downscaled to <=1024 px wide) and overlaid on the top-right corner of every generated thumbnail.
+- `GET /channel-logo` — the current logo (404 if none). `DELETE /api/channel-logo` — remove it.
 
 ## Settings & meta
 

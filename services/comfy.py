@@ -69,10 +69,11 @@ class ComfyClient:
 
     @classmethod
     def build_thumbnail(cls, template: dict, prompt: str, filename_prefix: str,
-                        seed: int | None = None) -> dict:
-        """Minimal-length (5 frames), ~1 MP, always-16:9 render used as a thumbnail source."""
+                        seed: int | None = None,
+                        aspect_ratio: str = "16:9 (Widescreen)") -> dict:
+        """Minimal-length (5 frames), ~1 MP render used as a thumbnail source."""
         wf = cls.build(template, prompt, filename_prefix, seed=seed,
-                       seconds=0.1, aspect_ratio="16:9 (Widescreen)")
+                       seconds=0.1, aspect_ratio=aspect_ratio)
         wf[config.NODE_RESOLUTION]["inputs"]["megapixels"] = 1.0
         return wf
 
