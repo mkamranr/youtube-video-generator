@@ -1,12 +1,15 @@
 /* VideoGen — shared helpers */
 const $ = s => document.querySelector(s);
-const STEP_LABELS = { queued: "Queued", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", clips: "Clips", assembling: "Assemble", done: "Done" };
+const STEP_LABELS = { queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", clips: "Clips", assembling: "Assemble", done: "Done" };
 
 function orderFor(j) {
   const mid = j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
             : j.audio_mode === "narration" ? ["tts", "scenes", "thumbnail"]
             : ["tts", "scenes", "thumbnail", "music"];
-  return ["queued", "transcript", "planning", ...mid, "clips", "assembling", "done"];
+  const head = (j.source === "topic" || j.source === "description")
+            ? ["drafting", "awaiting_approval", "queued", "planning"]
+            : ["queued", "transcript", "planning"];
+  return [...head, ...mid, "clips", "assembling", "done"];
 }
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -32,9 +35,11 @@ function pct(j) {
 }
 
 function pillHTML(j) {
-  const active = !["done", "failed", "queued"].includes(j.status);
-  const cls = j.status === "done" ? "done" : j.status === "failed" ? "failed" : j.status === "queued" ? "queued" : "running";
-  const text = j.status === "clips" && j.clips_total ? `clips ${j.clips_done}/${j.clips_total}` : (STEP_LABELS[j.status] || j.status);
+  const active = !["done", "failed", "queued", "awaiting_approval"].includes(j.status);
+  const cls = j.status === "done" ? "done" : j.status === "failed" ? "failed"
+            : j.status === "queued" ? "queued" : j.status === "awaiting_approval" ? "approval" : "running";
+  const text = j.status === "clips" && j.clips_total ? `clips ${j.clips_done}/${j.clips_total}`
+             : j.status === "awaiting_approval" ? "review script" : (STEP_LABELS[j.status] || j.status);
   return `<span class="pill ${cls} ${active ? "running" : ""}">${esc(text.toLowerCase())}</span>`;
 }
 

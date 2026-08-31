@@ -49,6 +49,7 @@
     <span class="jid" id="jobIdLabel"></span>
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
+    <span id="vlenLabel"></span>
     <span id="aspect"></span>
     <span id="created"></span>
   </div>
@@ -58,6 +59,23 @@
     <div class="bar"><i id="progress" style="width:0"></i></div>
     <div class="statusline" id="statusline"></div>
   </div>
+
+  <section class="card" id="approvalSec" hidden>
+    <h2>Script approval</h2>
+    <div class="hint" style="margin-bottom:12px">Review and edit the script below. After approval, the whole video (music, scenes, clips, thumbnail) is generated from it.</div>
+    <label for="apTitle">Title</label>
+    <input type="text" id="apTitle">
+    <label for="apScript" style="margin-top:12px">Script</label>
+    <textarea id="apScript" style="min-height:220px"></textarea>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="approveBtn">Approve &amp; generate video</button>
+      <button class="btn secondary" id="redraftBtn">Request new draft</button>
+    </div>
+    <div id="redraftBox" hidden style="margin-top:12px">
+      <textarea id="redraftFeedback" placeholder="What should change in the script? (optional)" style="min-height:70px"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn sm" id="redraftGo">Redraft script</button></div>
+    </div>
+  </section>
 
   <section class="card" id="finalSec" hidden>
     <h2>Final video</h2>
@@ -151,6 +169,7 @@ let detailsStamp = null;             // job.updated value details were last fetc
 let finalShown = false, audioShown = false, musicShown = false, thumbShown = false;
 let finalVer = null;                 // cache-buster used for the current final video
 let prevStatus = null;
+let approvalLoaded = false;
 let pollTimer = null;
 
 function startPolling() {
@@ -181,6 +200,11 @@ async function loadDetails(j) {
     $("#transcriptSec").hidden = false;
     $("#transcriptCount").textContent = `(${d.transcript.split(/\s+/).length} words)`;
     $("#transcriptText").textContent = d.transcript;
+  }
+  if (d.plan && lastJob && lastJob.status === "awaiting_approval" && !approvalLoaded) {
+    approvalLoaded = true;
+    $("#apTitle").value = d.plan.title || "";
+    $("#apScript").value = d.plan.narration || "";
   }
   if (d.plan) {
     if (d.plan.seo_title || d.plan.seo_description) {
@@ -288,9 +312,17 @@ function update(j) {
   $("#title").textContent = j.title || j.id;
   $("#pill").outerHTML = `<span id="pill">${pillHTML(j)}</span>`;
   $("#jobIdLabel").textContent = j.id;
-  $("#srcUrl").href = j.url;
-  $("#srcUrl").textContent = j.url.length > 60 ? j.url.slice(0, 60) + "…" : j.url;
+  if (j.url) {
+    $("#srcUrl").href = j.url;
+    $("#srcUrl").textContent = j.url.length > 60 ? j.url.slice(0, 60) + "…" : j.url;
+  } else {
+    $("#srcUrl").removeAttribute("href");
+    const t = j.topic || "";
+    $("#srcUrl").textContent = (j.source === "description" ? "description: " : "topic: ")
+      + (t.length > 70 ? t.slice(0, 70) + "…" : t);
+  }
   $("#artStyleLabel").textContent = j.art_style || "";
+  $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#created").textContent = "created " + timeAgo(j.created);
   $("#progress").style.width = pct(j) + "%";
@@ -298,7 +330,9 @@ function update(j) {
   sl.textContent = j.error || j.detail || "";
   sl.classList.toggle("error", !!j.error);
   renderStepper(j);
-  $("#cancelBtn").hidden = ["done", "failed"].includes(j.status);
+  $("#cancelBtn").hidden = ["done", "failed", "awaiting_approval", "drafting"].includes(j.status);
+  $("#approvalSec").hidden = j.status !== "awaiting_approval";
+  if (j.status === "drafting") approvalLoaded = false;
 
   // when a regeneration/reassembly finishes, rebuild the media with cache-busters
   const cameBackDone = prevStatus && !["done", "failed"].includes(prevStatus) && j.status === "done";
@@ -386,6 +420,27 @@ $("#cancelBtn").onclick = async () => {
   if (!confirm("Cancel this running job?")) return;
   try { await api(`/jobs/${jobId}/cancel`, { method: "POST" }); toast("Cancelling job"); refresh(); }
   catch (e) { toast(e.message, true); }
+};
+
+$("#approveBtn").onclick = async () => {
+  try {
+    await api(`/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: $("#apTitle").value, narration: $("#apScript").value }) });
+    toast("Script approved - queued for video generation");
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#redraftBtn").onclick = () => { $("#redraftBox").hidden = !$("#redraftBox").hidden; };
+
+$("#redraftGo").onclick = async () => {
+  try {
+    await api(`/jobs/${jobId}/redraft`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback: $("#redraftFeedback").value }) });
+    toast("New draft requested");
+    approvalLoaded = false; $("#redraftBox").hidden = true;
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
 };
 
 $("#regenBtn").onclick = async () => {

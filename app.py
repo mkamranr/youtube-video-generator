@@ -28,9 +28,12 @@ async def no_cache_static(request, call_next):
 
 
 class Submit(BaseModel):
-    urls: list[str]
+    urls: list[str] = []
+    topic: str = ""
+    description: str = ""
     aspect_ratio: str = ""
     art_style: str = ""
+    video_length: str = ""
 
 
 def _queued_detail(job_id: str) -> str:
@@ -63,15 +66,25 @@ def _job_json(job):
 @app.post("/jobs")
 def create_jobs(body: Submit):
     urls = [u.strip() for u in body.urls if u.strip()]
-    if not urls:
-        raise HTTPException(400, "no urls given")
+    prompt_kind = "topic" if body.topic.strip() else "description" if body.description.strip() else ""
+    if not urls and not prompt_kind:
+        raise HTTPException(400, "provide urls, a topic, or a description")
     ar = body.aspect_ratio or config.DEFAULT_ASPECT_RATIO
     if ar not in config.ASPECT_RATIOS:
         raise HTTPException(400, f"aspect_ratio must be one of {config.ASPECT_RATIOS}")
     style = body.art_style or config.DEFAULT_ART_STYLE
     if style not in config.ART_STYLES:
         raise HTTPException(400, f"art_style must be one of {list(config.ART_STYLES)}")
-    return [_job_json(manager.submit(u, ar, style)) for u in urls]
+    vlen = body.video_length or config.DEFAULT_VIDEO_LENGTH
+    if vlen not in config.VIDEO_LENGTHS:
+        raise HTTPException(400, f"video_length must be one of {list(config.VIDEO_LENGTHS)}")
+    if prompt_kind:
+        text = body.topic if prompt_kind == "topic" else body.description
+        try:
+            return [_job_json(manager.submit_prompt(text, prompt_kind, ar, style, vlen))]
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return [_job_json(manager.submit(u, ar, style, vlen)) for u in urls]
 
 
 @app.get("/jobs")
@@ -93,6 +106,35 @@ class RegenBody(BaseModel):
 
 class SceneUpdates(BaseModel):
     updates: dict[int, str]
+
+
+class ApproveBody(BaseModel):
+    title: str = ""
+    narration: str = ""
+
+
+class RedraftBody(BaseModel):
+    feedback: str = ""
+
+
+@app.post("/jobs/{job_id}/approve")
+def approve_script(job_id: str, body: ApproveBody):
+    try:
+        return _job_json(manager.approve_script(job_id, body.title, body.narration))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/jobs/{job_id}/redraft")
+def redraft_script(job_id: str, body: RedraftBody):
+    try:
+        return _job_json(manager.redraft_script(job_id, body.feedback))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.put("/jobs/{job_id}/scenes")
@@ -200,7 +242,8 @@ def job_file(job_id: str, name: str):
 @app.get("/options")
 def options():
     return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
-            "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE}
+            "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
+            "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH}
 
 
 @app.get("/api/settings")

@@ -75,6 +75,20 @@ ART_STYLES = {
 DEFAULT_ART_STYLE = "Pixar-like 3D"
 CHANNEL_NAME = "Habibi Kids Channel"   # the channel these videos are published on
 
+# Per-job soft target length presets (None = Auto, use the global settings)
+VIDEO_LENGTHS = {
+    "Auto": None,
+    "30-45 seconds": (30, 45),
+    "45-60 seconds": (45, 60),
+    "1-2 minutes": (60, 120),
+    "2-3 minutes": (120, 180),
+}
+DEFAULT_VIDEO_LENGTH = "Auto"
+
+
+def video_length_range(name: str):
+    return VIDEO_LENGTHS.get(name)
+
 ASPECT_RATIOS = [
     "16:9 (Widescreen)", "9:16 (Portrait Widescreen)", "1:1 (Square)", "4:3 (Standard)",
     "3:4 (Portrait Standard)", "3:2 (Photo)", "2:3 (Portrait Photo)", "21:9 (Ultrawide)",
@@ -94,6 +108,7 @@ TARGET_VIDEO_SECONDS = 90       # music mode: requested song length (the model m
 MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
+SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
 WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
 
 # ---- fixed limits ---------------------------------------------------------
@@ -133,6 +148,8 @@ EDITABLE_SETTINGS = {
                              "Refuse videos whose transcript has fewer words than this"),
     "MIN_TRANSCRIPT_WPM": (float, lambda v: 0 <= v <= 200, "Min transcript words/min",
                            "Refuse when the transcript is too sparse for the video length (music/no speech)"),
+    "SCRIPT_REVIEW": (bool, lambda v: True, "LLM review pass",
+                      "After generating each scene (and each drafted script), the LLM reviews it once more against the audio/content and fixes inconsistencies (wrong letters, mismatched objects, safety issues)"),
     "COMFY_CLEANUP": (bool, lambda v: True, "Clean up ComfyUI",
                       "Delete each job's rendered files, uploaded frames and history from the ComfyUI server as soon as they are downloaded"),
 }

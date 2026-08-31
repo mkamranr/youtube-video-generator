@@ -20,6 +20,10 @@ class Job:
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
     audio_mode: str = ""
     art_style: str = ""
+    video_length: str = "Auto"
+    source: str = "youtube"
+    topic: str = ""
+    script_approved: bool = False
     status: str = "queued"          # queued|transcript|planning|tts|scenes|music|clips|assembling|done|failed
     detail: str = ""
     title: str = ""
@@ -91,6 +95,17 @@ def _cleanup_warn(job: Job):
         if "cleanup not supported" not in " ".join(job.log[-50:]):
             job.add_log("note: ComfyUI file cleanup not supported by this server build")
     return cb
+
+
+def _length_params(job: Job):
+    """Per-job soft length targets: (words, target_seconds, max_seconds, seconds_range).
+    All None for Auto - the global settings apply."""
+    rng = config.video_length_range(job.video_length or "Auto")
+    if not rng:
+        return None, None, None, None
+    lo, hi = rng
+    mid = (lo + hi) / 2.0
+    return int(mid * 2.5), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
 
 
 def _progress(job: Job, status: str):
@@ -212,9 +227,11 @@ def _run(job: Job):
     d.mkdir(parents=True, exist_ok=True)
     mode = job.audio_mode or "narration+music"
 
-    # 1. transcript (reused on resume)
+    # 1. source text: transcript for YouTube jobs, the user's prompt otherwise
     tfile = d / "transcript.txt"
-    if tfile.exists() and tfile.stat().st_size > 50:
+    if job.source in ("topic", "description"):
+        text = job.topic
+    elif tfile.exists() and tfile.stat().st_size > 50:
         text = tfile.read_text(encoding="utf-8")
         job.add_log("resume: reusing transcript")
     else:
@@ -247,7 +264,8 @@ def _run(job: Job):
             plan = None
     if plan is None:
         job.set("planning", "asking vLLM for the story plan")
-        plan = llm.write_narration(text, art_style=config.ART_STYLES.get(job.art_style, ""))
+        plan = llm.write_narration(text, words=_length_params(job)[0],
+                                   art_style=config.ART_STYLES.get(job.art_style, ""))
     plan["audio_mode"] = mode
     if not plan.get("seo_title"):
         job.set("planning", "writing SEO title and description")
@@ -267,13 +285,17 @@ def _run(job: Job):
         # 3. music first: the actual track length drives the clip count, and the
         #    lyrics drive the per-clip scenes so the song matches each clip.
         _check_cancel(job)
+        _lw, l_target, l_max, l_range = _length_params(job)
+        if not l_range:
+            l_target = config.TARGET_VIDEO_SECONDS
+            l_max = (min(360.0, config.TARGET_VIDEO_SECONDS * 2 + 30)
+                     if config.TARGET_VIDEO_SECONDS else 360.0)
         music_plan = plan.get("music") or {}
         if not music_plan.get("caption"):
             job.set("music", "writing music caption and lyrics with vLLM")
-            music_max = (min(360.0, config.TARGET_VIDEO_SECONDS * 2 + 30) if config.TARGET_VIDEO_SECONDS else 360.0)
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
-                                         standalone=True, seconds=config.TARGET_VIDEO_SECONDS,
-                                         max_seconds=music_max)
+                                         standalone=True, seconds=l_target,
+                                         max_seconds=l_max, seconds_range=l_range)
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         if (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
@@ -284,7 +306,7 @@ def _run(job: Job):
             mclient = comfy.ComfyClient()
             mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
                                       music_plan["caption"], music_plan.get("lyrics", ""),
-                                      (min(360.0, config.TARGET_VIDEO_SECONDS * 2 + 30) if config.TARGET_VIDEO_SECONDS else 360.0),
+                                      l_max,
                                       f"videogen/{job.id}/music")
             music_file = mclient.run(mwf, d / "music.mp3",
                                      on_progress=lambda m: job.set("music", f"music: {m}"),
@@ -326,8 +348,10 @@ def _run(job: Job):
         def scene_progress(m):
             _check_cancel(job)
             job.set("scenes", f"writing {m}")
+        def review_issue(idx, issues):
+            job.add_log(f"review fixed scene {idx}: " + "; ".join(issues)[:160])
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
-                                          on_progress=scene_progress)
+                                          on_progress=scene_progress, on_review_issue=review_issue)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -433,6 +457,13 @@ class JobManager:
         for p in sorted(config.OUTPUT_DIR.glob("*/job.json")):
             try:
                 j = Job.load(p)
+                if j.status == "awaiting_approval":
+                    self.jobs[j.id] = j
+                    continue
+                if j.status == "drafting":
+                    self.jobs[j.id] = j
+                    self._start_draft(j)
+                    continue
                 if j.status not in ("done", "failed"):
                     j.pause_requested = False
                     if j.cancel_requested:
@@ -447,14 +478,18 @@ class JobManager:
                 pass
 
     def submit(self, url: str, aspect_ratio: str = config.DEFAULT_ASPECT_RATIO,
-               art_style: str = "") -> Job:
+               art_style: str = "", video_length: str = "") -> Job:
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
         art_style = art_style or config.DEFAULT_ART_STYLE
         if art_style not in config.ART_STYLES:
             raise ValueError(f"unsupported art style: {art_style}")
+        video_length = video_length or config.DEFAULT_VIDEO_LENGTH
+        if video_length not in config.VIDEO_LENGTHS:
+            raise ValueError(f"unsupported video length: {video_length}")
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
-                  aspect_ratio=aspect_ratio, audio_mode=config.AUDIO_MODE, art_style=art_style)
+                  aspect_ratio=aspect_ratio, audio_mode=config.AUDIO_MODE, art_style=art_style,
+                  video_length=video_length)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -502,6 +537,93 @@ class JobManager:
             comfy.ComfyClient().interrupt_if_ours(f"videogen/{job_id}")
         except Exception:  # noqa: BLE001
             pass
+
+    def submit_prompt(self, text: str, source_kind: str,
+                      aspect_ratio: str = "", art_style: str = "",
+                      video_length: str = "") -> Job:
+        text = (text or "").strip()
+        if len(text) < 3:
+            raise ValueError("topic/description is too short")
+        if source_kind not in ("topic", "description"):
+            raise ValueError("invalid source kind")
+        aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
+        if aspect_ratio not in config.ASPECT_RATIOS:
+            raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
+        art_style = art_style or config.DEFAULT_ART_STYLE
+        if art_style not in config.ART_STYLES:
+            raise ValueError(f"unsupported art style: {art_style}")
+        video_length = video_length or config.DEFAULT_VIDEO_LENGTH
+        if video_length not in config.VIDEO_LENGTHS:
+            raise ValueError(f"unsupported video length: {video_length}")
+        job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
+                  source=source_kind, topic=text, status="drafting",
+                  detail="writing script with the LLM", aspect_ratio=aspect_ratio,
+                  audio_mode=config.AUDIO_MODE, art_style=art_style,
+                  video_length=video_length)
+        job.save()
+        with self.lock:
+            self.jobs[job.id] = job
+        self._start_draft(job)
+        return job
+
+    def _start_draft(self, job: Job, feedback: str = ""):
+        threading.Thread(target=self._draft_script, args=(job, feedback), daemon=True).start()
+
+    def _draft_script(self, job: Job, feedback: str = ""):
+        """LLM-only work: runs in its own thread, never in the GPU queue."""
+        try:
+            job.set("drafting", "writing script with the LLM")
+            previous = None
+            pfile = job.dir / "plan.json"
+            if feedback and pfile.exists():
+                try:
+                    previous = json.loads(pfile.read_text(encoding="utf-8")).get("narration")
+                except Exception:  # noqa: BLE001
+                    previous = None
+            plan = llm.write_script_from_prompt(
+                job.topic, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
+                words=_length_params(job)[0], feedback=feedback, previous=previous)
+            plan["audio_mode"] = job.audio_mode
+            job.dir.mkdir(parents=True, exist_ok=True)
+            pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            job.set("awaiting_approval", "script ready - review and approve",
+                    title=plan.get("title", ""))
+            job.add_log("script drafted - awaiting approval")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"script drafting failed: {e}")
+            job.set("failed", f"script drafting failed: {e}", error=str(e))
+
+    def approve_script(self, job_id: str, title: str | None = None,
+                       narration: str | None = None) -> Job:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "awaiting_approval":
+                raise ValueError("job is not awaiting script approval")
+            pfile = job.dir / "plan.json"
+            plan = json.loads(pfile.read_text(encoding="utf-8"))
+            if title and title.strip():
+                plan["title"] = title.strip()
+            if narration and narration.strip():
+                plan["narration"] = narration.strip()
+            pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            job.set("queued", "script approved - waiting for video generation",
+                    title=plan.get("title", ""), script_approved=True)
+            job.add_log("script approved - queued for video generation")
+            self.queue.append(job_id)
+        return job
+
+    def redraft_script(self, job_id: str, feedback: str = "") -> Job:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "awaiting_approval":
+                raise ValueError("job is not awaiting script approval")
+            job.set("drafting", "rewriting script with the LLM")
+        self._start_draft(job, feedback=feedback)
+        return job
 
     def _maintenance_target(self, job_id: str):
         job = self.jobs.get(job_id)

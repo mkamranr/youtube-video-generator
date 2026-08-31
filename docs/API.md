@@ -10,7 +10,13 @@ Submit one job per URL.
 ```json
 { "urls": ["https://www.youtube.com/watch?v=..."], "aspect_ratio": "16:9 (Widescreen)", "art_style": "Pixar-like 3D" }
 ```
-`aspect_ratio` and `art_style` are optional (defaults from Settings) and validated against `GET /options`. Returns a list of job objects.
+Or create a job from a prompt instead of URLs (one job per request):
+
+```json
+{ "topic": "How bees make honey" }
+{ "description": "A gentle bedtime story about ..." }
+```
+Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional and validated against `GET /options`. Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
 List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running).
@@ -33,6 +39,7 @@ One job object:
 ```
 
 Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → clips → assembling → done | failed`.
+Prompt-based jobs (`source` = `topic`/`description`) start with `drafting → awaiting_approval` and enter the queue only when approved.
 
 ### `GET /jobs/{id}/details`
 Large payload for the job page: full `transcript` text, the parsed `plan` (narration/story, style, scenes, per-clip audio `segments`, `music` caption+lyrics, `seo_title`, `seo_description`, `thumbnail_prompt`), and the full `log`.
@@ -67,6 +74,20 @@ The request goes to the **front of the queue**; a currently running job pauses a
 ### `POST /jobs/{id}/assemble`
 Re-concatenate all clips and remix the audio into a new `final.mp4`. Runs **immediately in a background thread** (pure ffmpeg, no GPU) — it never waits behind rendering jobs. Clears `needs_assemble`.
 
+### `POST /jobs/{id}/approve`
+Approve the drafted script of a job in `awaiting_approval`, optionally with inline edits; the job then joins the video-generation queue.
+
+```json
+{ "title": "optional edited title", "narration": "optional edited script" }
+```
+
+### `POST /jobs/{id}/redraft`
+Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`).
+
+```json
+{ "feedback": "make it rhyme" }
+```
+
 ## Archive
 
 - `POST /jobs/{id}/archive` — hide a finished job from the main list.
@@ -75,7 +96,7 @@ Re-concatenate all clips and remix the audio into a new `final.mp4`. Runs **imme
 ## Settings & meta
 
 ### `GET /options`
-`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "..."}` — the valid submit-form values.
+`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "Auto"}` — the valid submit-form values.
 
 ### `GET /api/settings`
 `{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "art_styles": [...]}` — current values plus field metadata.

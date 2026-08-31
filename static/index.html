@@ -11,15 +11,27 @@
 <div id="nav"></div>
 <main>
   <h1 class="page-title">Generate a video</h1>
-  <p class="page-sub">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
+  <p class="page-sub" id="subText">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
 
   <div class="card">
-    <label for="urls">YouTube URLs</label>
+    <label for="urls" id="inputLabel">YouTube URLs</label>
     <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
     <div class="row" style="margin-top:14px">
       <div style="min-width:230px">
+        <label for="source">Create from</label>
+        <select id="source">
+          <option value="url" selected>YouTube URLs</option>
+          <option value="topic">Topic</option>
+          <option value="description">Description / short script</option>
+        </select>
+      </div>
+      <div style="min-width:230px">
         <label for="artstyle">Art style</label>
         <select id="artstyle"></select>
+      </div>
+      <div style="min-width:170px">
+        <label for="vlen">Video length</label>
+        <select id="vlen"></select>
       </div>
       <div style="min-width:230px">
         <label for="ar">Aspect ratio</label>
@@ -38,15 +50,38 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("home");
 
+const SOURCE_UI = {
+  url: { label: "YouTube URLs", ph: "https://www.youtube.com/watch?v=... (one per line)",
+         sub: "Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video." },
+  topic: { label: "Topic", ph: "e.g. How bees make honey",
+           sub: "Enter one topic. The LLM writes the script immediately (without using the video queue); you review and approve it, then video generation starts." },
+  description: { label: "Description / short script", ph: "Describe the video, or paste your own short script...",
+                 sub: "Write a description or short script for one video. The LLM builds the full script from it; you review and approve it, then video generation starts." },
+};
+
+function applySource() {
+  const ui = SOURCE_UI[$("#source").value];
+  $("#inputLabel").textContent = ui.label;
+  $("#urls").placeholder = ui.ph;
+  $("#subText").textContent = ui.sub;
+}
+
 async function submit() {
-  const urls = $("#urls").value.split("\n").map(s => s.trim()).filter(Boolean);
-  if (!urls.length) { toast("Enter at least one URL", true); return; }
+  const mode = $("#source").value;
+  const raw = $("#urls").value.trim();
+  if (!raw) { toast("Enter something first", true); return; }
+  let body = { aspect_ratio: $("#ar").value, art_style: $("#artstyle").value,
+               video_length: $("#vlen").value };
+  if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
+  else if (mode === "topic") body.topic = raw;
+  else body.description = raw;
   $("#go").disabled = true;
   try {
     const jobs = await api("/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ urls, aspect_ratio: $("#ar").value, art_style: $("#artstyle").value }) });
+      body: JSON.stringify(body) });
     $("#urls").value = "";
-    toast(`${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`);
+    toast(mode === "url" ? `${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`
+                         : "Job created - the script is being written");
     await refresh();
   } catch (e) { toast(e.message, true); }
   finally { $("#go").disabled = false; }
@@ -77,11 +112,12 @@ function jobCard(j) {
   const detail = j.error || j.detail || "";
   return `<a class="jobcard" href="/job/${j.id}">
     <div class="jc-main">
-      <div class="jc-title">${esc(j.title || j.url)}</div>
-      <div class="jc-url">${esc(j.url)}</div>
+      <div class="jc-title">${esc(j.title || j.url || j.topic)}</div>
+      <div class="jc-url">${esc(j.url || (j.topic ? (j.source === "description" ? "description: " : "topic: ") + j.topic.slice(0, 90) : ""))}</div>
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
+        ${j.video_length && j.video_length !== "Auto" ? `<span>${esc(j.video_length)}</span>` : ""}
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
@@ -114,9 +150,11 @@ async function loadOptions() {
   const o = await api("/options");
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
   $("#artstyle").innerHTML = o.art_styles.map(a => `<option ${a === o.default_art_style ? "selected" : ""}>${a}</option>`).join("");
+  $("#vlen").innerHTML = o.video_lengths.map(a => `<option ${a === o.default_video_length ? "selected" : ""}>${a}</option>`).join("");
 }
 
 $("#go").onclick = submit;
+$("#source").onchange = applySource;
 loadOptions();
 refresh();
 setInterval(refresh, 3000);

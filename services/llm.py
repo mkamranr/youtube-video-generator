@@ -92,6 +92,49 @@ Create a new short video inspired by this content. Return JSON with keys:
         plan.setdefault(key, "")
     if not plan["narration"].strip():
         raise RuntimeError("vLLM returned an empty narration")
+    if config.SCRIPT_REVIEW:
+        plan["narration"], plan["review_issues"] = review_script(
+            plan["narration"], f'a video titled "{plan.get("title", "")}"')
+    return plan
+
+
+def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
+                             words: int | None = None, feedback: str = "",
+                             previous: str | None = None) -> dict:
+    """Draft a video script (title/narration/style) from a user topic or description."""
+    words = words or config.NARRATION_WORDS
+    if art_style:
+        style_rule = (f'one sentence describing the global visual style applied to every shot. '
+                      f'It MUST follow this art direction: "{art_style}" - keep that exact aesthetic '
+                      f'and expand it with detail that fits this video.')
+    else:
+        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{STYLE_EXAMPLE}"'
+    if source_kind == "description":
+        task = ('The user wrote the following description / short script for a video. Build the video '
+                'script from it, staying FAITHFUL to their content, characters, structure and intent - '
+                'expand and polish it, do not replace it:\n"""' + text + '"""')
+    else:
+        task = 'Create an original kids video script about this topic: "' + text + '"'
+    revision = ""
+    if feedback:
+        revision = '\n\nThe user reviewed a previous draft and asked for these changes: "' + feedback + '"'
+        if previous:
+            revision += '\nPrevious draft narration:\n"""' + previous + '"""\nRevise it accordingly.'
+    user = f"""{task}{revision}
+
+Return JSON with keys:
+- "title": short title.
+- "narration": the full script as a voiceover of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will drive the whole video. Stay close to {words} words.
+- "style": {style_rule}
+"""
+    plan = _chat([{"role": "system", "content": _system()}, {"role": "user", "content": user}])
+    for key in ("title", "narration", "style"):
+        plan.setdefault(key, "")
+    if not plan["narration"].strip():
+        raise RuntimeError("vLLM returned an empty script")
+    if config.SCRIPT_REVIEW:
+        plan["narration"], plan["review_issues"] = review_script(
+            plan["narration"], f'a video about: "{text[:300]}"')
     return plan
 
 
@@ -110,7 +153,8 @@ def split_narration(narration: str, n: int) -> list:
 
 
 def write_scenes(narration: str, style: str, n: int, on_progress=None,
-                 kind: str = "voiceover narration", segments: list | None = None) -> list:
+                 kind: str = "voiceover narration", segments: list | None = None,
+                 on_review_issue=None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
@@ -154,8 +198,79 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
             scene = scene.get("prompt", json.dumps(scene))
         if not str(scene).strip():
             raise RuntimeError(f"vLLM returned no scene for segment {i + 1}")
-        scenes.append(str(scene).strip())
+        scene = str(scene).strip()
+        if config.SCRIPT_REVIEW:
+            if on_progress:
+                on_progress(f"reviewing scene {i + 1}/{n}")
+            scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind)
+            if issues and on_review_issue:
+                on_review_issue(i + 1, issues)
+        scenes.append(scene)
     return scenes
+
+
+def review_scene(scene: str, segment: str, style: str, i: int, n: int,
+                 kind: str = "voiceover narration") -> tuple:
+    """Second-pass review of one scene prompt against the audio it must match.
+
+    Returns (corrected_scene, issues). Catches inconsistencies like a letter or object
+    in the storyboard not matching what the audio actually says at that moment."""
+    if segment.strip():
+        audio_ctx = f'While this clip plays, the {kind} is EXACTLY this:\n"{segment}"'
+        rule = ("Every letter, word, object, creature, name and count that the storyboard displays or "
+                "features MUST match what the audio says during this clip - e.g. if the audio says "
+                "\"F is fairy\", the scene must show the letter F with the fairy, never a different letter. "
+                "IMPORTANT: the audio text comes from automatic speech transcription and may contain small "
+                "mis-hearings - if it pairs a letter with a word that clearly starts with a DIFFERENT letter "
+                "(e.g. \"A is for fairy\"), trust the word: fairy belongs to the letter F, so show F.")
+    else:
+        audio_ctx = f"During this clip the {kind} is INSTRUMENTAL - no words are heard."
+        rule = "The scene must not introduce letters/objects that belong to other clips' audio."
+    user = f"""You are reviewing a scene prompt for clip {i} of {n} of a children's video before it is rendered.
+Global visual style: {style}
+
+{audio_ctx}
+
+Scene prompt to review:
+\"\"\"{scene}\"\"\"
+
+Check strictly:
+1. {rule}
+2. Internal consistency (no contradictions within the storyboard).
+3. Content is gentle and safe for young children.
+4. The required format is kept (overview, timestamped storyboard, camera, audio, the closing no-text line).
+
+If everything is correct, return the scene UNCHANGED. If there are issues, FIX them with the smallest
+possible edits, keeping everything else identical.
+Return JSON: {{"issues": ["short description of each issue found, empty list if none"], "scene": "the final scene prompt"}}"""
+    out = _chat([{"role": "system", "content": _system()}, {"role": "user", "content": user}],
+                max_tokens=4000)
+    fixed = str(out.get("scene") or "").strip()
+    issues = [str(x) for x in (out.get("issues") or []) if str(x).strip()]
+    if not fixed:
+        return scene, []
+    return fixed, issues
+
+
+def review_script(narration: str, context: str = "") -> tuple:
+    """One review pass over a drafted script. Returns (corrected_narration, issues)."""
+    ctx = f"\nContext: {context}" if context else ""
+    user = f"""You are reviewing the final voiceover script of a children's video before production.{ctx}
+
+Script:
+\"\"\"{narration}\"\"\"
+
+Check strictly: factual slips, internal inconsistencies (e.g. a letter or item paired with the wrong
+word), ordering mistakes, anything not gentle and kid-safe, awkward phrasing that would sound wrong
+read aloud. If everything is correct, return the script UNCHANGED; otherwise fix it with minimal edits.
+Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": "the final script"}}"""
+    out = _chat([{"role": "system", "content": _system()}, {"role": "user", "content": user}],
+                max_tokens=4000)
+    fixed = str(out.get("narration") or "").strip()
+    issues = [str(x) for x in (out.get("issues") or []) if str(x).strip()]
+    if not fixed:
+        return narration, []
+    return fixed, issues
 
 
 def write_seo(title: str, narration: str, transcript: str) -> dict:
@@ -205,7 +320,8 @@ MUSIC_CAPTION_EXAMPLE = ("Global Metadata: Lo-fi hip-hop, chillhop. 78 BPM, D fl
 
 def write_music(title: str, narration: str, transcript: str,
                 standalone: bool = False, seconds: float | None = None,
-                max_seconds: float | None = None) -> dict:
+                max_seconds: float | None = None,
+                seconds_range: tuple | None = None) -> dict:
     """Caption + lyrics for the MiniMax Music3 model, derived from the video content.
 
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
@@ -213,7 +329,15 @@ def write_music(title: str, narration: str, transcript: str,
     transcript = transcript[:8000]
     if standalone:
         ceiling = int(max_seconds or ((seconds or 90) * 2))
-        if seconds:
+        if seconds_range:
+            lo, hi = int(seconds_range[0]), int(seconds_range[1])
+            target = (lo + hi) // 2
+            length_rule = (f"Aim for a song BETWEEN {lo} and {hi} seconds; the recording is HARD-CUT at "
+                           f"{ceiling} seconds, so the lyrics MUST reach the story's ENDING and the song "
+                           f"must finish within that range. Budget roughly 2 sung words per second: about "
+                           f"{target * 2} words of lyrics in total across all sections. If the content "
+                           f"cannot fit, compress or summarize it - never leave the story unfinished.")
+        elif seconds:
             target = int(seconds)
             length_rule = (f"Aim for a song of about {target} seconds; the recording is HARD-CUT at "
                            f"{ceiling} seconds, so the lyrics MUST reach the story's ENDING and the song "

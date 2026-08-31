@@ -6,6 +6,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 
 ## Features
 
+- **Three ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), or your own **description / short script** (the LLM builds on it faithfully). Topic/description jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail.
 - **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
 - **Channel branding** — a configurable channel name (default: *Habibi Kids Channel*) replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
@@ -97,7 +98,8 @@ A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting
 
 ## Usage
 
-1. **Submit** — paste one or more YouTube URLs (one per line), pick an **Art style** and **Aspect ratio**, click *Generate*. Each URL becomes a job; jobs run one at a time on the GPU.
+1. **Submit** — choose a source in *Create from*, and optionally a **Video length** (Auto, 30-45 s, 45-60 s, 1-2 min, 2-3 min) — a soft target that guides the script length and the generated song/narration duration: paste YouTube URLs (one per line), enter a **topic**, or write a **description / short script** (one job per topic/description submission). Pick an **Art style** and **Aspect ratio**, click *Generate*. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
+   - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
 3. **Publish** — when done, download `final.mp4`, `thumbnail.jpg` (1280×720), and copy the SEO title/description from the job page.
 

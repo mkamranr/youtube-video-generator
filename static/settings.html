@@ -79,6 +79,12 @@
         </div>
         <div class="field">
           <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="SCRIPT_REVIEW"><span class="track"></span>
+            LLM review pass</label>
+          <div class="hint">Each generated scene and drafted script is reviewed once more by the LLM and inconsistencies (wrong letters, mismatched objects) are fixed automatically</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
           <label class="switch"><input type="checkbox" id="COMFY_CLEANUP"><span class="track"></span>
             Clean up ComfyUI</label>
           <div class="hint">Scrub each job's rendered files and uploaded frames on the ComfyUI server (storage reclaimed) and delete its history, as soon as artifacts are downloaded</div>
@@ -117,7 +123,7 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "CHANNEL_NAME",
-                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP"];
+                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW"];
 
 async function load() {
   const d = await api("/api/settings");
