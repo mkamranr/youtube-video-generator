@@ -39,7 +39,7 @@
 <body>
 <div id="nav"></div>
 <main>
-  <a class="back" href="/">← All jobs</a>
+  <a class="back" href="/" id="backLink">All jobs</a>
   <div class="job-head">
     <h1 id="title">…</h1>
     <span id="pill"></span>
@@ -160,6 +160,7 @@
 <script src="/js/common.js"></script>
 <script>
 document.getElementById("nav").outerHTML = navbar("home");
+$("#backLink").innerHTML = icon("back") + " All jobs";
 const jobId = location.pathname.split("/").pop();
 const F = name => `/jobs/${jobId}/files/${name}`;
 

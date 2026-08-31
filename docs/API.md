@@ -96,7 +96,7 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 ## Settings & meta
 
 ### `GET /options`
-`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "Auto"}` — the valid submit-form values.
+`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url"}` — the valid submit-form values and configured defaults.
 
 ### `GET /api/settings`
 `{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "art_styles": [...]}` — current values plus field metadata.

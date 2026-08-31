@@ -1,5 +1,7 @@
 """FastAPI web app: submit YouTube URLs, watch progress, download the generated video."""
 import json
+import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -243,7 +245,8 @@ def job_file(job_id: str, name: str):
 def options():
     return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
-            "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH}
+            "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
+            "default_source": config.DEFAULT_SOURCE}
 
 
 @app.get("/api/settings")
@@ -251,7 +254,8 @@ def get_settings():
     meta = {k: {"label": v[2], "help": v[3], "type": ("bool" if v[0] is bool else "number" if v[0] in (int, float) else "text")}
             for k, v in config.EDITABLE_SETTINGS.items()}
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
-            "art_styles": list(config.ART_STYLES)}
+            "art_styles": list(config.ART_STYLES), "video_lengths": list(config.VIDEO_LENGTHS),
+            "sources": config.SOURCES}
 
 
 @app.put("/api/settings")
@@ -283,6 +287,78 @@ def health():
     with ThreadPoolExecutor(len(targets)) as ex:
         results = dict(zip(targets, ex.map(ping, targets.values())))
     return results
+
+
+# ---- art style previews ----------------------------------------------------
+PREVIEW_SUBJECT = ("A cheerful young fox explorer waving happily in a sunny meadow, holding a small "
+                   "red balloon. No text, subtitles, logos or watermarks of any kind.")
+_preview_state = {"generating": False, "current": "", "errors": 0}
+_preview_lock = threading.Lock()
+
+
+def _style_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def _preview_dir():
+    d = config.STATIC_DIR / "style_previews"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@app.get("/api/style-previews")
+def style_previews():
+    d = _preview_dir()
+    previews = {}
+    for name in config.ART_STYLES:
+        f = d / f"{_style_slug(name)}.jpg"
+        previews[name] = f"/style_previews/{f.name}" if f.exists() and f.stat().st_size > 1000 else None
+    return {"previews": previews, "generating": _preview_state["generating"],
+            "done": sum(1 for v in previews.values() if v), "total": len(previews),
+            "current": _preview_state["current"], "errors": _preview_state["errors"]}
+
+
+@app.post("/api/style-previews")
+def generate_style_previews():
+    with _preview_lock:
+        if _preview_state["generating"]:
+            raise HTTPException(409, "preview generation is already running")
+        _preview_state["generating"] = True
+        _preview_state["errors"] = 0
+    threading.Thread(target=_generate_previews, daemon=True).start()
+    return {"started": True}
+
+
+def _generate_previews():
+    """Render one sample image per art style through the video model (skips existing)."""
+    from services.comfy import ComfyClient
+    from services import video as videosvc
+    d = _preview_dir()
+    try:
+        client = ComfyClient()
+        template = client.load_workflow(config.T2V_WORKFLOW)
+        for name, desc in config.ART_STYLES.items():
+            slug = _style_slug(name)
+            out = d / f"{slug}.jpg"
+            if out.exists() and out.stat().st_size > 1000:
+                continue
+            _preview_state["current"] = name
+            raw = d / f"_{slug}_raw.mp4"
+            try:
+                wf = client.build_thumbnail(template, f"{desc}\n\n{PREVIEW_SUBJECT}",
+                                            f"videogen/_style_previews/{slug}")
+                client.run(wf, raw, cleanup=config.COMFY_CLEANUP)
+                videosvc.make_thumbnail(raw, out, 640, 360)
+            except Exception:  # noqa: BLE001 - skip this style, keep going
+                _preview_state["errors"] += 1
+            finally:
+                try:
+                    raw.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    finally:
+        _preview_state["generating"] = False
+        _preview_state["current"] = ""
 
 
 # ---- pages ----------------------------------------------------------------

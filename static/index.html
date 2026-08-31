@@ -10,40 +10,65 @@
 <body>
 <div id="nav"></div>
 <main>
-  <h1 class="page-title">Generate a video</h1>
-  <p class="page-sub" id="subText">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Jobs</h1>
+      <p class="page-sub" style="margin:0">Videos for Habibi Kids Channel — generated, reviewed, published.</p>
+    </div>
+    <div class="spacer"></div>
+    <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search jobs..."></div>
+    <button class="btn" id="openCreate"></button>
+  </div>
 
-  <div class="card">
-    <label for="urls" id="inputLabel">YouTube URLs</label>
-    <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
-    <div class="row" style="margin-top:14px">
-      <div style="min-width:230px">
-        <label for="source">Create from</label>
-        <select id="source">
-          <option value="url" selected>YouTube URLs</option>
-          <option value="topic">Topic</option>
-          <option value="description">Description / short script</option>
-        </select>
+  <div class="modal-backdrop" id="createModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="modalTitle">New Video</h3>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="closeCreate" title="Close"></button>
       </div>
-      <div style="min-width:230px">
-        <label for="artstyle">Art style</label>
-        <select id="artstyle"></select>
+      <div class="modal-body">
+        <p class="page-sub" id="subText" style="margin-bottom:16px">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
+        <div class="row" style="margin-bottom:14px">
+          <div class="grow" style="min-width:200px">
+            <label for="source">Create from</label>
+            <select id="source">
+              <option value="url" selected>YouTube URLs</option>
+              <option value="topic">Topic</option>
+              <option value="description">Description / short script</option>
+            </select>
+          </div>
+          <div class="grow" style="min-width:160px">
+            <label for="vlen">Video length</label>
+            <select id="vlen"></select>
+          </div>
+          <div class="grow" style="min-width:180px">
+            <label for="ar">Aspect ratio</label>
+            <select id="ar"></select>
+          </div>
+        </div>
+        <label for="urls" id="inputLabel">YouTube URLs</label>
+        <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
+        <div style="margin-top:14px;max-width:420px">
+          <label for="artstyle">Art style</label>
+          <div class="combo">
+            <input type="text" id="artstyle" autocomplete="off" spellcheck="false" placeholder="Search art styles...">
+            <div class="combo-list" id="artstyleList" hidden></div>
+          </div>
+          <img id="stylePreview" alt="style preview" hidden
+               style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;margin-top:10px">
+        </div>
+        <div class="row" style="margin-top:18px">
+          <button class="btn" id="go"></button>
+          <button class="btn secondary" id="cancelCreate" type="button">Cancel</button>
+        </div>
       </div>
-      <div style="min-width:170px">
-        <label for="vlen">Video length</label>
-        <select id="vlen"></select>
-      </div>
-      <div style="min-width:230px">
-        <label for="ar">Aspect ratio</label>
-        <select id="ar"></select>
-      </div>
-      <button class="btn" id="go">Generate</button>
     </div>
   </div>
 
   <div class="card" style="padding:20px 20px 8px">
     <h2>Jobs <span class="count" id="count"></span></h2>
-    <div id="jobs"><div class="empty">No jobs yet — submit a URL above.</div></div>
+    <div id="jobs"></div>
   </div>
 </main>
 <script src="/js/common.js"></script>
@@ -70,6 +95,9 @@ async function submit() {
   const mode = $("#source").value;
   const raw = $("#urls").value.trim();
   if (!raw) { toast("Enter something first", true); return; }
+  if (artStyles.length && !artStyles.includes($("#artstyle").value)) {
+    toast("Pick an art style from the list", true); return;
+  }
   let body = { aspect_ratio: $("#ar").value, art_style: $("#artstyle").value,
                video_length: $("#vlen").value };
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
@@ -80,6 +108,7 @@ async function submit() {
     const jobs = await api("/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
     $("#urls").value = "";
+    closeCreate();
     toast(mode === "url" ? `${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`
                          : "Job created - the script is being written");
     await refresh();
@@ -138,23 +167,91 @@ function jobCard(j) {
   </a>`;
 }
 
+let lastJobs = [];
+
+function applyFilter(jobs) {
+  const q = ($("#jobSearch").value || "").trim().toLowerCase();
+  if (!q) return jobs;
+  return jobs.filter(j =>
+    [j.title, j.url, j.topic, j.id, j.status, j.art_style].join(" ").toLowerCase().includes(q));
+}
+
+function render(jobs) {
+  $("#count").textContent = lastJobs.length ? `(${lastJobs.length})` : "";
+  if (jobs.length) { $("#jobs").innerHTML = jobs.map(jobCard).join(""); return; }
+  $("#jobs").innerHTML = lastJobs.length
+    ? `<div class="empty">${icon("search")}No jobs match your search.</div>`
+    : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
+}
+
 async function refresh() {
   try {
-    const jobs = await api("/jobs");
-    $("#count").textContent = jobs.length ? `(${jobs.length})` : "";
-    $("#jobs").innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No jobs yet — submit a URL above.</div>`;
+    lastJobs = await api("/jobs");
+    render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
+}
+
+let stylePreviews = {};
+let artStyles = [];
+
+function renderStyleList(filter) {
+  const q = (filter || "").toLowerCase();
+  const items = artStyles.filter(a => a.toLowerCase().includes(q));
+  const cur = $("#artstyle").value;
+  $("#artstyleList").innerHTML = items.length
+    ? items.map(a => `<div class="combo-item${a === cur ? " sel" : ""}" data-v="${esc(a)}">${esc(a)}</div>`).join("")
+    : `<div class="combo-empty">No matching styles</div>`;
+  $("#artstyleList").hidden = false;
+}
+
+function hideStyleList() { $("#artstyleList").hidden = true; }
+
+function updateStylePreview() {
+  const url = stylePreviews[$("#artstyle").value];
+  const img = $("#stylePreview");
+  if (url) { img.src = url; img.hidden = false; } else { img.hidden = true; }
 }
 
 async function loadOptions() {
   const o = await api("/options");
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
-  $("#artstyle").innerHTML = o.art_styles.map(a => `<option ${a === o.default_art_style ? "selected" : ""}>${a}</option>`).join("");
+  artStyles = o.art_styles;
+  $("#artstyle").value = o.default_art_style;
+  $("#source").value = o.default_source || "url";
+  applySource();
   $("#vlen").innerHTML = o.video_lengths.map(a => `<option ${a === o.default_video_length ? "selected" : ""}>${a}</option>`).join("");
+  try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
+  updateStylePreview();
 }
+
+function openCreate() { $("#createModal").classList.add("open"); setTimeout(() => $("#urls").focus(), 150); }
+function closeCreate() { $("#createModal").classList.remove("open"); }
+$("#openCreate").innerHTML = icon("plus") + " Create new video";
+$("#go").innerHTML = icon("check") + " Generate";
+$("#closeCreate").innerHTML = icon("x");
+$("#openCreate").onclick = openCreate;
+$("#closeCreate").onclick = closeCreate;
+$("#cancelCreate").onclick = closeCreate;
+$("#createModal").addEventListener("click", ev => { if (ev.target === $("#createModal")) closeCreate(); });
+document.addEventListener("keydown", ev => {
+  if (ev.key !== "Escape") return;
+  if (!$("#artstyleList").hidden) { hideStyleList(); return; }
+  closeCreate();
+});
 
 $("#go").onclick = submit;
 $("#source").onchange = applySource;
+$("#artstyle").addEventListener("focus", () => renderStyleList(""));
+$("#artstyle").addEventListener("input", () => { renderStyleList($("#artstyle").value); updateStylePreview(); });
+$("#artstyleList").addEventListener("mousedown", ev => {
+  const item = ev.target.closest(".combo-item");
+  if (!item) return;
+  $("#artstyle").value = item.dataset.v;
+  hideStyleList(); updateStylePreview();
+});
+document.addEventListener("click", ev => { if (!ev.target.closest(".combo")) hideStyleList(); });
+$("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
+$("#jobSearch").addEventListener("input", () => render(applyFilter(lastJobs)));
 loadOptions();
 refresh();
 setInterval(refresh, 3000);

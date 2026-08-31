@@ -21,6 +21,15 @@
     <div style="margin-top:14px"><button class="btn secondary sm" id="recheck">Re-check</button></div>
   </div>
 
+  <div class="card">
+    <h2>Art style previews</h2>
+    <div class="hint" style="margin-bottom:10px">Renders one sample image per art style with your video model (~30 s each, runs in the background, skips already-generated ones). Shown on the submit form when picking a style.</div>
+    <div class="row">
+      <button class="btn secondary sm" id="genPreviews" type="button">Generate style previews</button>
+      <span class="hint" id="previewStatus"></span>
+    </div>
+  </div>
+
   <form id="form">
     <div class="card">
       <h2>Services</h2>
@@ -45,6 +54,20 @@
           <label for="DEFAULT_ART_STYLE">Default art style</label>
           <select id="DEFAULT_ART_STYLE"></select>
           <div class="hint">Preselected art style for new jobs</div>
+        </div>
+        <div class="field">
+          <label for="DEFAULT_SOURCE">Default source (Create from)</label>
+          <select id="DEFAULT_SOURCE">
+            <option value="url">YouTube URLs</option>
+            <option value="topic">Topic</option>
+            <option value="description">Description / short script</option>
+          </select>
+          <div class="hint">Preselected creation mode in the New Video dialog</div>
+        </div>
+        <div class="field">
+          <label for="DEFAULT_VIDEO_LENGTH">Default video length</label>
+          <select id="DEFAULT_VIDEO_LENGTH"></select>
+          <div class="hint">Preselected target length for new jobs</div>
         </div>
         <div class="field">
           <label for="NARRATION_WORDS">Narration length (words)</label>
@@ -122,13 +145,14 @@
 <script src="/js/common.js"></script>
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
-const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "CHANNEL_NAME",
+const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "DEFAULT_SOURCE", "DEFAULT_VIDEO_LENGTH", "CHANNEL_NAME",
                 "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW"];
 
 async function load() {
   const d = await api("/api/settings");
   $("#DEFAULT_ASPECT_RATIO").innerHTML = d.aspect_ratios.map(a => `<option>${a}</option>`).join("");
   $("#DEFAULT_ART_STYLE").innerHTML = d.art_styles.map(a => `<option>${a}</option>`).join("");
+  $("#DEFAULT_VIDEO_LENGTH").innerHTML = d.video_lengths.map(a => `<option>${a}</option>`).join("");
   for (const k of FIELDS) {
     const el = document.getElementById(k);
     if (el.type === "checkbox") el.checked = !!d.settings[k];
@@ -167,8 +191,25 @@ $("#form").addEventListener("submit", async ev => {
   finally { $("#save").disabled = false; }
 });
 
+async function previewStatus(loop) {
+  try {
+    const d = await api("/api/style-previews");
+    $("#previewStatus").textContent = d.generating
+      ? `generating… ${d.done}/${d.total}${d.current ? " (" + d.current + ")" : ""}`
+      : `${d.done}/${d.total} generated`;
+    if (d.generating && loop) setTimeout(() => previewStatus(true), 5000);
+  } catch (e) { /* ignore */ }
+}
+
+$("#genPreviews").onclick = async () => {
+  try { await api("/api/style-previews", { method: "POST" }); toast("Preview generation started"); }
+  catch (e) { toast(e.message, true); }
+  previewStatus(true);
+};
+
 load().catch(e => toast(e.message, true));
 checkHealth();
+previewStatus(true);
 </script>
 </body>
 </html>

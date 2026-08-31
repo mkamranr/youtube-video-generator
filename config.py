@@ -84,6 +84,8 @@ VIDEO_LENGTHS = {
     "2-3 minutes": (120, 180),
 }
 DEFAULT_VIDEO_LENGTH = "Auto"
+SOURCES = ["url", "topic", "description"]
+DEFAULT_SOURCE = "url"
 
 
 def video_length_range(name: str):
@@ -126,6 +128,10 @@ EDITABLE_SETTINGS = {
                              "Preselected aspect ratio for new jobs"),
     "DEFAULT_ART_STYLE": (str, lambda v: v in ART_STYLES, "Default art style",
                           "Preselected art style for new jobs"),
+    "DEFAULT_SOURCE": (str, lambda v: v in SOURCES, "Default source (Create from)",
+                       "Preselected creation mode in the New Video dialog: url, topic or description"),
+    "DEFAULT_VIDEO_LENGTH": (str, lambda v: v in VIDEO_LENGTHS, "Default video length",
+                             "Preselected target length for new jobs"),
     "CHANNEL_NAME": (str, lambda v: 0 < len(v.strip()) <= 80, "Channel name",
                      "Videos are branded for this channel; any channel or brand name in the source content is replaced with it"),
     "CLIP_SECONDS": (float, lambda v: 2 <= v <= 15, "Clip length (s)",

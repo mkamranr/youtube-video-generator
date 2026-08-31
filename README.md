@@ -7,7 +7,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 ## Features
 
 - **Three ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), or your own **description / short script** (the LLM builds on it faithfully). Topic/description jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
-- **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail.
+- **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
 - **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
 - **Channel branding** — a configurable channel name (default: *Habibi Kids Channel*) replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
 - **Three audio modes**

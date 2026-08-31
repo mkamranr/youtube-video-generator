@@ -10,8 +10,14 @@
 <body>
 <div id="nav"></div>
 <main>
-  <h1 class="page-title">Archived jobs</h1>
-  <p class="page-sub">Finished jobs you've archived. Their files stay in <code>output/&lt;job_id&gt;/</code>; unarchive to bring them back to the main list, or delete to remove the files for good.</p>
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Archived jobs</h1>
+      <p class="page-sub" style="margin:0">Files stay in <code>output/&lt;job_id&gt;/</code>; unarchive to bring a job back, or delete to remove it for good.</p>
+    </div>
+    <div class="spacer"></div>
+    <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search archived jobs..."></div>
+  </div>
   <div id="jobs"><div class="empty">No archived jobs.</div></div>
 </main>
 <script src="/js/common.js"></script>
@@ -54,12 +60,31 @@ function jobCard(j) {
   </a>`;
 }
 
+let lastJobs = [];
+
+function applyFilter(jobs) {
+  const q = ($("#jobSearch").value || "").trim().toLowerCase();
+  if (!q) return jobs;
+  return jobs.filter(j =>
+    [j.title, j.url, j.topic, j.id, j.status, j.art_style].join(" ").toLowerCase().includes(q));
+}
+
+function render(jobs) {
+  if (jobs.length) { $("#jobs").innerHTML = jobs.map(jobCard).join(""); return; }
+  $("#jobs").innerHTML = lastJobs.length
+    ? `<div class="empty">${icon("search")}No archived jobs match your search.</div>`
+    : `<div class="empty">${icon("archive")}No archived jobs.</div>`;
+}
+
 async function refresh() {
   try {
-    const jobs = await api("/jobs?archived=true");
-    $("#jobs").innerHTML = jobs.length ? jobs.map(jobCard).join("") : `<div class="empty">No archived jobs.</div>`;
+    lastJobs = await api("/jobs?archived=true");
+    render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
 }
+
+$("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
+$("#jobSearch").addEventListener("input", () => render(applyFilter(lastJobs)));
 refresh();
 </script>
 </body>
