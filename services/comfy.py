@@ -246,6 +246,48 @@ class ComfyClient:
         self.forget_history(prompt_id)
         return ok
 
+    def sweep_orphans(self, skip_ids=()) -> int:
+        """Scrub every videogen output left on the server (and forget its history) plus any
+        full-size uploaded frames, except those belonging to the given active job ids.
+        Catches renders orphaned by retries, crashes and restarts. Returns files scrubbed."""
+        scrubbed = 0
+        try:
+            hist = requests.get(f"{self.url}/history", timeout=30).json()
+        except Exception:  # noqa: BLE001
+            return 0
+        for pid, h in hist.items():
+            files = [f for o in h.get("outputs", {}).values()
+                     for k in ("videos", "images", "gifs", "audio") for f in (o.get(k) or [])]
+            ours = [f for f in files if str(f.get("subfolder", "")).startswith("videogen")]
+            if not ours:
+                continue
+            if any(sid and sid in f.get("subfolder", "") for f in ours for sid in skip_ids):
+                continue
+            for f in ours:
+                if self.scrub_file(f.get("type", "output"), f.get("subfolder", ""), f["filename"]):
+                    scrubbed += 1
+            self.forget_history(pid)
+        try:
+            inp = requests.get(f"{self.url}/internal/files/input", timeout=20).json()
+        except Exception:  # noqa: BLE001
+            return scrubbed
+        for entry in inp:
+            name = str(entry).split(" [")[0]
+            if not name.startswith("videogen"):
+                continue
+            if any(sid and sid in name for sid in skip_ids):
+                continue
+            try:
+                r = requests.get(f"{self.url}/view", params={"filename": name, "type": "input"},
+                                 stream=True, timeout=15)
+                n = int(r.headers.get("content-length", 0))
+                r.close()
+            except Exception:  # noqa: BLE001
+                continue
+            if n > 1000 and self.scrub_file("input", "", name):
+                scrubbed += 1
+        return scrubbed
+
     def interrupt_if_ours(self, prefix: str) -> bool:
         """Interrupt the currently running ComfyUI prompt ONLY if it belongs to us."""
         try:

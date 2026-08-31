@@ -454,6 +454,20 @@ class JobManager:
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self._load_existing()
         self.worker.start()
+        threading.Thread(target=self._sweep_comfy, daemon=True).start()
+
+    def _sweep_comfy(self):
+        """Scrub orphaned videogen assets on the ComfyUI server (retries/crashes leave some)."""
+        if not config.COMFY_CLEANUP:
+            return
+        try:
+            with self.lock:
+                skip = [j for j in ([self.current] + list(self.queue)) if j]
+            n = comfy.ComfyClient().sweep_orphans(skip_ids=skip)
+            if n:
+                print(f"comfy sweep: scrubbed {n} orphaned file(s)")
+        except Exception as e:  # noqa: BLE001
+            print(f"comfy sweep failed: {e}")
 
     def _load_existing(self):
         config.OUTPUT_DIR.mkdir(exist_ok=True)
@@ -518,6 +532,7 @@ class JobManager:
                 run_job(job)
             finally:
                 self.current = None
+                threading.Thread(target=self._sweep_comfy, daemon=True).start()
 
     def cancel(self, job_id: str):
         with self.lock:
