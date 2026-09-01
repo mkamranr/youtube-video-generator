@@ -25,6 +25,20 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup (per artifact, plus an **orphan sweep** at startup and after every job that catches renders left behind by retries or crashes), transcript quality gating, and a self-restarting server watchdog.
 - **Polished web UI** — dark/light theme, a **New Video** dialog behind a *Create new video* button, a type-to-search art-style picker with live model-rendered previews, search across the Jobs and Archived Jobs lists, configurable dialog defaults, live progress with a pipeline stepper, rich per-job detail pages, archive/cancel/delete, and a runtime Settings page with service health checks.
 
+## Screenshots
+
+**Creating a video** — the New Video dialog: pick a source (URL / topic / description), target length, aspect ratio, and a searchable art style with a live preview rendered by your own model:
+
+![New Video dialog](screenshots/video_1.JPG)
+
+**A finished job** — pipeline stepper, job metadata, and the final portrait video ("Jack and Jill's Pencil Adventure", Pencil Sketch style, 9:16):
+
+![Job page with finished video](screenshots/video_2.JPG)
+
+**The clip grid** — every 5-second clip with checkbox selection for targeted regeneration:
+
+![Clip grid with regeneration selection](screenshots/video_3.JPG)
+
 ## Architecture
 
 ```
