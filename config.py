@@ -13,6 +13,8 @@ OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 LOGO_FILE = BASE_DIR / "channel_logo.png"   # uploaded via Settings; overlaid on thumbnails
+VOICES_DIR = BASE_DIR / "reference_audio"   # reference voices for Fish Speech cloning (Settings)
+VOICES_INDEX = VOICES_DIR / "voices.json"
 YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client (Desktop type)
 YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # stored OAuth token (gitignored)
 
@@ -119,7 +121,7 @@ NARRATION_WORDS = 170           # target narration length (~65-75 s of speech)
 CLIP_AUDIO_VOLUME = 0.3         # model-generated ambience level under the narration
 CLIP_RETRIES = 1
 AUDIO_MODES = ["music", "narration", "narration+music"]
-AUDIO_MODE = "music"            # music: the song is the only audio and drives the video length
+AUDIO_MODE = "music"            # default preselection for the New Video dialog audio choice
 MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode)
 TARGET_VIDEO_SECONDS = 90       # music mode: requested song length (the model may end earlier)
 MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
@@ -129,6 +131,10 @@ SCRIPT_REVIEW = True            # LLM double-checks every generated scene and dr
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
 YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)
 WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
+TTS_TEMPERATURE = 0.8           # Fish Speech sampling temperature
+TTS_TOP_P = 0.8                 # Fish Speech nucleus sampling
+TTS_REPETITION_PENALTY = 1.1    # Fish Speech penalty against repeated tokens
+TTS_CHUNK_CHARS = 300           # max characters per Fish Speech request (long text is split)
 
 # ---- fixed limits ---------------------------------------------------------
 MAX_TRANSCRIPT_CHARS = 60000    # ~15k tokens, leaves room in the 32k context
@@ -141,6 +147,14 @@ EDITABLE_SETTINGS = {
     "VLLM_URL": (str, lambda v: v.startswith("http"), "vLLM URL", "OpenAI-compatible base URL (…/v1)"),
     "VLLM_MODEL": (str, lambda v: len(v) > 0, "vLLM model id", "Model name served by vLLM"),
     "FISH_URL": (str, lambda v: v.startswith("http"), "Fish TTS URL", "Gradio URL of Fish Speech"),
+    "TTS_TEMPERATURE": (float, lambda v: 0.1 <= v <= 2.0, "TTS temperature",
+                        "Fish Speech sampling temperature (0.1-2)"),
+    "TTS_TOP_P": (float, lambda v: 0.1 <= v <= 1.0, "TTS top-p",
+                  "Fish Speech nucleus sampling (0.1-1)"),
+    "TTS_REPETITION_PENALTY": (float, lambda v: 0.9 <= v <= 2.0, "TTS repetition penalty",
+                               "Fish Speech penalty against repeated tokens (0.9-2)"),
+    "TTS_CHUNK_CHARS": (int, lambda v: 100 <= v <= 500, "TTS chunk length (chars)",
+                        "Narration is split into chunks of at most this many characters per Fish request (100-500)"),
     "DEFAULT_ASPECT_RATIO": (str, lambda v: v in ASPECT_RATIOS, "Default aspect ratio",
                              "Preselected aspect ratio for new jobs"),
     "DEFAULT_ART_STYLE": (str, lambda v: v in ART_STYLES, "Default art style",
@@ -161,8 +175,8 @@ EDITABLE_SETTINGS = {
                        "8-step turbo sampling: ~3x faster, lower quality"),
     "CLIP_RETRIES": (int, lambda v: 0 <= v <= 5, "Clip retries",
                      "Retries per failed clip before failing the job"),
-    "AUDIO_MODE": (str, lambda v: v in AUDIO_MODES, "Audio mode",
-                   "music: song only, synced per clip; narration: voiceover only; narration+music: both"),
+    "AUDIO_MODE": (str, lambda v: v in AUDIO_MODES, "Default audio (new jobs)",
+                   "Preselected audio choice in the New Video dialog: music = Generate Song; narration/narration+music = Generate Voiceover"),
     "MUSIC_VOLUME": (float, lambda v: 0 <= v <= 1, "Music volume",
                      "Music level under the narration (narration+music mode, 0-1)"),
     "TARGET_VIDEO_SECONDS": (float, lambda v: v == 0 or 15 <= v <= 300, "Target video length (s)",

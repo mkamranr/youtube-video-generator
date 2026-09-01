@@ -1,6 +1,6 @@
 # VideoGen — AI Video Generator for Habibi Kids Channel
 
-VideoGen turns any YouTube video into a brand-new, kid-safe animated video — complete with an original soundtrack, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — using locally hosted AI services end to end.
+VideoGen turns any YouTube video into a brand-new, kid-safe animated video — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
 
 Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
 
@@ -10,10 +10,8 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
 - **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
 - **Channel branding** — a configurable channel name (default: *Habibi Kids Channel*) replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
-- **Three audio modes**
-  - `music` (default): an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals.
-  - `narration`: a TTS voiceover drives the video.
-  - `narration+music`: voiceover plus a background music bed.
+- **Song or voiceover, chosen per video** — the New Video dialog offers **Generate Song** (an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals) or **Generate Voiceover** (the LLM writes the narration, Fish Speech speaks it, and a quiet music bed is mixed underneath). The `AUDIO_MODE` setting only preselects the dialog; a pure `narration` mode (no music bed) remains available via the setting/API.
+- **Voice cloning with reference voices** — upload short speech samples (plus the exact text spoken in them) on the Settings page, then pick a voice per voiceover video; Fish Speech clones it for the narration. No selection = the model's default voice.
 - **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each 5-second clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
 - **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
 - **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with your **channel logo** (uploaded in Settings) overlaid top-right. One-click regeneration on any finished job.
@@ -116,10 +114,10 @@ A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting
 
 ## Usage
 
-1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; or a **description / short script** — one job per topic/description), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, and an **Art style** (type to search; a preview image shows how each style looks). All four fields pre-select your defaults from Settings. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
+1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; or a **description / short script** — one job per topic/description), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), and an **Art style** (type to search; a preview image shows how each style looks). The fields pre-select your defaults from Settings. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
    - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
-3. **Publish** — when done, download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
+3. **Publish** — when done, push the video straight to your channel with **Upload to YouTube** (private by default, with SEO title/description, thumbnail and made-for-kids flag applied — see docs/YOUTUBE.md for the one-time setup), or download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
 
 ### Revising a finished video
 
@@ -145,12 +143,16 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `VLLM_URL` | `http://…:8000/v1` | OpenAI-compatible LLM endpoint |
 | `VLLM_MODEL` | `agents-a1` | Model id served by vLLM |
 | `FISH_URL` | `http://…:7860/` | Fish Speech Gradio URL |
+| `TTS_TEMPERATURE` | `0.8` | Fish Speech sampling temperature (0.1–2) |
+| `TTS_TOP_P` | `0.8` | Fish Speech nucleus sampling (0.1–1) |
+| `TTS_REPETITION_PENALTY` | `1.1` | Fish Speech penalty against repeated tokens (0.9–2) |
+| `TTS_CHUNK_CHARS` | `300` | Max characters per Fish request; longer narration is split and concatenated (100–500) |
 | `CHANNEL_NAME` | `Habibi Kids Channel` | Channel branding; replaces source channel/brand names |
 | `DEFAULT_ART_STYLE` | `Pixar-like 3D` | Preselected art style for new jobs |
 | `DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` | Preselected aspect ratio |
 | `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |
 | `DEFAULT_VIDEO_LENGTH` | `Auto` | Preselected target length for new jobs |
-| `AUDIO_MODE` | `music` | `music` / `narration` / `narration+music` |
+| `AUDIO_MODE` | `music` | Default preselection for the dialog's Audio choice: `music` / `narration` / `narration+music` |
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
 | `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
 | `NARRATION_WORDS` | `170` | Narration length target (narration modes) |
@@ -165,7 +167,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 
 Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
 
-The Settings page also hosts two non-setting tools: **Channel logo** (upload once; overlaid on the top-right corner of every generated thumbnail; stored locally, never committed) and **Generate style previews** (renders the art-style sample images with your own model).
+The Settings page also hosts three non-setting tools: **Channel logo** (upload once; overlaid on the top-right corner of every generated thumbnail; stored locally, never committed), **Reference voices** (upload named speech samples with their transcripts for Fish Speech voice cloning; stored in `reference_audio/`, never committed), and **Generate style previews** (renders the art-style sample images with your own model).
 
 ## Output layout
 

@@ -16,7 +16,7 @@ Or create a job from a prompt instead of URLs (one job per request):
 { "topic": "How bees make honey" }
 { "description": "A gentle bedtime story about ..." }
 ```
-Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional and validated against `GET /options`. Returns a list of job objects.
+Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional and validated against `GET /options`. `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover; default: the `AUDIO_MODE` setting) picks the audio pipeline per job, and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = default voice; ignored when `audio_mode` is `music`). Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
 List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running).
@@ -110,10 +110,19 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 - `POST /api/channel-logo` — multipart upload (`file`); stored as PNG (max 5 MB, downscaled to <=1024 px wide) and overlaid on the top-right corner of every generated thumbnail.
 - `GET /channel-logo` — the current logo (404 if none). `DELETE /api/channel-logo` — remove it.
 
+## Reference voices
+
+Voice samples for Fish Speech voice cloning, managed on the Settings page; pick one per voiceover job via `voice_id` on `POST /jobs`.
+
+- `GET /api/voices` — `{"voices": [{"id", "name", "text", "file", "duration", "created"}]}`.
+- `POST /api/voices` — multipart upload: `file` (audio, max 20 MB, 1–120 s; normalized to 44.1 kHz mono wav), `name`, `text` (the exact words spoken in the sample). Returns the new voice record.
+- `GET /api/voices/{id}/audio` — the normalized sample (`audio/wav`, 404 if unknown).
+- `DELETE /api/voices/{id}` — remove the voice; queued jobs that referenced it fall back to the default voice.
+
 ## Settings & meta
 
 ### `GET /options`
-`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url"}` — the valid submit-form values and configured defaults.
+`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url", "default_audio_mode": "music"}` — the valid submit-form values and configured defaults (`default_audio_mode` maps the `AUDIO_MODE` setting onto the dialog's two choices: `music` or `narration+music`).
 
 ### `GET /api/settings`
 `{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "art_styles": [...]}` — current values plus field metadata.

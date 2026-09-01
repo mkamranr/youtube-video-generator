@@ -1,5 +1,6 @@
 # generated media and job state
 output/
+reference_audio/
 
 # local runtime configuration
 settings.json

@@ -19,6 +19,7 @@ class Job:
     url: str
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
     audio_mode: str = ""
+    voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     art_style: str = ""
     video_length: str = "Auto"
     source: str = "youtube"
@@ -334,9 +335,20 @@ def _run(job: Job):
             duration = tts.audio_duration(narration_file)
             job.add_log("resume: reusing narration audio")
         else:
+            ref_audio, ref_text = None, ""
+            if job.voice_id:
+                from services import voices
+                v = voices.get_voice(job.voice_id)
+                vpath = voices.voice_audio_path(job.voice_id)
+                if v and vpath.exists():
+                    ref_audio, ref_text = vpath, v.get("text", "")
+                    job.add_log(f"narration voice: {v['name']}")
+                else:
+                    job.add_log(f"reference voice {job.voice_id} no longer exists - using the default voice")
             job.set("tts", "synthesizing narration with Fish Speech")
             duration = tts.synthesize(plan["narration"], narration_file,
-                                      on_progress=_progress(job, "tts"))
+                                      on_progress=_progress(job, "tts"),
+                                      ref_audio=ref_audio, ref_text=ref_text)
             job.add_log(f"narration: {duration:.1f}s")
         n = max(1, math.ceil(duration / config.CLIP_SECONDS))
         sync_text = plan["narration"]
@@ -499,7 +511,11 @@ class JobManager:
                 pass
 
     def submit(self, url: str, aspect_ratio: str = config.DEFAULT_ASPECT_RATIO,
-               art_style: str = "", video_length: str = "") -> Job:
+               art_style: str = "", video_length: str = "",
+               audio_mode: str = "", voice_id: str = "") -> Job:
+        audio_mode = audio_mode or config.AUDIO_MODE
+        if audio_mode not in config.AUDIO_MODES:
+            raise ValueError(f"unsupported audio mode: {audio_mode}")
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
         art_style = art_style or config.DEFAULT_ART_STYLE
@@ -509,7 +525,7 @@ class JobManager:
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
-                  aspect_ratio=aspect_ratio, audio_mode=config.AUDIO_MODE, art_style=art_style,
+                  aspect_ratio=aspect_ratio, audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length)
         job.save()
         with self.lock:
@@ -562,8 +578,12 @@ class JobManager:
 
     def submit_prompt(self, text: str, source_kind: str,
                       aspect_ratio: str = "", art_style: str = "",
-                      video_length: str = "") -> Job:
+                      video_length: str = "",
+                      audio_mode: str = "", voice_id: str = "") -> Job:
         text = (text or "").strip()
+        audio_mode = audio_mode or config.AUDIO_MODE
+        if audio_mode not in config.AUDIO_MODES:
+            raise ValueError(f"unsupported audio mode: {audio_mode}")
         if len(text) < 3:
             raise ValueError("topic/description is too short")
         if source_kind not in ("topic", "description"):
@@ -580,7 +600,7 @@ class JobManager:
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio,
-                  audio_mode=config.AUDIO_MODE, art_style=art_style,
+                  audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length)
         job.save()
         with self.lock:

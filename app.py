@@ -8,13 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 import requests
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
+from services import voices
 
 app = FastAPI(title="VideoGen")
 manager = JobManager()
@@ -37,6 +38,8 @@ class Submit(BaseModel):
     aspect_ratio: str = ""
     art_style: str = ""
     video_length: str = ""
+    audio_mode: str = ""       # "" -> config.AUDIO_MODE; music = song, narration(+music) = voiceover
+    voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
 
 
 def _queued_detail(job_id: str) -> str:
@@ -82,13 +85,21 @@ def create_jobs(body: Submit):
     vlen = body.video_length or config.DEFAULT_VIDEO_LENGTH
     if vlen not in config.VIDEO_LENGTHS:
         raise HTTPException(400, f"video_length must be one of {list(config.VIDEO_LENGTHS)}")
+    am = body.audio_mode or config.AUDIO_MODE
+    if am not in config.AUDIO_MODES:
+        raise HTTPException(400, f"audio_mode must be one of {config.AUDIO_MODES}")
+    vid = body.voice_id.strip()
+    if am == "music":
+        vid = ""  # a reference voice is meaningless for songs
+    if vid and not voices.get_voice(vid):
+        raise HTTPException(400, "unknown reference voice")
     if prompt_kind:
         text = body.topic if prompt_kind == "topic" else body.description
         try:
-            return [_job_json(manager.submit_prompt(text, prompt_kind, ar, style, vlen))]
+            return [_job_json(manager.submit_prompt(text, prompt_kind, ar, style, vlen, am, vid))]
         except ValueError as e:
             raise HTTPException(400, str(e))
-    return [_job_json(manager.submit(u, ar, style, vlen)) for u in urls]
+    return [_job_json(manager.submit(u, ar, style, vlen, am, vid)) for u in urls]
 
 
 @app.get("/jobs")
@@ -298,7 +309,8 @@ def options():
     return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
-            "default_source": config.DEFAULT_SOURCE}
+            "default_source": config.DEFAULT_SOURCE,
+            "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music"}
 
 
 @app.get("/api/settings")
@@ -353,6 +365,41 @@ def get_channel_logo():
     if not config.LOGO_FILE.exists():
         raise HTTPException(404, "no channel logo uploaded")
     return FileResponse(config.LOGO_FILE, media_type="image/png")
+
+
+# ---- reference voices ------------------------------------------------------
+@app.get("/api/voices")
+def list_voices():
+    return {"voices": voices.list_voices()}
+
+
+@app.post("/api/voices")
+async def create_voice(file: UploadFile, name: str = Form(...), text: str = Form(...)):
+    """Add a reference voice for Fish Speech cloning: audio sample + the text spoken in it."""
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(400, "audio too large (max 20 MB)")
+    try:
+        return voices.add_voice(name, text, data, file.filename or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/voices/{voice_id}")
+def delete_voice(voice_id: str):
+    try:
+        voices.delete_voice(voice_id)
+    except KeyError:
+        raise HTTPException(404, "unknown reference voice")
+    return {"ok": True}
+
+
+@app.get("/api/voices/{voice_id}/audio")
+def voice_audio(voice_id: str):
+    path = voices.voice_audio_path(voice_id)
+    if not path.exists():
+        raise HTTPException(404, "unknown reference voice")
+    return FileResponse(path, media_type="audio/wav")
 
 
 @app.post("/jobs/{job_id}/regen-thumbnail")

@@ -43,6 +43,18 @@
   </div>
 
   <div class="card">
+    <h2>Reference voices</h2>
+    <div class="hint" style="margin-bottom:10px">Voice samples for Fish Speech voice cloning. Upload 5-30 s of clean speech and enter the exact text spoken in it; pick a voice in the New Video dialog when generating a voiceover.</div>
+    <div id="voiceList"><div class="hint">loading…</div></div>
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="voiceName" placeholder="Voice name" style="max-width:200px">
+      <input type="file" id="voiceFile" accept="audio/*" style="max-width:280px">
+      <button class="btn secondary sm" id="voiceAdd" type="button">Add voice</button>
+    </div>
+    <textarea id="voiceText" placeholder="Exact text spoken in the audio sample..." style="margin-top:10px"></textarea>
+  </div>
+
+  <div class="card">
     <h2>Art style previews</h2>
     <div class="hint" style="margin-bottom:10px">Renders one sample image per art style with your video model (~30 s each, runs in the background, skips already-generated ones). Shown on the submit form when picking a style.</div>
     <div class="row">
@@ -56,7 +68,6 @@
       <h2>Services</h2>
       <div class="form-grid">
         <div class="field"><label for="COMFY_URL">ComfyUI URL</label><input type="text" id="COMFY_URL"><div class="hint">Base URL of the ComfyUI server</div></div>
-        <div class="field"><label for="FISH_URL">Fish TTS URL</label><input type="text" id="FISH_URL"><div class="hint">Gradio URL of Fish Speech</div></div>
         <div class="field"><label for="VLLM_URL">vLLM URL</label><input type="text" id="VLLM_URL"><div class="hint">OpenAI-compatible base URL (…/v1)</div></div>
         <div class="field"><label for="VLLM_MODEL">vLLM model id</label><input type="text" id="VLLM_MODEL"><div class="hint">Model name served by vLLM</div></div>
         <div class="field"><label for="CHANNEL_NAME">Channel name</label><input type="text" id="CHANNEL_NAME"><div class="hint">Videos are branded for this channel; source channel/brand names are replaced with it</div></div>
@@ -134,13 +145,13 @@
           <div class="hint">Scrub each job's rendered files and uploaded frames on the ComfyUI server (storage reclaimed) and delete its history, as soon as artifacts are downloaded</div>
         </div>
         <div class="field">
-          <label for="AUDIO_MODE">Audio mode</label>
+          <label for="AUDIO_MODE">Default audio (new jobs)</label>
           <select id="AUDIO_MODE">
-            <option value="music">Music only (song drives the video)</option>
-            <option value="narration">Narration only</option>
-            <option value="narration+music">Narration + background music</option>
+            <option value="music">Generate Song (music only)</option>
+            <option value="narration">Voiceover only (no music bed)</option>
+            <option value="narration+music">Generate Voiceover (narration + music)</option>
           </select>
-          <div class="hint">music: the generated song is the only audio; its length sets the clip count and its lyrics drive each clip's scene</div>
+          <div class="hint">Preselected audio choice in the New Video dialog; each video can override it there</div>
         </div>
         <div class="field">
           <label for="YT_PRIVACY">YouTube privacy</label>
@@ -175,6 +186,33 @@
       </div>
     </div>
 
+    <div class="card">
+      <h2>Narration (Fish Speech)</h2>
+      <div class="form-grid">
+        <div class="field"><label for="FISH_URL">Fish TTS URL</label><input type="text" id="FISH_URL"><div class="hint">Gradio URL of Fish Speech</div></div>
+        <div class="field">
+          <label for="TTS_TEMPERATURE">TTS temperature</label>
+          <input type="number" id="TTS_TEMPERATURE" min="0.1" max="2" step="0.05">
+          <div class="hint">Sampling temperature (0.1-2); higher = more varied delivery</div>
+        </div>
+        <div class="field">
+          <label for="TTS_TOP_P">TTS top-p</label>
+          <input type="number" id="TTS_TOP_P" min="0.1" max="1" step="0.05">
+          <div class="hint">Nucleus sampling (0.1-1)</div>
+        </div>
+        <div class="field">
+          <label for="TTS_REPETITION_PENALTY">TTS repetition penalty</label>
+          <input type="number" id="TTS_REPETITION_PENALTY" min="0.9" max="2" step="0.05">
+          <div class="hint">Penalty against repeated tokens (0.9-2)</div>
+        </div>
+        <div class="field">
+          <label for="TTS_CHUNK_CHARS">TTS chunk length (chars)</label>
+          <input type="number" id="TTS_CHUNK_CHARS" min="100" max="500" step="50">
+          <div class="hint">Max characters per Fish request; long narrations are split and concatenated</div>
+        </div>
+      </div>
+    </div>
+
     <button class="btn" type="submit" id="save">Save settings</button>
   </form>
 </main>
@@ -182,7 +220,8 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "DEFAULT_SOURCE", "DEFAULT_VIDEO_LENGTH", "CHANNEL_NAME",
-                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_MADE_FOR_KIDS"];
+                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_MADE_FOR_KIDS",
+                "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS"];
 
 async function load() {
   const d = await api("/api/settings");
@@ -299,10 +338,52 @@ $("#logoRemove").onclick = async () => {
   catch (e) { toast(e.message, true); }
 };
 
+async function refreshVoices() {
+  const box = $("#voiceList");
+  try {
+    const d = await api("/api/voices");
+    box.innerHTML = d.voices.length ? d.voices.map(v => `
+      <div class="row" style="margin-bottom:8px;align-items:center">
+        <b style="min-width:140px">${esc(v.name)}</b>
+        <audio controls preload="none" src="/api/voices/${esc(v.id)}/audio" style="height:32px"></audio>
+        <span class="hint">${v.duration}s</span>
+        <button class="btn danger sm" type="button" onclick="deleteVoice('${esc(v.id)}')">Delete</button>
+      </div>`).join("")
+      : `<div class="hint">No reference voices yet - add one below.</div>`;
+  } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+
+$("#voiceAdd").onclick = async () => {
+  const f = $("#voiceFile").files[0];
+  const name = $("#voiceName").value.trim();
+  const text = $("#voiceText").value.trim();
+  if (!name) { toast("Enter a voice name", true); return; }
+  if (!f) { toast("Choose an audio file", true); return; }
+  if (!text) { toast("Enter the exact text spoken in the sample", true); return; }
+  const fd = new FormData();
+  fd.append("file", f); fd.append("name", name); fd.append("text", text);
+  $("#voiceAdd").disabled = true;
+  try {
+    const r = await fetch("/api/voices", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "upload failed");
+    toast("Reference voice added");
+    $("#voiceName").value = ""; $("#voiceFile").value = ""; $("#voiceText").value = "";
+    refreshVoices();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#voiceAdd").disabled = false; }
+};
+
+async function deleteVoice(id) {
+  if (!confirm("Delete this reference voice? Queued jobs that use it will fall back to the default voice.")) return;
+  try { await api("/api/voices/" + id, { method: "DELETE" }); toast("Voice deleted"); refreshVoices(); }
+  catch (e) { toast(e.message, true); }
+}
+
 load().catch(e => toast(e.message, true));
 checkHealth();
 previewStatus(true);
 refreshLogo();
+refreshVoices();
 refreshYt();
 </script>
 </body>

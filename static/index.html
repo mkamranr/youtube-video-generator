@@ -46,6 +46,17 @@
             <label for="ar">Aspect ratio</label>
             <select id="ar"></select>
           </div>
+          <div class="grow" style="min-width:170px">
+            <label for="audio">Audio</label>
+            <select id="audio">
+              <option value="music">Generate Song</option>
+              <option value="narration+music">Generate Voiceover</option>
+            </select>
+          </div>
+          <div class="grow" id="voiceField" style="min-width:170px" hidden>
+            <label for="voice">Voice</label>
+            <select id="voice"><option value="">Default voice</option></select>
+          </div>
         </div>
         <label for="urls" id="inputLabel">YouTube URLs</label>
         <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
@@ -84,6 +95,18 @@ const SOURCE_UI = {
                  sub: "Write a description or short script for one video. The LLM builds the full script from it; you review and approve it, then video generation starts." },
 };
 
+function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; }
+
+async function loadVoices() {
+  try {
+    const d = await api("/api/voices");
+    const cur = $("#voice").value;
+    $("#voice").innerHTML = `<option value="">Default voice</option>` +
+      d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    $("#voice").value = cur && d.voices.some(v => v.id === cur) ? cur : "";
+  } catch (e) { /* voice list is optional */ }
+}
+
 function applySource() {
   const ui = SOURCE_UI[$("#source").value];
   $("#inputLabel").textContent = ui.label;
@@ -99,7 +122,8 @@ async function submit() {
     toast("Pick an art style from the list", true); return;
   }
   let body = { aspect_ratio: $("#ar").value, art_style: $("#artstyle").value,
-               video_length: $("#vlen").value };
+               video_length: $("#vlen").value, audio_mode: $("#audio").value,
+               voice_id: $("#audio").value === "music" ? "" : $("#voice").value };
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
   else if (mode === "topic") body.topic = raw;
   else body.description = raw;
@@ -220,11 +244,14 @@ async function loadOptions() {
   $("#source").value = o.default_source || "url";
   applySource();
   $("#vlen").innerHTML = o.video_lengths.map(a => `<option ${a === o.default_video_length ? "selected" : ""}>${a}</option>`).join("");
+  $("#audio").value = o.default_audio_mode || "music";
+  applyAudio();
+  loadVoices();
   try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
   updateStylePreview();
 }
 
-function openCreate() { $("#createModal").classList.add("open"); setTimeout(() => $("#urls").focus(), 150); }
+function openCreate() { loadVoices(); $("#createModal").classList.add("open"); setTimeout(() => $("#urls").focus(), 150); }
 function closeCreate() { $("#createModal").classList.remove("open"); }
 $("#openCreate").innerHTML = icon("plus") + " Create new video";
 $("#go").innerHTML = icon("check") + " Generate";
@@ -241,6 +268,7 @@ document.addEventListener("keydown", ev => {
 
 $("#go").onclick = submit;
 $("#source").onchange = applySource;
+$("#audio").onchange = applyAudio;
 $("#artstyle").addEventListener("focus", () => renderStyleList(""));
 $("#artstyle").addEventListener("input", () => { renderStyleList($("#artstyle").value); updateStylePreview(); });
 $("#artstyleList").addEventListener("mousedown", ev => {

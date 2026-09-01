@@ -36,7 +36,11 @@ Every setting from the Configuration table in the README can be supplied as an e
 | `VIDEOGEN_VLLM_MODEL` | `agents-a1` |
 | `VIDEOGEN_FISH_URL` | `http://192.168.1.50:7860/` |
 | `VIDEOGEN_CHANNEL_NAME` | `Habibi Kids Channel` |
-| `VIDEOGEN_AUDIO_MODE` | `music` \| `narration` \| `narration+music` |
+| `VIDEOGEN_AUDIO_MODE` | `music` \| `narration` \| `narration+music` (default preselection in the New Video dialog) |
+| `VIDEOGEN_TTS_TEMPERATURE` | `0.8` |
+| `VIDEOGEN_TTS_TOP_P` | `0.8` |
+| `VIDEOGEN_TTS_REPETITION_PENALTY` | `1.1` |
+| `VIDEOGEN_TTS_CHUNK_CHARS` | `300` |
 | `VIDEOGEN_TARGET_VIDEO_SECONDS` | `90` (`0` = no target) |
 | `VIDEOGEN_DEFAULT_ART_STYLE` | `Pixar-like 3D` |
 | `VIDEOGEN_DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` |
@@ -51,6 +55,7 @@ Booleans accept `1/true/yes/on` (case-insensitive); numbers are parsed and range
 |---|---|---|
 | `/app/output` | All generated videos, thumbnails, and per-job state (**required** for resume across restarts and for keeping your videos) | `./data/output` bind mount |
 | `/root/.cache/huggingface` | faster-whisper model cache (~150 MB, downloaded once) | named volume `whisper-cache` |
+| `/app/reference_audio` | Reference voices for Fish Speech cloning (Settings page) | `./data/reference_audio` bind mount |
 | `/app/settings.json` | Settings-page changes | optional single-file bind (create `data/settings.json` containing `{}` first), or rely on env vars |
 
 The compose file ships with the first two configured.
