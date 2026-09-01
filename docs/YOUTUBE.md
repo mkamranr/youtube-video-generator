@@ -42,9 +42,9 @@ Both `client_secret.json` and the stored token (`youtube_token.json`) are gitign
 On any **finished** job page, click **Upload to YouTube**. The upload runs in the background with live progress; when it completes, the job shows the `youtu.be/...` link. The video arrives with:
 
 - your configured **privacy** (Settings → *YouTube privacy*; default **private** — an unpublished draft you review and publish from YouTube Studio),
-- the **made for kids** flag (Settings toggle; on by default — the COPPA self-declaration),
+- the **made for kids** flag (Settings toggle; **off by default** — flip it if your uploads are child-directed under COPPA),
 - the **SEO title and description** generated for the job,
-- the generated **custom thumbnail** (requires a phone-verified channel; if not verified, the video still uploads and a note is logged).
+- the generated **custom thumbnail** for regular videos (requires a phone-verified channel; not applied to Shorts — see Troubleshooting).
 
 Re-uploading is allowed (e.g. after regenerating clips) — the app warns you explicitly that a second copy will be created.
 
