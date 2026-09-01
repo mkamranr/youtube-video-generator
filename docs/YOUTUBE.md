@@ -44,7 +44,7 @@ On any **finished** job page, click **Upload to YouTube**. The upload runs in th
 - your configured **privacy** (Settings → *YouTube privacy*; default **private** — an unpublished draft you review and publish from YouTube Studio),
 - the **made for kids** flag (Settings toggle; **off by default** — flip it if your uploads are child-directed under COPPA),
 - the **SEO title and description** generated for the job,
-- the generated **custom thumbnail** for regular videos (requires a phone-verified channel; not applied to Shorts — see Troubleshooting).
+- the generated **custom thumbnail** (requires a phone-verified channel; if it fails, the video still uploads and the reason is logged).
 
 Re-uploading is allowed (e.g. after regenerating clips) — the app warns you explicitly that a second copy will be created.
 
@@ -54,5 +54,5 @@ Re-uploading is allowed (e.g. after regenerating clips) — the app warns you ex
 - **"Google hasn't verified this app"** — expected for an unverified personal project; click *Advanced → Go to … (unsafe)* to continue.
 - **Uploads stop working after ~a week** — Testing-mode token expiry; reconnect in Settings, or publish the app to stop the expiry.
 - **`redirect_uri_mismatch`** — the OAuth client is not a *Desktop app* type; create a new client with the correct type and replace `client_secret.json`.
-- **Thumbnail not set, video uploaded** — two common causes: (1) the video is a **YouTube Short** (portrait or square and up to 3 minutes) — YouTube does not support custom thumbnails on Shorts at all, and the app skips the call for them (the thumbnail is still in your download bundle); (2) for regular videos, the channel isn't verified for custom thumbnails — verify it at [youtube.com/verify](https://www.youtube.com/verify).
+- **Thumbnail not set, video uploaded** — the channel may not be verified for custom thumbnails (verify at [youtube.com/verify](https://www.youtube.com/verify)); also allow a few minutes of processing after upload before it shows in YouTube Studio, and note Shorts surfaces may display a video frame in some places regardless of the set thumbnail.
 - **Quota**: the YouTube API grants 10,000 units/day by default; one upload costs ~1,600 — roughly 6 uploads/day. Request more in the Cloud Console if needed.
