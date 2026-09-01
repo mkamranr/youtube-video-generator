@@ -18,9 +18,12 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
 - **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with your **channel logo** (uploaded in Settings) overlaid top-right. One-click regeneration on any finished job.
 - **SEO metadata** — a keyword-optimized YouTube title and description (with hashtags and a subscribe call-to-action) generated for every video.
+- **LLM review pass** — every generated scene and every drafted script is reviewed a second time by the LLM against the exact audio/content it must match, and inconsistencies (a wrong letter, a mismatched object, an unsafe detail) are fixed automatically. The reviewer is transcription-aware: if the speech recognizer misheard a letter, it trusts the word ("fairy" belongs to F). Toggleable via `SCRIPT_REVIEW`.
+- **Per-job target length** — pick Auto, 30-45 s, 45-60 s, 1-2 min, or 2-3 min when creating a job; a soft target that guides the script length and the generated song/narration duration.
+- **Title-named downloads & bundle** — the video and thumbnail download as `<Title>.mp4` / `<Title>.jpg`, and one click grabs the whole publish **bundle**: a ZIP with the video, thumbnail, audio track(s), and the SEO title/description in a text file.
 - **Full revision workflow** — edit any scene prompt in the UI, regenerate exactly the clips you want (they're clearly badged), then reassemble the final video with one click. Regenerations **jump the queue**, pausing the running job at a clip boundary and resuming it afterwards.
-- **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup, transcript quality gating, and a self-restarting server watchdog.
-- **Job management UI** — job list with live progress, rich per-job detail pages, archive, delete, and a runtime-editable settings page with service health checks.
+- **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup (per artifact, plus an **orphan sweep** at startup and after every job that catches renders left behind by retries or crashes), transcript quality gating, and a self-restarting server watchdog.
+- **Polished web UI** — dark/light theme, a **New Video** dialog behind a *Create new video* button, a type-to-search art-style picker with live model-rendered previews, search across the Jobs and Archived Jobs lists, configurable dialog defaults, live progress with a pipeline stepper, rich per-job detail pages, archive/cancel/delete, and a runtime Settings page with service health checks.
 
 ## Architecture
 
@@ -98,7 +101,7 @@ A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting
 
 ## Usage
 
-1. **Submit** — choose a source in *Create from*, and optionally a **Video length** (Auto, 30-45 s, 45-60 s, 1-2 min, 2-3 min) — a soft target that guides the script length and the generated song/narration duration: paste YouTube URLs (one per line), enter a **topic**, or write a **description / short script** (one job per topic/description submission). Pick an **Art style** and **Aspect ratio**, click *Generate*. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
+1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; or a **description / short script** — one job per topic/description), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, and an **Art style** (type to search; a preview image shows how each style looks). All four fields pre-select your defaults from Settings. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
    - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
 3. **Publish** — when done, download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
@@ -130,6 +133,8 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `CHANNEL_NAME` | `Habibi Kids Channel` | Channel branding; replaces source channel/brand names |
 | `DEFAULT_ART_STYLE` | `Pixar-like 3D` | Preselected art style for new jobs |
 | `DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` | Preselected aspect ratio |
+| `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |
+| `DEFAULT_VIDEO_LENGTH` | `Auto` | Preselected target length for new jobs |
 | `AUDIO_MODE` | `music` | `music` / `narration` / `narration+music` |
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
 | `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
@@ -140,9 +145,12 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `CLIP_RETRIES` | `1` | Retries per failed clip before the job fails |
 | `MIN_TRANSCRIPT_WORDS` | `50` | Refuse videos with fewer transcript words |
 | `MIN_TRANSCRIPT_WPM` | `20` | Refuse transcripts too sparse for the video length |
+| `SCRIPT_REVIEW` | `on` | LLM double-checks every generated scene and drafted script and fixes inconsistencies |
 | `COMFY_CLEANUP` | `on` | Scrub rendered files/uploads/history from ComfyUI once downloaded |
 
 Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
+
+The Settings page also hosts two non-setting tools: **Channel logo** (upload once; overlaid on the top-right corner of every generated thumbnail; stored locally, never committed) and **Generate style previews** (renders the art-style sample images with your own model).
 
 ## Output layout
 
@@ -153,7 +161,7 @@ transcript.txt      cleaned source captions
 plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO
 music.mp3           generated song            narration.wav   TTS voiceover (narration modes)
 clip_01..NN.mp4     generated clips           frame_NN.jpg    chaining frames
-thumbnail.jpg       1280x720 YouTube thumbnail
+thumbnail.jpg       YouTube thumbnail matching the video aspect (channel logo overlaid if uploaded)
 clips_joined.mp4    concatenated clips        final.mp4       finished video with mixed audio
 job.json            job state (enables crash-safe resume)
 ```
