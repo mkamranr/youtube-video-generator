@@ -31,6 +31,7 @@ const ICONS = {
   video: '<rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="M15.5 12l6-3.8v7.6z"/>',
   back: '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  upload: '<path d="M12 15.5V4.5M7 9l5-4.5L17 9"/><path d="M4.5 19.5h15"/>',
 };
 
 function icon(name) {

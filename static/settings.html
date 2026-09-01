@@ -22,6 +22,16 @@
   </div>
 
   <div class="card">
+    <h2>YouTube</h2>
+    <div class="hint" style="margin-bottom:10px">Upload finished videos straight to your channel (scope: youtube.upload only). Put your OAuth <code>client_secret.json</code> (Desktop-type client) in the project folder, then connect. Uploads use the SEO title/description and your privacy + made-for-kids settings below.</div>
+    <div class="row">
+      <span class="hint" id="ytState">checking…</span>
+      <button class="btn secondary sm" id="ytConnect" type="button">Connect YouTube</button>
+      <button class="btn danger sm" id="ytDisconnect" type="button" hidden>Disconnect</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Channel logo</h2>
     <div class="hint" style="margin-bottom:10px">Overlaid on the top-right corner of every generated thumbnail. PNG with transparency recommended.</div>
     <div class="row">
@@ -133,6 +143,21 @@
           <div class="hint">music: the generated song is the only audio; its length sets the clip count and its lyrics drive each clip's scene</div>
         </div>
         <div class="field">
+          <label for="YT_PRIVACY">YouTube privacy</label>
+          <select id="YT_PRIVACY">
+            <option value="private">Private</option>
+            <option value="unlisted">Unlisted</option>
+            <option value="public">Public</option>
+          </select>
+          <div class="hint">Privacy of uploaded videos; private lets you review in YouTube Studio first</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="YT_MADE_FOR_KIDS"><span class="track"></span>
+            Made for kids</label>
+          <div class="hint">Marks uploads as made for kids (COPPA self-declaration)</div>
+        </div>
+        <div class="field">
           <label for="MIN_TRANSCRIPT_WORDS">Min transcript words</label>
           <input type="number" id="MIN_TRANSCRIPT_WORDS" min="0" max="2000" step="10">
           <div class="hint">Videos with fewer transcript words are refused</div>
@@ -157,7 +182,7 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "DEFAULT_SOURCE", "DEFAULT_VIDEO_LENGTH", "CHANNEL_NAME",
-                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW"];
+                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_MADE_FOR_KIDS"];
 
 async function load() {
   const d = await api("/api/settings");
@@ -218,6 +243,35 @@ $("#genPreviews").onclick = async () => {
   previewStatus(true);
 };
 
+async function refreshYt() {
+  try {
+    const d = await api("/api/youtube/status");
+    $("#ytState").textContent = !d.secret ? "client_secret.json not found in the project folder"
+                              : d.connected ? "connected" : "not connected";
+    $("#ytConnect").hidden = !d.secret || d.connected;
+    $("#ytDisconnect").hidden = !d.connected;
+  } catch (e) { $("#ytState").textContent = e.message; }
+}
+
+$("#ytConnect").onclick = async () => {
+  try {
+    const d = await api("/api/youtube/auth");
+    window.open(d.url, "_blank");
+    toast("Complete the Google sign-in in the new tab, then come back");
+    let tries = 0;
+    const t = setInterval(async () => {
+      const s = await api("/api/youtube/status");
+      if (s.connected || ++tries > 60) { clearInterval(t); refreshYt(); if (s.connected) toast("YouTube connected"); }
+    }, 3000);
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#ytDisconnect").onclick = async () => {
+  if (!confirm("Disconnect YouTube? The stored token is deleted.")) return;
+  try { await api("/api/youtube/auth", { method: "DELETE" }); toast("Disconnected"); refreshYt(); }
+  catch (e) { toast(e.message, true); }
+};
+
 async function refreshLogo() {
   const r = await fetch("/channel-logo?v=" + Date.now());
   const has = r.ok;
@@ -249,6 +303,7 @@ load().catch(e => toast(e.message, true));
 checkHealth();
 previewStatus(true);
 refreshLogo();
+refreshYt();
 </script>
 </body>
 </html>

@@ -13,6 +13,8 @@ OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
 SETTINGS_FILE = BASE_DIR / "settings.json"
 LOGO_FILE = BASE_DIR / "channel_logo.png"   # uploaded via Settings; overlaid on thumbnails
+YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client (Desktop type)
+YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # stored OAuth token (gitignored)
 
 # ---- service endpoints (placeholders) -------------------------------------
 # Set your real service URLs via the Settings page (persisted to settings.json)
@@ -124,6 +126,8 @@ MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
 SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
+YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
+YT_MADE_FOR_KIDS = True         # selfDeclaredMadeForKids on uploads
 WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
 
 # ---- fixed limits ---------------------------------------------------------
@@ -167,6 +171,10 @@ EDITABLE_SETTINGS = {
                              "Refuse videos whose transcript has fewer words than this"),
     "MIN_TRANSCRIPT_WPM": (float, lambda v: 0 <= v <= 200, "Min transcript words/min",
                            "Refuse when the transcript is too sparse for the video length (music/no speech)"),
+    "YT_PRIVACY": (str, lambda v: v in ("private", "unlisted", "public"), "YouTube privacy",
+                   "Privacy of uploaded videos: private (review in YouTube Studio first), unlisted or public"),
+    "YT_MADE_FOR_KIDS": (bool, lambda v: True, "Made for kids",
+                         "Marks uploads as made for kids (COPPA self-declaration)"),
     "SCRIPT_REVIEW": (bool, lambda v: True, "LLM review pass",
                       "After generating each scene (and each drafted script), the LLM reviews it once more against the audio/content and fixes inconsistencies (wrong letters, mismatched objects, safety issues)"),
     "COMFY_CLEANUP": (bool, lambda v: True, "Clean up ComfyUI",

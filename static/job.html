@@ -79,11 +79,13 @@
 
   <section class="card" id="finalSec" hidden>
     <h2>Final video</h2>
+    <div class="hint" id="ytStatus" hidden style="margin-bottom:10px"></div>
     <div class="warn" id="assembleHint" hidden style="margin-bottom:10px">⚠ clips were regenerated since this final video was assembled — reassemble to include them</div>
     <video class="final-video" id="finalVideo" controls></video>
     <div class="row" style="margin-top:12px">
       <a class="btn secondary sm" id="finalDl">Download video</a>
       <a class="btn sm" id="bundleDl">Download bundle (ZIP)</a>
+      <button class="btn sm" id="ytBtn" hidden></button>
       <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
     </div>
   </section>
@@ -377,6 +379,21 @@ function update(j) {
   $("#assembleBtn").hidden = !(done && j.needs_assemble);
   $("#assembleHint").hidden = !(done && j.needs_assemble);
 
+  const yt = j.yt_status || "";
+  $("#ytBtn").hidden = !(done && yt !== "uploading");
+  $("#ytBtn").innerHTML = icon("upload") + (yt === "uploaded" ? " Upload to YouTube again" : " Upload to YouTube");
+  const ys = $("#ytStatus");
+  if (yt === "uploading") {
+    ys.hidden = false; ys.textContent = `Uploading to YouTube… ${j.yt_progress || 0}%`;
+  } else if (yt === "uploaded" && j.yt_video_id) {
+    ys.hidden = false;
+    ys.innerHTML = `${icon("check")} On YouTube: <a target="_blank" rel="noopener" href="https://youtu.be/${esc(j.yt_video_id)}">youtu.be/${esc(j.yt_video_id)}</a>`;
+  } else if (yt === "failed") {
+    ys.hidden = false; ys.textContent = `YouTube upload failed: ${j.yt_error || "unknown error"}`;
+  } else {
+    ys.hidden = true;
+  }
+
   if ((j.files || []).includes("narration.wav") && !audioShown) {
     audioShown = true;
     $("#audioSec").hidden = false;
@@ -410,7 +427,7 @@ function update(j) {
   loadDetails(j).catch(console.error);
   prevStatus = j.status;
 
-  if (["done", "failed"].includes(j.status) && pollTimer) {
+  if (["done", "failed"].includes(j.status) && j.yt_status !== "uploading" && pollTimer) {
     clearInterval(pollTimer); pollTimer = null;
   }
 }
@@ -471,6 +488,15 @@ $("#thumbRegen").onclick = async () => {
   try {
     await api(`/jobs/${jobId}/regen-thumbnail`, { method: "POST" });
     toast("Thumbnail regeneration started");
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#ytBtn").onclick = async () => {
+  if (!confirm("Upload this video to YouTube? It will be uploaded with your configured privacy setting and the SEO title/description.")) return;
+  try {
+    await api(`/jobs/${jobId}/youtube-upload`, { method: "POST" });
+    toast("YouTube upload started");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
 };

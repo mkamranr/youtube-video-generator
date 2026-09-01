@@ -39,6 +39,10 @@ class Job:
     assemble_requested: bool = False
     needs_assemble: bool = False    # clips changed since the final video was assembled
     stale_clips: list = field(default_factory=list)   # clips whose scene prompt was edited
+    yt_status: str = ""      # "", uploading, uploaded, failed
+    yt_progress: int = 0
+    yt_video_id: str = ""
+    yt_error: str = ""
     log: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
@@ -642,6 +646,45 @@ class JobManager:
             job.set("drafting", "rewriting script with the LLM")
         self._start_draft(job, feedback=feedback)
         return job
+
+    def start_youtube_upload(self, job_id: str) -> Job:
+        from services import youtube
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "done":
+                raise ValueError("only finished videos can be uploaded")
+            if job.yt_status == "uploading":
+                raise ValueError("an upload is already in progress for this job")
+            if not (job.dir / "final.mp4").exists():
+                raise ValueError("final video not found")
+            if not youtube.has_secret():
+                raise ValueError("client_secret.json not found - place your OAuth client file in the project folder")
+            if not youtube.is_connected():
+                raise ValueError("YouTube is not connected - connect it on the Settings page first")
+            job.set(yt_status="uploading", yt_progress=0, yt_error="")
+        threading.Thread(target=self._yt_upload, args=(job,), daemon=True).start()
+        return job
+
+    def _yt_upload(self, job: Job):
+        from services import youtube
+        try:
+            plan = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+            title = plan.get("seo_title") or plan.get("title") or job.title
+            desc = plan.get("seo_description", "")
+            job.add_log("YouTube upload started")
+            vid, thumb_err = youtube.upload(
+                job.dir / "final.mp4", job.dir / "thumbnail.jpg", title, desc,
+                config.YT_PRIVACY, config.YT_MADE_FOR_KIDS,
+                on_progress=lambda p: job.set(yt_progress=p))
+            job.set(yt_status="uploaded", yt_progress=100, yt_video_id=vid)
+            job.add_log(f"uploaded to YouTube ({config.YT_PRIVACY}): https://youtu.be/{vid}")
+            if thumb_err:
+                job.add_log(f"note: custom thumbnail not set ({thumb_err[:100]})")
+        except Exception as e:  # noqa: BLE001
+            job.set(yt_status="failed", yt_error=str(e)[:200])
+            job.add_log(f"YouTube upload failed: {e}")
 
     def regen_thumbnail(self, job_id: str) -> Job:
         """Re-render the thumbnail with a fresh concept and seed. Runs in a side thread -

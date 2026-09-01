@@ -99,6 +99,12 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 - `POST /jobs/{id}/archive` — hide a finished job from the main list.
 - `POST /jobs/{id}/unarchive` — bring it back.
 
+## YouTube upload
+
+- `GET /api/youtube/status` — `{secret, connected, privacy, made_for_kids}` (secret = client_secret.json present).
+- `GET /api/youtube/auth` — returns the Google consent URL (scope: `youtube.upload` only); the loopback callback `GET /api/youtube/callback` stores the token locally. `DELETE /api/youtube/auth` disconnects.
+- `POST /jobs/{id}/youtube-upload` — uploads a finished job's video (resumable, live `yt_progress` on the job) with the SEO title/description, the configured privacy (default **private** — an unpublished draft reviewable in YouTube Studio) and made-for-kids flag, then sets the custom thumbnail (best-effort). Job fields: `yt_status` (`uploading`/`uploaded`/`failed`), `yt_progress`, `yt_video_id`, `yt_error`.
+
 ## Channel logo
 
 - `POST /api/channel-logo` — multipart upload (`file`); stored as PNG (max 5 MB, downscaled to <=1024 px wide) and overlaid on the top-right corner of every generated thumbnail.

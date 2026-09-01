@@ -4,6 +4,8 @@ output/
 # local runtime configuration
 settings.json
 channel_logo.png
+client_secret.json
+youtube_token.json
 
 # server logs
 server.log

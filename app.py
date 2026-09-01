@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 
 import requests
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -359,6 +359,54 @@ def get_channel_logo():
 def regen_thumbnail(job_id: str):
     try:
         return _job_json(manager.regen_thumbnail(job_id))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/youtube/status")
+def youtube_status():
+    from services import youtube
+    return {"secret": youtube.has_secret(), "connected": youtube.is_connected(),
+            "privacy": config.YT_PRIVACY, "made_for_kids": config.YT_MADE_FOR_KIDS}
+
+
+@app.get("/api/youtube/auth")
+def youtube_auth(request: Request):
+    from services import youtube
+    if not youtube.has_secret():
+        raise HTTPException(409, "client_secret.json not found - place your OAuth client file in the project folder")
+    redirect = str(request.base_url).rstrip("/") + "/api/youtube/callback"
+    try:
+        return {"url": youtube.auth_url(redirect)}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"could not start authorization: {e}")
+
+
+@app.get("/api/youtube/callback")
+def youtube_callback(code: str = "", error: str = ""):
+    from services import youtube
+    if error or not code:
+        return HTMLResponse(f"<h3>Authorization failed: {error or 'no code returned'}</h3>")
+    try:
+        youtube.finish_auth(code)
+    except Exception as e:  # noqa: BLE001
+        return HTMLResponse(f"<h3>Authorization failed: {e}</h3>")
+    return HTMLResponse("<h3>YouTube connected. You can close this tab and return to VideoGen.</h3>")
+
+
+@app.delete("/api/youtube/auth")
+def youtube_disconnect():
+    from services import youtube
+    youtube.disconnect()
+    return {"ok": True}
+
+
+@app.post("/jobs/{job_id}/youtube-upload")
+def youtube_upload(job_id: str):
+    try:
+        return _job_json(manager.start_youtube_upload(job_id))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
