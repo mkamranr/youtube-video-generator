@@ -127,7 +127,7 @@ MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption covera
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
 SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
-YT_MADE_FOR_KIDS = True         # selfDeclaredMadeForKids on uploads
+YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)
 WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
 
 # ---- fixed limits ---------------------------------------------------------

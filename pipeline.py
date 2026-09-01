@@ -682,6 +682,8 @@ class JobManager:
             job.add_log(f"uploaded to YouTube ({config.YT_PRIVACY}): https://youtu.be/{vid}")
             if thumb_err:
                 job.add_log(f"note: custom thumbnail not set ({thumb_err[:100]})")
+            else:
+                job.add_log("custom thumbnail set on YouTube")
         except Exception as e:  # noqa: BLE001
             job.set(yt_status="failed", yt_error=str(e)[:200])
             job.add_log(f"YouTube upload failed: {e}")
