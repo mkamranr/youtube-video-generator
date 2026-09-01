@@ -148,6 +148,10 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     if i > 1:
         frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
         first_frame = client.upload_image(frame, f"videogen_{job.id}_frame_{i - 1:02d}.jpg")
+        # steer the I2V model to treat the seeded frame as an in-progress moment, not a fresh shot
+        prompt += ("\n\nThe video starts exactly at the provided first frame, mid-action: continue that "
+                   "ongoing motion smoothly in one unbroken shot - no cut, no scene change, no camera "
+                   "jump at the start.")
     template = t2v if first_frame is None else i2v
 
     def progress(msg):

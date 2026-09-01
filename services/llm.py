@@ -33,8 +33,15 @@ SCENE_RULES = """Each scene prompt describes ONE continuous {secs}-second shot f
 - Camera: angle and movement.
 - Audio: ambient sound / effects appropriate to the scene (no speech, no narration, no music with lyrics).
 - End with: "No text, subtitles, logos or watermarks of any kind."
-Consecutive scenes must flow into each other: the end state of scene N is the starting frame of scene N+1
-(same location/characters unless a deliberate transition). Never mention real people's names or brands."""
+CONTINUITY CONTRACT (the video model renders each clip starting from the LAST FRAME of the previous clip):
+- The [0s] beat of a scene IS the final frame of the previous scene: same camera angle, same characters in
+  the same positions, same setting and lighting. Never open with a cut, a new shot, a different angle, or a
+  teleport to another place.
+- Reframe only through continuous on-screen camera motion (pan / dolly / zoom) WITHIN the clip; introduce
+  new elements by having them enter the frame or be revealed by that motion.
+- End every scene on a stable, held end-state (subjects clearly in frame, motion settling) - never mid
+  whip-pan, mid-blur or mid-cut - because the next clip is seeded from that exact ending frame.
+Never mention real people's names or brands."""
 
 
 def _client():
@@ -168,7 +175,9 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
         if on_progress:
             on_progress(f"scene {i + 1}/{n}")
         prev = (f'The previous clip\'s scene was:\n"{scenes[-1]}"\n'
-                "This clip starts visually where that one ended (same style, continuous flow).") if scenes \
+                "MANDATORY: this clip's [0s] beat continues EXACTLY from that scene's ending frame - same "
+                "camera angle, same characters in the same positions, same setting and lighting. Do not cut "
+                "to a new shot or angle at the start; evolve the action from that frozen moment.") if scenes \
             else "This is the FIRST clip of the video: establish the world."
         nxt = (f'For flow only, the next segment will be: "{segments[i + 1]}"') if i + 1 < n \
             else "This is the FINAL clip: give it a conclusive ending."
@@ -189,6 +198,8 @@ other segments' content."""
 
 We are storyboarding clip {i + 1} of {n} for a video. Each clip is {config.CLIP_SECONDS} seconds.
 The soundtrack is a {kind}.
+{prev}
+{nxt}
 {heard}
 {SCENE_RULES.format(secs=config.CLIP_SECONDS)}
 Return JSON: {{"scene": "the scene prompt string"}}"""
@@ -202,7 +213,8 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
         if config.SCRIPT_REVIEW:
             if on_progress:
                 on_progress(f"reviewing scene {i + 1}/{n}")
-            scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind)
+            scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
+                                         prev_scene=scenes[-1] if scenes else "")
             if issues and on_review_issue:
                 on_review_issue(i + 1, issues)
         scenes.append(scene)
@@ -210,7 +222,7 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
 
 
 def review_scene(scene: str, segment: str, style: str, i: int, n: int,
-                 kind: str = "voiceover narration") -> tuple:
+                 kind: str = "voiceover narration", prev_scene: str = "") -> tuple:
     """Second-pass review of one scene prompt against the audio it must match.
 
     Returns (corrected_scene, issues). Catches inconsistencies like a letter or object
@@ -226,6 +238,14 @@ def review_scene(scene: str, segment: str, style: str, i: int, n: int,
     else:
         audio_ctx = f"During this clip the {kind} is INSTRUMENTAL - no words are heard."
         rule = "The scene must not introduce letters/objects that belong to other clips' audio."
+    continuity = ""
+    if prev_scene.strip():
+        continuity = f"""5. SEAMLESS CONTINUITY: this clip is rendered starting from the LAST frame of the previous clip.
+The previous clip's scene was:
+\"\"\"{prev_scene}\"\"\"
+This scene's [0s] beat must directly continue that scene's ending (same camera angle, same characters in
+the same positions, same setting); it must NOT open with a cut, a new shot, a different angle or location.
+Reframing may only happen through continuous camera motion within the clip."""
     user = f"""You are reviewing a scene prompt for clip {i} of {n} of a children's video before it is rendered.
 Global visual style: {style}
 
@@ -239,6 +259,7 @@ Check strictly:
 2. Internal consistency (no contradictions within the storyboard).
 3. Content is gentle and safe for young children.
 4. The required format is kept (overview, timestamped storyboard, camera, audio, the closing no-text line).
+{continuity}
 
 If everything is correct, return the scene UNCHANGED. If there are issues, FIX them with the smallest
 possible edits, keeping everything else identical.
