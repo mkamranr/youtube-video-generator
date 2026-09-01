@@ -674,10 +674,22 @@ class JobManager:
             title = plan.get("seo_title") or plan.get("title") or job.title
             desc = plan.get("seo_description", "")
             job.add_log("YouTube upload started")
+            # YouTube treats portrait/square videos up to 3 minutes as Shorts,
+            # and Shorts do not support custom thumbnails - skip the call for those.
+            is_short = False
+            try:
+                portrait = any(t in job.aspect_ratio for t in ("9:16", "3:4", "2:3", "1:1"))
+                is_short = portrait and tts.audio_duration(job.dir / "final.mp4") <= 180
+            except Exception:  # noqa: BLE001
+                pass
+            thumb = None if is_short else job.dir / "thumbnail.jpg"
             vid, thumb_err = youtube.upload(
-                job.dir / "final.mp4", job.dir / "thumbnail.jpg", title, desc,
+                job.dir / "final.mp4", thumb, title, desc,
                 config.YT_PRIVACY, config.YT_MADE_FOR_KIDS,
                 on_progress=lambda p: job.set(yt_progress=p))
+            if is_short:
+                job.add_log("custom thumbnail skipped: this video is a YouTube Short "
+                            "(portrait, under 3 min) and Shorts do not support custom thumbnails")
             job.set(yt_status="uploaded", yt_progress=100, yt_video_id=vid)
             job.add_log(f"uploaded to YouTube ({config.YT_PRIVACY}): https://youtu.be/{vid}")
             if thumb_err:
