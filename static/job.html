@@ -493,7 +493,15 @@ $("#thumbRegen").onclick = async () => {
 };
 
 $("#ytBtn").onclick = async () => {
-  if (!confirm("Upload this video to YouTube? It will be uploaded with your configured privacy setting and the SEO title/description.")) return;
+  const already = lastJob && lastJob.yt_status === "uploaded" && lastJob.yt_video_id;
+  const msg = already
+    ? `This video has ALREADY been uploaded to YouTube (youtu.be/${lastJob.yt_video_id}).
+
+Uploading again will create a SECOND copy on your channel - the existing one is not replaced.
+
+Are you sure you want to upload it again?`
+    : "Upload this video to YouTube? It will be uploaded with your configured privacy setting and the SEO title/description.";
+  if (!confirm(msg)) return;
   try {
     await api(`/jobs/${jobId}/youtube-upload`, { method: "POST" });
     toast("YouTube upload started");
