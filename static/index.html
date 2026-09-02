@@ -147,6 +147,12 @@ async function cancelJob(ev, id) {
   catch (e) { toast(e.message, true); }
 }
 
+async function resumeJob(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  try { await api(`/jobs/${id}/resume`, { method: "POST" }); toast("Job resumed - finished steps will be reused"); await refresh(); }
+  catch (e) { toast(e.message, true); }
+}
+
 async function archiveJob(ev, id) {
   ev.preventDefault(); ev.stopPropagation();
   try { await api(`/jobs/${id}/archive`, { method: "POST" }); toast("Job archived"); await refresh(); }
@@ -180,6 +186,7 @@ function jobCard(j) {
     </div>
     <div class="jc-side">
       <div style="display:flex;gap:8px;align-items:center">
+        ${j.status === "failed" ? `<button class="btn sm" onclick="resumeJob(event,'${j.id}')">Resume</button>` : ""}
         ${canDelete ? `<button class="btn secondary sm" onclick="archiveJob(event,'${j.id}')">Archive</button>
                        <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>`
                     : `<button class="btn danger sm" onclick="cancelJob(event,'${j.id}')">Cancel</button>`}

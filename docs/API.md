@@ -56,6 +56,9 @@ Delete the job and all its local files. `409` if it is currently running.
 ### `POST /jobs/{id}/cancel`
 Cancel a queued or running job. Takes effect within seconds; the in-flight ComfyUI render is aborted (only if it belongs to this job). A cancelled *revision* request returns the job to `done`; a cancelled full run becomes `failed: cancelled by user`.
 
+### `POST /jobs/{id}/resume`
+Requeue a **failed** job (e.g. after a connection timeout to ComfyUI/vLLM/Fish). Once the service is reachable again, one call re-enters the job into the queue and it continues from the exact step it failed at - every artifact already on disk (plan, music, narration, finished clips) is reused. A job that failed while drafting its script returns to `drafting` and waits for approval again. `409` if the job is not in the `failed` state.
+
 ## Revision workflow
 
 ### `PUT /jobs/{id}/scenes`

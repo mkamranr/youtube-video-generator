@@ -130,6 +130,7 @@ Note: a regenerated clip keeps its opening continuity (seeded from the previous 
 ### Managing jobs
 
 - **Cancel** a queued or running job (takes effect within seconds; the in-flight GPU render is aborted).
+- **Resume** a failed job (connection timeout, service down, crash) with one click once the services are back: it re-enters the queue and continues from the exact step it failed at - the plan, music, narration and every finished clip are reused.
 - **Archive** finished jobs to keep the main list clean (Archived Jobs page; unarchive anytime).
 - **Delete** removes a job and all its local files permanently.
 

@@ -580,6 +580,29 @@ class JobManager:
         except Exception:  # noqa: BLE001
             pass
 
+    def resume(self, job_id: str):
+        """Requeue a failed job (connection loss, service down, crash): it re-enters the
+        queue and continues from the step it failed at - artifacts on disk are reused."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "failed":
+                raise ValueError("only failed jobs can be resumed")
+            job.cancel_requested = False
+            job.pause_requested = False
+            restart_draft = job.source in ("topic", "description") and not job.script_approved
+            if restart_draft:
+                job.set("drafting", "resumed - writing script with the LLM", error="", archived=False)
+                job.add_log("resumed by user - restarting the script draft")
+            else:
+                job.set("queued", "resumed - waiting for the queue", error="", archived=False)
+                job.add_log("resumed by user - finished steps will be reused")
+                self.queue.append(job_id)
+        if restart_draft:
+            self._start_draft(job)
+        return job
+
     def submit_prompt(self, text: str, source_kind: str,
                       aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "",

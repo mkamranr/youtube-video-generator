@@ -212,6 +212,17 @@ def delete_job(job_id: str):
     return {"deleted": job_id}
 
 
+@app.post("/jobs/{job_id}/resume")
+def resume_job(job_id: str):
+    """Requeue a failed job; it continues from the step it failed at (artifacts reused)."""
+    try:
+        return _job_json(manager.resume(job_id))
+    except KeyError:
+        raise HTTPException(404, "unknown job")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 @app.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: str):
     try:

@@ -43,6 +43,7 @@
   <div class="job-head">
     <h1 id="title">…</h1>
     <span id="pill"></span>
+    <button class="btn sm" id="resumeBtn" hidden>Resume</button>
     <button class="btn danger sm" id="cancelBtn" hidden>Cancel</button>
   </div>
   <div class="job-meta">
@@ -163,6 +164,18 @@
     <div class="filelist" id="fileList"></div>
   </section>
 </main>
+<div class="modal-backdrop" id="ynModal">
+  <div class="modal" style="max-width:460px">
+    <div class="modal-head"><h3 id="ynTitle">Confirm</h3></div>
+    <div class="modal-body">
+      <p id="ynMsg" style="white-space:pre-line;margin:0 0 18px"></p>
+      <div class="row">
+        <button class="btn" id="ynYes">Yes</button>
+        <button class="btn secondary" id="ynNo">No</button>
+      </div>
+    </div>
+  </div>
+</div>
 <script src="/js/common.js"></script>
 <script>
 document.getElementById("nav").outerHTML = navbar("home");
@@ -338,6 +351,7 @@ function update(j) {
   sl.classList.toggle("error", !!j.error);
   renderStepper(j);
   $("#cancelBtn").hidden = ["done", "failed", "awaiting_approval", "drafting"].includes(j.status);
+  $("#resumeBtn").hidden = j.status !== "failed";
   $("#approvalSec").hidden = j.status !== "awaiting_approval";
   if (j.status === "drafting") approvalLoaded = false;
 
@@ -441,6 +455,11 @@ async function refresh() {
   }
 }
 
+$("#resumeBtn").onclick = async () => {
+  try { await api(`/jobs/${jobId}/resume`, { method: "POST" }); toast("Job resumed - finished steps will be reused"); refresh(); }
+  catch (e) { toast(e.message, true); }
+};
+
 $("#cancelBtn").onclick = async () => {
   if (!confirm("Cancel this running job?")) return;
   try { await api(`/jobs/${jobId}/cancel`, { method: "POST" }); toast("Cancelling job"); refresh(); }
@@ -492,6 +511,19 @@ $("#thumbRegen").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
+let ynResolve = null;
+function askConfirm(msg, title = "Confirm") {
+  $("#ynTitle").textContent = title;
+  $("#ynMsg").textContent = msg;
+  $("#ynModal").classList.add("open");
+  return new Promise(res => { ynResolve = res; });
+}
+function ynClose(v) { $("#ynModal").classList.remove("open"); if (ynResolve) { ynResolve(v); ynResolve = null; } }
+$("#ynYes").onclick = () => ynClose(true);
+$("#ynNo").onclick = () => ynClose(false);
+$("#ynModal").addEventListener("click", ev => { if (ev.target === $("#ynModal")) ynClose(false); });
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#ynModal").classList.contains("open")) ynClose(false); });
+
 $("#ytBtn").onclick = async () => {
   const already = lastJob && lastJob.yt_status === "uploaded" && lastJob.yt_video_id;
   const msg = already
@@ -500,8 +532,8 @@ $("#ytBtn").onclick = async () => {
 Uploading again will create a SECOND copy on your channel - the existing one is not replaced.
 
 Are you sure you want to upload it again?`
-    : "Upload this video to YouTube? It will be uploaded with your configured privacy setting and the SEO title/description.";
-  if (!confirm(msg)) return;
+    : "The video will be uploaded with your configured privacy setting and the SEO title/description.";
+  if (!(await askConfirm(msg, already ? "Upload to YouTube again?" : "Upload to YouTube?"))) return;
   try {
     await api(`/jobs/${jobId}/youtube-upload`, { method: "POST" });
     toast("YouTube upload started");
