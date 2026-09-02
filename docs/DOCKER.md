@@ -35,7 +35,7 @@ Every setting from the Configuration table in the README can be supplied as an e
 | `VIDEOGEN_VLLM_URL` | `http://192.168.1.50:8000/v1` |
 | `VIDEOGEN_VLLM_MODEL` | `agents-a1` |
 | `VIDEOGEN_FISH_URL` | `http://192.168.1.50:7860/` |
-| `VIDEOGEN_CHANNEL_NAME` | `Habibi Kids Channel` |
+| `VIDEOGEN_CHANNEL_NAME` | `My YouTube Channel` |
 | `VIDEOGEN_AUDIO_MODE` | `music` \| `narration` \| `narration+music` (default preselection in the New Video dialog) |
 | `VIDEOGEN_TTS_TEMPERATURE` | `0.8` |
 | `VIDEOGEN_TTS_TOP_P` | `0.8` |

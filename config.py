@@ -78,7 +78,7 @@ ART_STYLES = {
     "Experimental": "Experimental mixed-media animation: shifting art styles, collage textures, inventive transitions, playful visual surprises.",
 }
 DEFAULT_ART_STYLE = "Pixar-like 3D"
-CHANNEL_NAME = "Habibi Kids Channel"   # the channel these videos are published on
+CHANNEL_NAME = "My YouTube Channel"    # the channel these videos are published on (set yours in Settings)
 
 # Per-job soft target length presets (None = Auto, use the global settings)
 VIDEO_LENGTHS = {

@@ -1,4 +1,4 @@
-# VideoGen — AI Video Generator for Habibi Kids Channel
+# VideoGen — AI Video Generator for Your YouTube Channel
 
 VideoGen turns any YouTube video into a brand-new, kid-safe animated video — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
 
@@ -9,7 +9,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **Three ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), or your own **description / short script** (the LLM builds on it faithfully). Topic/description jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
 - **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
-- **Channel branding** — a configurable channel name (default: *Habibi Kids Channel*) replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
+- **Channel branding** — works for any YouTube channel: set your channel name once in Settings and it replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
 - **Song or voiceover, chosen per video** — the New Video dialog offers **Generate Song** (an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals) or **Generate Voiceover** (the LLM writes the narration, Fish Speech speaks it, and a quiet music bed is mixed underneath). The `AUDIO_MODE` setting only preselects the dialog; a pure `narration` mode (no music bed) remains available via the setting/API.
 - **Voice cloning with reference voices** — upload short speech samples (plus the exact text spoken in them) on the Settings page, then pick a voice per voiceover video; Fish Speech clones it for the narration. No selection = the model's default voice.
 - **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each 5-second clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
@@ -148,7 +148,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `TTS_TOP_P` | `0.8` | Fish Speech nucleus sampling (0.1–1) |
 | `TTS_REPETITION_PENALTY` | `1.1` | Fish Speech penalty against repeated tokens (0.9–2) |
 | `TTS_CHUNK_CHARS` | `300` | Max characters per Fish request; longer narration is split and concatenated (100–500) |
-| `CHANNEL_NAME` | `Habibi Kids Channel` | Channel branding; replaces source channel/brand names |
+| `CHANNEL_NAME` | `My YouTube Channel` | Your channel name; replaces source channel/brand names |
 | `DEFAULT_ART_STYLE` | `Pixar-like 3D` | Preselected art style for new jobs |
 | `DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` | Preselected aspect ratio |
 | `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |

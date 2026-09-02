@@ -12,7 +12,7 @@ services:
       VIDEOGEN_VLLM_URL: "http://host.docker.internal:8000/v1"
       VIDEOGEN_VLLM_MODEL: "agents-a1"
       VIDEOGEN_FISH_URL: "http://host.docker.internal:7860/"
-      VIDEOGEN_CHANNEL_NAME: "Habibi Kids Channel"
+      VIDEOGEN_CHANNEL_NAME: "My YouTube Channel"
       # Any setting can be overridden the same way, e.g.:
       # VIDEOGEN_AUDIO_MODE: "music"
       # VIDEOGEN_TARGET_VIDEO_SECONDS: "0"

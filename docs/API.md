@@ -134,7 +134,7 @@ Voice samples for Fish Speech voice cloning, managed on the Settings page; pick 
 Partial update; values are validated (range/enum) and persisted to `settings.json`, applying to new jobs immediately.
 
 ```json
-{ "TARGET_VIDEO_SECONDS": 0, "CHANNEL_NAME": "Habibi Kids Channel" }
+{ "TARGET_VIDEO_SECONDS": 0, "CHANNEL_NAME": "My YouTube Channel" }
 ```
 
 ### `GET /api/health`
