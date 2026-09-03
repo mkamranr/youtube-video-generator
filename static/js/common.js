@@ -42,7 +42,7 @@ function icon(name) {
 function navbar(active) {
   const theme = document.documentElement.dataset.theme;
   return `<nav class="nav">
-    <a class="brand" href="/"><span class="logo">${icon("play")}</span> VideoGen</a>
+    <a class="brand" href="/"><span class="logo" aria-hidden="true"></span> VideoGen</a>
     <div class="links">
       <a href="/" class="${active === "home" ? "active" : ""}">${icon("list")} Jobs</a>
       <a href="/archive" class="${active === "archive" ? "active" : ""}">${icon("archive")} Archived Jobs</a>

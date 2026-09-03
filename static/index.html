@@ -5,6 +5,9 @@
 <title>VideoGen — Jobs</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -30,49 +33,64 @@
       </div>
       <div class="modal-body">
         <p class="page-sub" id="subText" style="margin-bottom:16px">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
-        <div class="row" style="margin-bottom:14px">
-          <div class="grow" style="min-width:180px">
-            <label for="channel">Channel</label>
-            <select id="channel"></select>
+        <div class="msec">
+          <div class="msec-title">Content</div>
+          <div class="row">
+            <div class="grow" style="min-width:180px">
+              <label for="channel">Channel</label>
+              <select id="channel"></select>
+            </div>
+            <div class="grow" style="min-width:200px">
+              <label for="source">Create from</label>
+              <select id="source">
+                <option value="url" selected>YouTube URLs</option>
+                <option value="topic">Topic</option>
+                <option value="description">Description / short script</option>
+              </select>
+            </div>
           </div>
-          <div class="grow" style="min-width:200px">
-            <label for="source">Create from</label>
-            <select id="source">
-              <option value="url" selected>YouTube URLs</option>
-              <option value="topic">Topic</option>
-              <option value="description">Description / short script</option>
-            </select>
-          </div>
-          <div class="grow" style="min-width:160px">
-            <label for="vlen">Video length</label>
-            <select id="vlen"></select>
-          </div>
-          <div class="grow" style="min-width:180px">
-            <label for="ar">Aspect ratio</label>
-            <select id="ar"></select>
-          </div>
-          <div class="grow" style="min-width:170px">
-            <label for="audio">Audio</label>
-            <select id="audio">
-              <option value="music">Generate Song</option>
-              <option value="narration+music">Generate Voiceover</option>
-            </select>
-          </div>
-          <div class="grow" id="voiceField" style="min-width:170px" hidden>
-            <label for="voice">Voice</label>
-            <select id="voice"><option value="">Default voice</option></select>
+          <div style="margin-top:12px">
+            <label for="urls" id="inputLabel">YouTube URLs</label>
+            <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
           </div>
         </div>
-        <label for="urls" id="inputLabel">YouTube URLs</label>
-        <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
-        <div id="artstyleBlock" style="margin-top:14px;max-width:420px">
-          <label for="artstyle">Art style</label>
-          <div class="combo">
-            <input type="text" id="artstyle" autocomplete="off" spellcheck="false" placeholder="Search art styles...">
-            <div class="combo-list" id="artstyleList" hidden></div>
+        <div class="msec">
+          <div class="msec-title">Sound &amp; format</div>
+          <div class="row">
+            <div class="grow" style="min-width:170px">
+              <label for="audio">Audio</label>
+              <select id="audio">
+                <option value="music">Generate Song</option>
+                <option value="narration+music">Generate Voiceover</option>
+              </select>
+            </div>
+            <div class="grow" id="voiceField" style="min-width:170px" hidden>
+              <label for="voice">Voice</label>
+              <select id="voice"><option value="">Default voice</option></select>
+            </div>
+            <div class="grow" style="min-width:160px">
+              <label for="vlen">Video length</label>
+              <select id="vlen"></select>
+            </div>
+            <div class="grow" style="min-width:180px">
+              <label for="ar">Aspect ratio</label>
+              <select id="ar"></select>
+            </div>
           </div>
-          <img id="stylePreview" alt="style preview" hidden
-               style="width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block;margin-top:10px">
+        </div>
+        <div id="artstyleBlock" class="msec">
+          <div class="msec-title">Art style</div>
+          <div class="stylerow">
+            <div class="grow" style="min-width:220px">
+              <label for="artstyle">Style</label>
+              <div class="combo">
+                <input type="text" id="artstyle" autocomplete="off" spellcheck="false" placeholder="Search art styles...">
+                <div class="combo-list" id="artstyleList" hidden></div>
+              </div>
+              <div class="hint">Sets the look of every shot and the thumbnail.</div>
+            </div>
+            <img id="stylePreview" alt="style preview" hidden>
+          </div>
         </div>
         <div class="row" style="margin-top:18px">
           <button class="btn" id="go"></button>
@@ -81,6 +99,8 @@
       </div>
     </div>
   </div>
+
+  <div class="chips" id="statusChips"></div>
 
   <div class="card" style="padding:20px 20px 8px">
     <h2>Jobs <span class="count" id="count"></span></h2>
@@ -203,10 +223,17 @@ async function removeJob(ev, id) {
   catch (e) { toast(e.message, true); }
 }
 
+function thumbHTML(j) {
+  return (j.files || []).includes("thumbnail.jpg")
+    ? `<img class="jc-thumb" src="/jobs/${j.id}/files/thumbnail.jpg?v=${j.updated}" alt="" loading="lazy">`
+    : `<div class="jc-thumb ph">${icon("video")}</div>`;
+}
+
 function jobCard(j) {
   const canDelete = ["done", "failed"].includes(j.status);
   const detail = j.error || j.detail || "";
   return `<a class="jobcard" href="/job/${j.id}">
+    ${thumbHTML(j)}
     <div class="jc-main">
       <div class="jc-title">${esc(j.title || j.url || j.topic)}</div>
       <div class="jc-url">${esc(j.url || (j.topic ? (j.source === "description" ? "description: " : "topic: ") + j.topic.slice(0, 90) : ""))}</div>
@@ -225,6 +252,7 @@ function jobCard(j) {
     </div>
     <div class="jc-side">
       <div style="display:flex;gap:8px;align-items:center">
+        ${j.status === "awaiting_approval" ? `<button class="btn sm" onclick="event.preventDefault();location.href='/job/${j.id}'">Review script</button>` : ""}
         ${j.status === "failed" ? `<button class="btn sm" onclick="resumeJob(event,'${j.id}')">Resume</button>` : ""}
         ${canDelete ? `<button class="btn secondary sm" onclick="archiveJob(event,'${j.id}')">Archive</button>
                        <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>`
@@ -239,10 +267,26 @@ function jobCard(j) {
 
 let lastJobs = [];
 
+const CHIP_DEFS = [
+  ["all", "All", () => true],
+  ["attention", "Needs attention", j => ["awaiting_approval", "failed"].includes(j.status)],
+  ["production", "In production", j => !["awaiting_approval", "failed", "done"].includes(j.status)],
+  ["done", "Done", j => j.status === "done"],
+];
+let statusFilter = "all";
+
+function setStatusFilter(k) { statusFilter = k; page = 1; render(applyFilter(lastJobs)); }
+
+function renderChips() {
+  $("#statusChips").innerHTML = CHIP_DEFS.map(([k, label, fn]) =>
+    `<button class="chip ${statusFilter === k ? "on" : ""}" type="button" onclick="setStatusFilter('${k}')">
+       ${label}<span>${lastJobs.filter(fn).length}</span></button>`).join("");
+}
+
 function applyFilter(jobs) {
   const cf = $("#channelFilter").value;
   const q = ($("#jobSearch").value || "").trim().toLowerCase();
-  let out = jobs;
+  let out = jobs.filter(CHIP_DEFS.find(c => c[0] === statusFilter)[2]);
   if (cf) out = out.filter(j => j.channel_id === cf);
   if (q) out = out.filter(j =>
     [j.title, j.url, j.topic, j.id, j.status, j.art_style,
@@ -285,11 +329,17 @@ function render(jobs) {
       : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
   }
   renderPager(jobs.length);
+  renderChips();
 }
+
+// jobs that need the user come first: approvals, then failures, then live work
+const STATUS_WEIGHT = { awaiting_approval: 0, failed: 1, queued: 3, done: 4 };
 
 async function refresh() {
   try {
     lastJobs = await api("/jobs");
+    lastJobs.sort((a, b) =>
+      (STATUS_WEIGHT[a.status] ?? 2) - (STATUS_WEIGHT[b.status] ?? 2) || b.created - a.created);
     render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
 }
@@ -367,7 +417,7 @@ document.addEventListener("click", ev => { if (!ev.target.closest(".combo")) hid
 $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
 $("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
 $("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
-loadOptions();
+loadOptions().then(() => { if (location.hash === "#new") openCreate(); });
 refresh();
 setInterval(refresh, 3000);
 </script>
