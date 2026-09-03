@@ -22,23 +22,94 @@
   </div>
 
   <div class="card">
-    <h2>YouTube</h2>
-    <div class="hint" style="margin-bottom:10px">Upload finished videos straight to your channel (scope: youtube.upload only). Put your OAuth <code>client_secret.json</code> (Desktop-type client) in the project folder, then connect. Uploads use the SEO title/description and your privacy + made-for-kids settings below.</div>
-    <div class="row">
-      <span class="hint" id="ytState">checking…</span>
-      <button class="btn secondary sm" id="ytConnect" type="button">Connect YouTube</button>
-      <button class="btn danger sm" id="ytDisconnect" type="button" hidden>Disconnect</button>
+    <h2>Channels</h2>
+    <div class="hint" style="margin-bottom:10px">Each channel has its own name, purpose, logo, video type and per-video defaults; every video is generated to match the channel picked in the New Video dialog. Uploads go to the YouTube account connected per channel (scope: youtube.upload only) — upload your OAuth <code>client_secret.json</code> (Desktop-type client) below to share it across channels, or give a channel its own in its edit dialog. Each channel chooses its own made-for-kids (COPPA) flag for uploads.</div>
+    <div class="row" style="margin-bottom:12px;align-items:center">
+      <span class="hint" id="sharedSecretState">checking…</span>
+      <input type="file" id="sharedSecretFile" accept=".json,application/json" style="max-width:280px">
+      <button class="btn secondary sm" id="sharedSecretUpload" type="button">Upload shared OAuth client</button>
+      <button class="btn danger sm" id="sharedSecretRemove" type="button" hidden>Remove</button>
     </div>
+    <div id="channelList"><div class="hint">loading…</div></div>
+    <div style="margin-top:12px"><button class="btn secondary sm" id="chAdd" type="button">Add channel</button></div>
   </div>
 
-  <div class="card">
-    <h2>Channel logo</h2>
-    <div class="hint" style="margin-bottom:10px">Overlaid on the top-right corner of every generated thumbnail. PNG with transparency recommended.</div>
-    <div class="row">
-      <img id="logoPreview" alt="channel logo" hidden style="height:56px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);padding:6px">
-      <input type="file" id="logoFile" accept="image/*" style="max-width:280px">
-      <button class="btn secondary sm" id="logoUpload" type="button">Upload logo</button>
-      <button class="btn danger sm" id="logoRemove" type="button" hidden>Remove</button>
+  <div class="modal-backdrop" id="chModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="chModalTitle">Add channel</h3>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="chClose" title="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row" style="margin-bottom:12px">
+          <div class="grow" style="min-width:220px">
+            <label for="chName">Channel name</label>
+            <input type="text" id="chName" placeholder="e.g. Bright Minds Town">
+          </div>
+          <div class="grow" style="min-width:150px">
+            <label for="chAudience">Audience</label>
+            <select id="chAudience">
+              <option value="kids">Kids</option>
+              <option value="family">Family</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+          <div class="grow" style="min-width:160px">
+            <label for="chVideoType">Video type</label>
+            <select id="chVideoType">
+              <option value="animated">Animated videos</option>
+              <option value="real">Real videos</option>
+            </select>
+          </div>
+        </div>
+        <label for="chPurpose">Purpose</label>
+        <textarea id="chPurpose" placeholder="What this channel is about — its niche, tone and goals. Guides every generated script, e.g. 'Animated learning videos that teach preschoolers letters, numbers and nature.'"></textarea>
+        <div class="hint" style="margin-top:4px">The audience preset sets the content-safety rules (kids = strictly gentle; family = no gore/explicit content; general = platform guidelines only). Real-video channels use a built-in realistic live-action look instead of an art style.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chKids"><span class="track"></span>
+          Made for kids</label>
+        <div class="hint">Uploads from this channel are self-declared as made for kids on YouTube (COPPA). Independent of the audience preset.</div>
+        <div class="row" style="margin-top:12px">
+          <div class="grow" id="chStyleField" style="min-width:200px">
+            <label for="chStyle">Default art style</label>
+            <select id="chStyle"></select>
+          </div>
+          <div class="grow" style="min-width:170px">
+            <label for="chAudio">Default audio</label>
+            <select id="chAudio">
+              <option value="music">Generate Song</option>
+              <option value="narration+music">Generate Voiceover</option>
+            </select>
+          </div>
+          <div class="grow" id="chVoiceField" style="min-width:170px" hidden>
+            <label for="chVoice">Default voice</label>
+            <select id="chVoice"><option value="">Default voice</option></select>
+          </div>
+          <div class="grow" style="min-width:180px">
+            <label for="chAspect">Default aspect ratio</label>
+            <select id="chAspect"></select>
+          </div>
+          <div class="grow" style="min-width:150px">
+            <label for="chVlen">Default video length</label>
+            <select id="chVlen"></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <img id="chLogoPreview" alt="channel logo" hidden style="height:44px;border-radius:8px;border:1px solid var(--line);background:var(--surface-2);padding:4px">
+          <input type="file" id="chLogoFile" accept="image/*" style="max-width:280px">
+          <span class="hint">Logo: overlaid on the top-right of every thumbnail (PNG with transparency recommended)</span>
+        </div>
+        <div class="row" style="margin-top:12px;align-items:center">
+          <span class="hint" id="chSecretState"></span>
+          <input type="file" id="chSecretFile" accept=".json,application/json" style="max-width:280px">
+          <button class="btn danger sm" id="chSecretRemove" type="button" hidden>Remove own client</button>
+          <span class="hint">Own OAuth <code>client_secret.json</code> (optional; overrides the shared one for this channel)</span>
+        </div>
+        <div class="row" style="margin-top:16px">
+          <button class="btn" id="chSave" type="button">Save channel</button>
+          <button class="btn secondary" id="chCancel" type="button">Cancel</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -70,23 +141,12 @@
         <div class="field"><label for="COMFY_URL">ComfyUI URL</label><input type="text" id="COMFY_URL"><div class="hint">Base URL of the ComfyUI server</div></div>
         <div class="field"><label for="VLLM_URL">vLLM URL</label><input type="text" id="VLLM_URL"><div class="hint">OpenAI-compatible base URL (…/v1)</div></div>
         <div class="field"><label for="VLLM_MODEL">vLLM model id</label><input type="text" id="VLLM_MODEL"><div class="hint">Model name served by vLLM</div></div>
-        <div class="field"><label for="CHANNEL_NAME">Channel name</label><input type="text" id="CHANNEL_NAME"><div class="hint">Videos are branded for this channel; source channel/brand names are replaced with it</div></div>
       </div>
     </div>
 
     <div class="card">
       <h2>Generation</h2>
       <div class="form-grid">
-        <div class="field">
-          <label for="DEFAULT_ASPECT_RATIO">Default aspect ratio</label>
-          <select id="DEFAULT_ASPECT_RATIO"></select>
-          <div class="hint">Preselected aspect ratio for new jobs</div>
-        </div>
-        <div class="field">
-          <label for="DEFAULT_ART_STYLE">Default art style</label>
-          <select id="DEFAULT_ART_STYLE"></select>
-          <div class="hint">Preselected art style for new jobs</div>
-        </div>
         <div class="field">
           <label for="DEFAULT_SOURCE">Default source (Create from)</label>
           <select id="DEFAULT_SOURCE">
@@ -95,11 +155,6 @@
             <option value="description">Description / short script</option>
           </select>
           <div class="hint">Preselected creation mode in the New Video dialog</div>
-        </div>
-        <div class="field">
-          <label for="DEFAULT_VIDEO_LENGTH">Default video length</label>
-          <select id="DEFAULT_VIDEO_LENGTH"></select>
-          <div class="hint">Preselected target length for new jobs</div>
         </div>
         <div class="field">
           <label for="NARRATION_WORDS">Narration length (words)</label>
@@ -145,15 +200,6 @@
           <div class="hint">Scrub each job's rendered files and uploaded frames on the ComfyUI server (storage reclaimed) and delete its history, as soon as artifacts are downloaded</div>
         </div>
         <div class="field">
-          <label for="AUDIO_MODE">Default audio (new jobs)</label>
-          <select id="AUDIO_MODE">
-            <option value="music">Generate Song (music only)</option>
-            <option value="narration">Voiceover only (no music bed)</option>
-            <option value="narration+music">Generate Voiceover (narration + music)</option>
-          </select>
-          <div class="hint">Preselected audio choice in the New Video dialog; each video can override it there</div>
-        </div>
-        <div class="field">
           <label for="YT_PRIVACY">YouTube privacy</label>
           <select id="YT_PRIVACY">
             <option value="private">Private</option>
@@ -161,12 +207,6 @@
             <option value="public">Public</option>
           </select>
           <div class="hint">Privacy of uploaded videos; private lets you review in YouTube Studio first</div>
-        </div>
-        <div class="field">
-          <label>&nbsp;</label>
-          <label class="switch"><input type="checkbox" id="YT_MADE_FOR_KIDS"><span class="track"></span>
-            Made for kids</label>
-          <div class="hint">Marks uploads as made for kids (COPPA self-declaration)</div>
         </div>
         <div class="field">
           <label for="MIN_TRANSCRIPT_WORDS">Min transcript words</label>
@@ -219,15 +259,12 @@
 <script src="/js/common.js"></script>
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
-const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_ASPECT_RATIO", "DEFAULT_ART_STYLE", "DEFAULT_SOURCE", "DEFAULT_VIDEO_LENGTH", "CHANNEL_NAME",
-                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "AUDIO_MODE", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_MADE_FOR_KIDS",
+const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
+                "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY",
                 "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS"];
 
 async function load() {
   const d = await api("/api/settings");
-  $("#DEFAULT_ASPECT_RATIO").innerHTML = d.aspect_ratios.map(a => `<option>${a}</option>`).join("");
-  $("#DEFAULT_ART_STYLE").innerHTML = d.art_styles.map(a => `<option>${a}</option>`).join("");
-  $("#DEFAULT_VIDEO_LENGTH").innerHTML = d.video_lengths.map(a => `<option>${a}</option>`).join("");
   for (const k of FIELDS) {
     const el = document.getElementById(k);
     if (el.type === "checkbox") el.checked = !!d.settings[k];
@@ -282,61 +319,197 @@ $("#genPreviews").onclick = async () => {
   previewStatus(true);
 };
 
-async function refreshYt() {
-  try {
-    const d = await api("/api/youtube/status");
-    $("#ytState").textContent = !d.secret ? "client_secret.json not found in the project folder"
-                              : d.connected ? "connected" : "not connected";
-    $("#ytConnect").hidden = !d.secret || d.connected;
-    $("#ytDisconnect").hidden = !d.connected;
-  } catch (e) { $("#ytState").textContent = e.message; }
+// ---- channels --------------------------------------------------------------
+let chData = { channels: [], art_styles: [], aspect_ratios: [], video_lengths: [] };
+let chEditing = null;   // channel id being edited; null = adding a new one
+
+function chBadge(t) {
+  return `<span class="hint" style="border:1px solid var(--line);border-radius:6px;padding:1px 7px">${esc(t)}</span>`;
 }
 
-$("#ytConnect").onclick = async () => {
+async function refreshChannels() {
+  const box = $("#channelList");
   try {
-    const d = await api("/api/youtube/auth");
+    chData = await api("/api/channels");
+    $("#sharedSecretState").textContent = chData.secret ? "shared OAuth client uploaded" : "no shared OAuth client uploaded";
+    $("#sharedSecretRemove").hidden = !chData.secret;
+    box.innerHTML = chData.channels.length ? chData.channels.map(c => `
+      <div class="row" style="margin-bottom:8px;align-items:center">
+        ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
+        <b style="min-width:140px">${esc(c.name)}</b>
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : "animated")}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
+        <div class="spacer"></div>
+        ${(c.has_secret || chData.secret) ? (c.yt_connected
+          ? `<button class="btn danger sm" type="button" onclick="chDisconnect('${esc(c.id)}')">Disconnect</button>`
+          : `<button class="btn secondary sm" type="button" onclick="chConnect('${esc(c.id)}')">Connect YouTube</button>`) : ""}
+        <button class="btn secondary sm" type="button" onclick="chEdit('${esc(c.id)}')">Edit</button>
+        <button class="btn danger sm" type="button" onclick="chDelete('${esc(c.id)}')">Delete</button>
+      </div>`).join("")
+      : `<div class="hint">No channels yet - add one below.</div>`;
+  } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+
+function chApplyType() { $("#chStyleField").hidden = $("#chVideoType").value === "real"; }
+function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "music"; }
+
+async function chLoadVoices(selected) {
+  try {
+    const d = await api("/api/voices");
+    $("#chVoice").innerHTML = `<option value="">Default voice</option>` +
+      d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    $("#chVoice").value = selected && d.voices.some(v => v.id === selected) ? selected : "";
+  } catch (e) { /* voice list is optional */ }
+}
+
+async function chOpen(c) {
+  if (!chData.art_styles.length) {           // option lists not loaded yet (or a failed fetch)
+    try { chData = await api("/api/channels"); }
+    catch (e) { toast(e.message, true); return; }
+  }
+  chEditing = c ? c.id : null;
+  $("#chModalTitle").textContent = c ? "Edit channel" : "Add channel";
+  $("#chStyle").innerHTML = chData.art_styles.map(a => `<option>${esc(a)}</option>`).join("");
+  $("#chAspect").innerHTML = chData.aspect_ratios.map(a => `<option>${esc(a)}</option>`).join("");
+  $("#chVlen").innerHTML = chData.video_lengths.map(a => `<option>${esc(a)}</option>`).join("");
+  const d = (c && c.defaults) || {};
+  $("#chName").value = c ? c.name : "";
+  $("#chPurpose").value = c ? c.purpose : "";
+  $("#chAudience").value = c ? c.audience : "kids";
+  $("#chVideoType").value = c ? c.video_type : "animated";
+  $("#chKids").checked = c ? !!c.made_for_kids : $("#chAudience").value === "kids";
+  if (d.art_style) $("#chStyle").value = d.art_style;
+  $("#chAudio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
+  if (d.aspect_ratio) $("#chAspect").value = d.aspect_ratio;
+  if (d.video_length) $("#chVlen").value = d.video_length;
+  $("#chLogoFile").value = "";
+  const hasLogo = !!(c && c.has_logo);
+  $("#chLogoPreview").hidden = !hasLogo;
+  if (hasLogo) $("#chLogoPreview").src = `/api/channels/${c.id}/logo?v=${Date.now()}`;
+  const hasSecret = !!(c && c.has_secret);
+  $("#chSecretState").textContent = hasSecret ? "own OAuth client uploaded" : "using the shared OAuth client";
+  $("#chSecretRemove").hidden = !hasSecret;
+  $("#chSecretFile").value = "";
+  chLoadVoices(d.voice_id || "");
+  chApplyType(); chApplyAudio();
+  $("#chModal").classList.add("open");
+  setTimeout(() => $("#chName").focus(), 150);
+}
+function chCloseModal() { $("#chModal").classList.remove("open"); }
+
+function chEdit(id) { const c = chData.channels.find(x => x.id === id); if (c) chOpen(c); }
+
+$("#chSave").onclick = async () => {
+  const body = {
+    name: $("#chName").value.trim(),
+    purpose: $("#chPurpose").value.trim(),
+    audience: $("#chAudience").value,
+    video_type: $("#chVideoType").value,
+    made_for_kids: $("#chKids").checked,
+    defaults: {
+      art_style: $("#chVideoType").value === "real" ? "" : $("#chStyle").value,
+      audio_mode: $("#chAudio").value,
+      voice_id: $("#chAudio").value === "music" ? "" : $("#chVoice").value,
+      aspect_ratio: $("#chAspect").value,
+      video_length: $("#chVlen").value,
+    },
+  };
+  $("#chSave").disabled = true;
+  try {
+    const c = await api(chEditing ? `/api/channels/${chEditing}` : "/api/channels",
+      { method: chEditing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const f = $("#chLogoFile").files[0];
+    if (f) {
+      const fd = new FormData();
+      fd.append("file", f);
+      const r = await fetch(`/api/channels/${c.id}/logo`, { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json()).detail || "logo upload failed");
+    }
+    const sf = $("#chSecretFile").files[0];
+    if (sf) {
+      const fd2 = new FormData();
+      fd2.append("file", sf);
+      const r2 = await fetch(`/api/channels/${c.id}/secret`, { method: "POST", body: fd2 });
+      if (!r2.ok) throw new Error((await r2.json()).detail || "OAuth client upload failed");
+    }
+    toast(chEditing ? "Channel updated" : "Channel added");
+    chCloseModal();
+    refreshChannels();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#chSave").disabled = false; }
+};
+
+async function chDelete(id) {
+  const c = chData.channels.find(x => x.id === id);
+  if (!confirm(`Delete channel "${c ? c.name : id}"? Its logo and YouTube connection are removed. Existing videos keep their generated content, but queued ones can no longer be uploaded through this channel.`)) return;
+  try { await api(`/api/channels/${id}`, { method: "DELETE" }); toast("Channel deleted"); refreshChannels(); }
+  catch (e) { toast(e.message, true); }
+}
+
+async function chConnect(id) {
+  try {
+    const d = await api(`/api/channels/${id}/youtube/auth`);
     window.open(d.url, "_blank");
     toast("Complete the Google sign-in in the new tab, then come back");
     let tries = 0;
     const t = setInterval(async () => {
-      const s = await api("/api/youtube/status");
-      if (s.connected || ++tries > 60) { clearInterval(t); refreshYt(); if (s.connected) toast("YouTube connected"); }
+      const s = await api("/api/channels");
+      const c = s.channels.find(x => x.id === id);
+      if ((c && c.yt_connected) || ++tries > 60) {
+        clearInterval(t);
+        refreshChannels();
+        if (c && c.yt_connected) toast("YouTube connected");
+      }
     }, 3000);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function chDisconnect(id) {
+  if (!confirm("Disconnect this channel from YouTube? The stored token is deleted.")) return;
+  try { await api(`/api/channels/${id}/youtube/auth`, { method: "DELETE" }); toast("Disconnected"); refreshChannels(); }
+  catch (e) { toast(e.message, true); }
+}
+
+$("#chSecretRemove").onclick = async () => {
+  if (!chEditing) return;
+  if (!confirm("Remove this channel's own OAuth client? It falls back to the shared one.")) return;
+  try {
+    await api(`/api/channels/${chEditing}/secret`, { method: "DELETE" });
+    toast("Removed - using the shared OAuth client");
+    $("#chSecretState").textContent = "using the shared OAuth client";
+    $("#chSecretRemove").hidden = true;
+    refreshChannels();
   } catch (e) { toast(e.message, true); }
 };
 
-$("#ytDisconnect").onclick = async () => {
-  if (!confirm("Disconnect YouTube? The stored token is deleted.")) return;
-  try { await api("/api/youtube/auth", { method: "DELETE" }); toast("Disconnected"); refreshYt(); }
-  catch (e) { toast(e.message, true); }
-};
-
-async function refreshLogo() {
-  const r = await fetch("/channel-logo?v=" + Date.now());
-  const has = r.ok;
-  $("#logoPreview").hidden = !has;
-  $("#logoRemove").hidden = !has;
-  if (has) $("#logoPreview").src = "/channel-logo?v=" + Date.now();
-}
-
-$("#logoUpload").onclick = async () => {
-  const f = $("#logoFile").files[0];
-  if (!f) { toast("Choose an image file first", true); return; }
+$("#sharedSecretUpload").onclick = async () => {
+  const f = $("#sharedSecretFile").files[0];
+  if (!f) { toast("Choose your client_secret.json first", true); return; }
   const fd = new FormData();
   fd.append("file", f);
   try {
-    const r = await fetch("/api/channel-logo", { method: "POST", body: fd });
+    const r = await fetch("/api/youtube/secret", { method: "POST", body: fd });
     if (!r.ok) throw new Error((await r.json()).detail || "upload failed");
-    toast("Channel logo saved - it will appear on new thumbnails");
-    refreshLogo();
+    toast("Shared OAuth client saved");
+    $("#sharedSecretFile").value = "";
+    refreshChannels();
   } catch (e) { toast(e.message, true); }
 };
 
-$("#logoRemove").onclick = async () => {
-  if (!confirm("Remove the channel logo?")) return;
-  try { await api("/api/channel-logo", { method: "DELETE" }); toast("Logo removed"); refreshLogo(); }
+$("#sharedSecretRemove").onclick = async () => {
+  if (!confirm("Remove the shared OAuth client? Channels without their own client cannot start new YouTube connections (already-connected channels keep working).")) return;
+  try { await api("/api/youtube/secret", { method: "DELETE" }); toast("Shared OAuth client removed"); refreshChannels(); }
   catch (e) { toast(e.message, true); }
 };
+
+$("#chAdd").onclick = () => chOpen(null);
+$("#chClose").innerHTML = icon("x");
+$("#chClose").onclick = chCloseModal;
+$("#chCancel").onclick = chCloseModal;
+$("#chModal").addEventListener("click", ev => { if (ev.target === $("#chModal")) chCloseModal(); });
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#chModal").classList.contains("open")) chCloseModal(); });
+$("#chVideoType").onchange = chApplyType;
+$("#chAudio").onchange = chApplyAudio;
 
 async function refreshVoices() {
   const box = $("#voiceList");
@@ -382,9 +555,8 @@ async function deleteVoice(id) {
 load().catch(e => toast(e.message, true));
 checkHealth();
 previewStatus(true);
-refreshLogo();
+refreshChannels();
 refreshVoices();
-refreshYt();
 </script>
 </body>
 </html>

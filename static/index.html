@@ -16,6 +16,7 @@
       <p class="page-sub" style="margin:0">Videos for your YouTube channel — generated, reviewed, published.</p>
     </div>
     <div class="spacer"></div>
+    <select id="channelFilter" style="max-width:200px"><option value="">All channels</option></select>
     <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search jobs..."></div>
     <button class="btn" id="openCreate"></button>
   </div>
@@ -30,6 +31,10 @@
       <div class="modal-body">
         <p class="page-sub" id="subText" style="margin-bottom:16px">Paste YouTube URLs (one per line). Each becomes a job: transcript → LLM script → soundtrack → AI clips synced to the audio → final video.</p>
         <div class="row" style="margin-bottom:14px">
+          <div class="grow" style="min-width:180px">
+            <label for="channel">Channel</label>
+            <select id="channel"></select>
+          </div>
           <div class="grow" style="min-width:200px">
             <label for="source">Create from</label>
             <select id="source">
@@ -60,7 +65,7 @@
         </div>
         <label for="urls" id="inputLabel">YouTube URLs</label>
         <textarea id="urls" placeholder="https://www.youtube.com/watch?v=..."></textarea>
-        <div style="margin-top:14px;max-width:420px">
+        <div id="artstyleBlock" style="margin-top:14px;max-width:420px">
           <label for="artstyle">Art style</label>
           <div class="combo">
             <input type="text" id="artstyle" autocomplete="off" spellcheck="false" placeholder="Search art styles...">
@@ -80,6 +85,7 @@
   <div class="card" style="padding:20px 20px 8px">
     <h2>Jobs <span class="count" id="count"></span></h2>
     <div id="jobs"></div>
+    <div class="row" id="pager" style="justify-content:center;align-items:center;gap:6px;margin:12px 0 8px" hidden></div>
   </div>
 </main>
 <script src="/js/common.js"></script>
@@ -97,14 +103,42 @@ const SOURCE_UI = {
 
 function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; }
 
+let channelsList = [];
+function currentChannel() { return channelsList.find(c => c.id === $("#channel").value); }
+
+function applyChannel() {
+  const ch = currentChannel();
+  if (!ch) return;
+  const d = ch.defaults || {};
+  if (d.aspect_ratio) $("#ar").value = d.aspect_ratio;
+  if (d.video_length) $("#vlen").value = d.video_length;
+  $("#audio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
+  applyAudio();
+  loadVoices().then(() => { if (d.voice_id) $("#voice").value = d.voice_id; });
+  const real = ch.video_type === "real";
+  $("#artstyleBlock").hidden = real;
+  if (!real && d.art_style) $("#artstyle").value = d.art_style;
+  updateStylePreview();
+}
+
+let voicesById = {};
+
 async function loadVoices() {
   try {
     const d = await api("/api/voices");
+    voicesById = {};
+    d.voices.forEach(v => { voicesById[v.id] = v.name; });
     const cur = $("#voice").value;
     $("#voice").innerHTML = `<option value="">Default voice</option>` +
       d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
     $("#voice").value = cur && d.voices.some(v => v.id === cur) ? cur : "";
   } catch (e) { /* voice list is optional */ }
+}
+
+function audioLabel(j) {
+  if ((j.audio_mode || "") === "music") return "Song";
+  const v = j.voice_id && voicesById[j.voice_id];
+  return "Voiceover" + (v ? ` (${esc(v)})` : "");
 }
 
 function applySource() {
@@ -118,10 +152,13 @@ async function submit() {
   const mode = $("#source").value;
   const raw = $("#urls").value.trim();
   if (!raw) { toast("Enter something first", true); return; }
-  if (artStyles.length && !artStyles.includes($("#artstyle").value)) {
+  const ch = currentChannel();
+  const real = ch && ch.video_type === "real";
+  if (!real && artStyles.length && !artStyles.includes($("#artstyle").value)) {
     toast("Pick an art style from the list", true); return;
   }
-  let body = { aspect_ratio: $("#ar").value, art_style: $("#artstyle").value,
+  let body = { channel_id: $("#channel").value,
+               aspect_ratio: $("#ar").value, art_style: real ? "" : $("#artstyle").value,
                video_length: $("#vlen").value, audio_mode: $("#audio").value,
                voice_id: $("#audio").value === "music" ? "" : $("#voice").value };
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
@@ -175,8 +212,10 @@ function jobCard(j) {
       <div class="jc-url">${esc(j.url || (j.topic ? (j.source === "description" ? "description: " : "topic: ") + j.topic.slice(0, 90) : ""))}</div>
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
+        ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
+        <span>${audioLabel(j)}</span>
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
-        ${j.video_length && j.video_length !== "Auto" ? `<span>${esc(j.video_length)}</span>` : ""}
+        <span>${j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
@@ -201,18 +240,51 @@ function jobCard(j) {
 let lastJobs = [];
 
 function applyFilter(jobs) {
+  const cf = $("#channelFilter").value;
   const q = ($("#jobSearch").value || "").trim().toLowerCase();
-  if (!q) return jobs;
-  return jobs.filter(j =>
-    [j.title, j.url, j.topic, j.id, j.status, j.art_style].join(" ").toLowerCase().includes(q));
+  let out = jobs;
+  if (cf) out = out.filter(j => j.channel_id === cf);
+  if (q) out = out.filter(j =>
+    [j.title, j.url, j.topic, j.id, j.status, j.art_style,
+     j.channel && j.channel.name].join(" ").toLowerCase().includes(q));
+  return out;
+}
+
+const PAGE_SIZE = 10;
+let page = 1;
+
+function goPage(n) { page = n; render(applyFilter(lastJobs)); }
+
+function renderPager(total) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const p = $("#pager");
+  p.hidden = pages <= 1;
+  if (pages <= 1) { p.innerHTML = ""; return; }
+  const btn = (label, target, dis, cur) =>
+    `<button class="btn ${cur ? "" : "secondary "}sm" ${dis ? "disabled" : ""} onclick="goPage(${target})">${label}</button>`;
+  const nums = [];
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || Math.abs(i - page) <= 2) nums.push(i);
+    else if (nums[nums.length - 1] !== "…") nums.push("…");
+  }
+  p.innerHTML = btn("‹", page - 1, page === 1, false)
+    + nums.map(n => n === "…" ? `<span class="hint">…</span>` : btn(n, n, false, n === page)).join("")
+    + btn("›", page + 1, page === pages, false)
+    + `<span class="hint" style="margin-left:8px">${total} job${total === 1 ? "" : "s"}</span>`;
 }
 
 function render(jobs) {
   $("#count").textContent = lastJobs.length ? `(${lastJobs.length})` : "";
-  if (jobs.length) { $("#jobs").innerHTML = jobs.map(jobCard).join(""); return; }
-  $("#jobs").innerHTML = lastJobs.length
-    ? `<div class="empty">${icon("search")}No jobs match your search.</div>`
-    : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
+  const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
+  if (page > pages) page = pages;
+  if (jobs.length) {
+    $("#jobs").innerHTML = jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(jobCard).join("");
+  } else {
+    $("#jobs").innerHTML = lastJobs.length
+      ? `<div class="empty">${icon("search")}No jobs match your filters.</div>`
+      : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
+  }
+  renderPager(jobs.length);
 }
 
 async function refresh() {
@@ -245,6 +317,11 @@ function updateStylePreview() {
 
 async function loadOptions() {
   const o = await api("/options");
+  channelsList = o.channels || [];
+  $("#channel").innerHTML = channelsList.map(c =>
+    `<option value="${esc(c.id)}" ${c.id === o.default_channel_id ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+  $("#channelFilter").innerHTML = `<option value="">All channels</option>` +
+    channelsList.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
   artStyles = o.art_styles;
   $("#artstyle").value = o.default_art_style;
@@ -256,6 +333,7 @@ async function loadOptions() {
   loadVoices();
   try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
   updateStylePreview();
+  applyChannel();
 }
 
 function openCreate() { loadVoices(); $("#createModal").classList.add("open"); setTimeout(() => $("#urls").focus(), 150); }
@@ -276,6 +354,7 @@ document.addEventListener("keydown", ev => {
 $("#go").onclick = submit;
 $("#source").onchange = applySource;
 $("#audio").onchange = applyAudio;
+$("#channel").onchange = applyChannel;
 $("#artstyle").addEventListener("focus", () => renderStyleList(""));
 $("#artstyle").addEventListener("input", () => { renderStyleList($("#artstyle").value); updateStylePreview(); });
 $("#artstyleList").addEventListener("mousedown", ev => {
@@ -286,7 +365,8 @@ $("#artstyleList").addEventListener("mousedown", ev => {
 });
 document.addEventListener("click", ev => { if (!ev.target.closest(".combo")) hideStyleList(); });
 $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
-$("#jobSearch").addEventListener("input", () => render(applyFilter(lastJobs)));
+$("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
+$("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
 loadOptions();
 refresh();
 setInterval(refresh, 3000);

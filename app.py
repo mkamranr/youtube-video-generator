@@ -15,9 +15,10 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import voices
+from services import channels, voices
 
 app = FastAPI(title="VideoGen")
+channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
 manager = JobManager()
 
 
@@ -35,10 +36,11 @@ class Submit(BaseModel):
     urls: list[str] = []
     topic: str = ""
     description: str = ""
+    channel_id: str = ""       # "" -> the first channel (backcompat for scripted API use)
     aspect_ratio: str = ""
     art_style: str = ""
     video_length: str = ""
-    audio_mode: str = ""       # "" -> config.AUDIO_MODE; music = song, narration(+music) = voiceover
+    audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
 
 
@@ -76,30 +78,26 @@ def create_jobs(body: Submit):
     prompt_kind = "topic" if body.topic.strip() else "description" if body.description.strip() else ""
     if not urls and not prompt_kind:
         raise HTTPException(400, "provide urls, a topic, or a description")
-    ar = body.aspect_ratio or config.DEFAULT_ASPECT_RATIO
-    if ar not in config.ASPECT_RATIOS:
-        raise HTTPException(400, f"aspect_ratio must be one of {config.ASPECT_RATIOS}")
-    style = body.art_style or config.DEFAULT_ART_STYLE
-    if style not in config.ART_STYLES:
-        raise HTTPException(400, f"art_style must be one of {list(config.ART_STYLES)}")
-    vlen = body.video_length or config.DEFAULT_VIDEO_LENGTH
-    if vlen not in config.VIDEO_LENGTHS:
-        raise HTTPException(400, f"video_length must be one of {list(config.VIDEO_LENGTHS)}")
-    am = body.audio_mode or config.AUDIO_MODE
-    if am not in config.AUDIO_MODES:
-        raise HTTPException(400, f"audio_mode must be one of {config.AUDIO_MODES}")
+    if body.channel_id:
+        ch = channels.get_channel(body.channel_id)
+        if not ch:
+            raise HTTPException(400, "unknown channel")
+    else:  # backcompat: scripted API calls without a channel use the first one
+        chans = channels.list_channels()
+        ch = chans[0] if chans else None
     vid = body.voice_id.strip()
-    if am == "music":
-        vid = ""  # a reference voice is meaningless for songs
     if vid and not voices.get_voice(vid):
         raise HTTPException(400, "unknown reference voice")
-    if prompt_kind:
-        text = body.topic if prompt_kind == "topic" else body.description
-        try:
-            return [_job_json(manager.submit_prompt(text, prompt_kind, ar, style, vlen, am, vid))]
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-    return [_job_json(manager.submit(u, ar, style, vlen, am, vid)) for u in urls]
+    try:
+        if prompt_kind:
+            text = body.topic if prompt_kind == "topic" else body.description
+            return [_job_json(manager.submit_prompt(text, prompt_kind, body.aspect_ratio,
+                                                    body.art_style, body.video_length,
+                                                    body.audio_mode, vid, channel=ch))]
+        return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
+                                         body.audio_mode, vid, channel=ch)) for u in urls]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/jobs")
@@ -315,13 +313,28 @@ def download(job_id: str, kind: str):
 
 
 # ---- options / settings / health ------------------------------------------
+def _channel_json(c: dict) -> dict:
+    from services import youtube
+    return {**c, "has_logo": channels.logo_path(c["id"]).exists(),
+            "has_secret": channels.secret_path(c["id"]).exists(),
+            "yt_connected": youtube.is_connected(channels.token_path(c["id"]))}
+
+
+def _channel_secret(cid: str):
+    """The channel's own OAuth client file if uploaded, else the shared one."""
+    p = channels.secret_path(cid)
+    return p if p.exists() else config.YT_CLIENT_SECRET_FILE
+
+
 @app.get("/options")
 def options():
+    chans = [_channel_json(c) for c in channels.list_channels()]
     return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
-            "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music"}
+            "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music",
+            "channels": chans, "default_channel_id": chans[0]["id"] if chans else ""}
 
 
 @app.get("/api/settings")
@@ -342,9 +355,51 @@ def put_settings(body: dict):
     return {"settings": settings}
 
 
-@app.post("/api/channel-logo")
-async def upload_channel_logo(file: UploadFile):
-    """Store the channel logo (converted to PNG with alpha); overlaid on all thumbnails."""
+# ---- channels --------------------------------------------------------------
+@app.get("/api/channels")
+def list_channels_api():
+    from services import youtube
+    return {"channels": [_channel_json(c) for c in channels.list_channels()],
+            "secret": youtube.has_secret(),
+            "audiences": config.AUDIENCES, "video_types": config.VIDEO_TYPES,
+            "art_styles": list(config.ART_STYLES), "aspect_ratios": config.ASPECT_RATIOS,
+            "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES}
+
+
+@app.post("/api/channels")
+def create_channel(body: dict):
+    try:
+        return _channel_json(channels.add_channel(body or {}))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/channels/{cid}")
+def update_channel(cid: str, body: dict):
+    try:
+        return _channel_json(channels.update_channel(cid, body or {}))
+    except KeyError:
+        raise HTTPException(404, "unknown channel")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/channels/{cid}")
+def delete_channel(cid: str):
+    try:
+        channels.delete_channel(cid)
+    except KeyError:
+        raise HTTPException(404, "unknown channel")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
+
+
+@app.post("/api/channels/{cid}/logo")
+async def upload_channel_logo(cid: str, file: UploadFile):
+    """Store a channel's logo (converted to PNG with alpha); overlaid on its thumbnails."""
+    if not channels.get_channel(cid):
+        raise HTTPException(404, "unknown channel")
     from PIL import Image
     import io as _io
     data = await file.read()
@@ -358,24 +413,26 @@ async def upload_channel_logo(file: UploadFile):
         raise HTTPException(400, "not a valid image file")
     if img.width > 1024:
         img = img.resize((1024, max(1, int(img.height * 1024 / img.width))), Image.LANCZOS)
-    img.save(config.LOGO_FILE, "PNG")
+    config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+    img.save(channels.logo_path(cid), "PNG")
     return {"ok": True, "size": [img.width, img.height]}
 
 
-@app.delete("/api/channel-logo")
-def delete_channel_logo():
+@app.delete("/api/channels/{cid}/logo")
+def delete_channel_logo(cid: str):
     try:
-        config.LOGO_FILE.unlink(missing_ok=True)
+        channels.logo_path(cid).unlink(missing_ok=True)
     except OSError as e:
         raise HTTPException(500, str(e))
     return {"ok": True}
 
 
-@app.get("/channel-logo")
-def get_channel_logo():
-    if not config.LOGO_FILE.exists():
-        raise HTTPException(404, "no channel logo uploaded")
-    return FileResponse(config.LOGO_FILE, media_type="image/png")
+@app.get("/api/channels/{cid}/logo")
+def get_channel_logo(cid: str):
+    p = channels.logo_path(cid)
+    if not p.exists():
+        raise HTTPException(404, "no logo uploaded for this channel")
+    return FileResponse(p, media_type="image/png")
 
 
 # ---- reference voices ------------------------------------------------------
@@ -423,41 +480,81 @@ def regen_thumbnail(job_id: str):
         raise HTTPException(409, str(e))
 
 
-@app.get("/api/youtube/status")
-def youtube_status():
+@app.get("/api/channels/{cid}/youtube/auth")
+def channel_youtube_auth(cid: str, request: Request):
     from services import youtube
-    return {"secret": youtube.has_secret(), "connected": youtube.is_connected(),
-            "privacy": config.YT_PRIVACY, "made_for_kids": config.YT_MADE_FOR_KIDS}
-
-
-@app.get("/api/youtube/auth")
-def youtube_auth(request: Request):
-    from services import youtube
-    if not youtube.has_secret():
-        raise HTTPException(409, "client_secret.json not found - place your OAuth client file in the project folder")
+    if not channels.get_channel(cid):
+        raise HTTPException(404, "unknown channel")
+    secret = _channel_secret(cid)
+    if not youtube.has_secret(secret):
+        raise HTTPException(409, "no OAuth client secret - upload one for this channel "
+                                 "or a shared one on the Settings page")
     redirect = str(request.base_url).rstrip("/") + "/api/youtube/callback"
     try:
-        return {"url": youtube.auth_url(redirect)}
+        return {"url": youtube.auth_url(redirect, channels.token_path(cid), secret_file=secret)}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"could not start authorization: {e}")
 
 
+async def _read_secret_upload(file: UploadFile) -> bytes:
+    from services import youtube
+    data = await file.read()
+    if len(data) > 64 * 1024:
+        raise HTTPException(400, "file too large for an OAuth client file (max 64 KB)")
+    try:
+        youtube.validate_secret(data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return data
+
+
+@app.post("/api/channels/{cid}/secret")
+async def upload_channel_secret(cid: str, file: UploadFile):
+    """Store a channel's own OAuth client file (overrides the shared one for this channel)."""
+    if not channels.get_channel(cid):
+        raise HTTPException(404, "unknown channel")
+    data = await _read_secret_upload(file)
+    config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+    channels.secret_path(cid).write_bytes(data)
+    return {"ok": True}
+
+
+@app.delete("/api/channels/{cid}/secret")
+def delete_channel_secret(cid: str):
+    channels.secret_path(cid).unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/youtube/secret")
+async def upload_shared_secret(file: UploadFile):
+    """Store the shared OAuth client file used by channels without their own."""
+    data = await _read_secret_upload(file)
+    config.YT_CLIENT_SECRET_FILE.write_bytes(data)
+    return {"ok": True}
+
+
+@app.delete("/api/youtube/secret")
+def delete_shared_secret():
+    config.YT_CLIENT_SECRET_FILE.unlink(missing_ok=True)
+    return {"ok": True}
+
+
 @app.get("/api/youtube/callback")
-def youtube_callback(code: str = "", error: str = ""):
+def youtube_callback(code: str = "", state: str = "", error: str = ""):
     from services import youtube
     if error or not code:
         return HTMLResponse(f"<h3>Authorization failed: {error or 'no code returned'}</h3>")
     try:
-        youtube.finish_auth(code)
+        youtube.finish_auth(code, state)
     except Exception as e:  # noqa: BLE001
         return HTMLResponse(f"<h3>Authorization failed: {e}</h3>")
     return HTMLResponse("<h3>YouTube connected. You can close this tab and return to VideoGen.</h3>")
 
 
-@app.delete("/api/youtube/auth")
-def youtube_disconnect():
+@app.delete("/api/channels/{cid}/youtube/auth")
+def channel_youtube_disconnect(cid: str):
     from services import youtube
-    youtube.disconnect()
+    youtube.disconnect(channels.token_path(cid))
     return {"ok": True}
 
 

@@ -12,7 +12,7 @@ services/
   transcript.py        YouTube captions via youtube-transcript-api with yt-dlp fallback; cue-tag cleaning;
                        caption coverage seconds for quality gating
   llm.py               All vLLM prompting: story plan, per-clip scenes, music caption/lyrics, SEO metadata,
-                       thumbnail prompt; kid-safety and channel-branding rules live in the system prompt
+                       thumbnail prompt; the audience safety rules, channel purpose and branding live in the system prompt, built per job from its channel snapshot
   tts.py               Fish Speech synthesis (chunked <=TTS_CHUNK_CHARS/request, GPU-OOM aware,
                        optional reference-voice cloning), audio duration
   voices.py            Reference-voice library (reference_audio/): normalized samples + transcripts
@@ -35,7 +35,7 @@ Statuses: `queued → transcript → planning → [music | tts] → scenes → t
 
 - One background worker thread processes the queue serially (single GPU). Queued jobs' `detail` is computed live at request time (position, what is running).
 - **music mode** (default): the song is generated *first*; its measured duration decides the clip count (`ceil(duration / CLIP_SECONDS)`); faster-whisper assigns the sung words to each clip's time window; scenes are then written **one LLM call per clip** from exactly those words (one-call-per-scene prevents alignment drift on long videos). The final mix is the song alone.
-- **narration modes**: Fish TTS narration length decides the clip count; scenes come from evenly split narration segments; final mix = narration (full) + clip ambience + optional music bed. The audio mode and an optional reference voice (`voice_id`) are chosen per job in the New Video dialog; a job whose reference voice was deleted logs a note and falls back to the default voice.
+- **narration modes**: Fish TTS narration length decides the clip count; scenes come from evenly split narration segments; final mix = narration (full) + clip ambience + an optional gentle instrumental music bed (the music model is sent `[Instrumental]` as lyrics, so nothing is ever sung over the narration). The audio mode and an optional reference voice (`voice_id`) are chosen per job in the New Video dialog; a job whose reference voice was deleted logs a note and falls back to the default voice.
 - Clips: clip 1 uses the T2V workflow; clips 2..N use the first-frame workflow seeded with the previous clip's last frame (ffmpeg extraction → ComfyUI image upload), giving visual continuity.
 - Assembly: ffmpeg concat (stream-copy with re-encode fallback) + filtergraph audio mix; video length ≈ audio length (count is the ceiling of the audio duration).
 

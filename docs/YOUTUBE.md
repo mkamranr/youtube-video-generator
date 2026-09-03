@@ -27,22 +27,22 @@ The app requests only the `https://www.googleapis.com/auth/youtube.upload` scope
 1. **APIs & Services → Credentials → + Create credentials → OAuth client ID**.
 2. Application type: **Desktop app** (this matters — Desktop clients allow the localhost redirect VideoGen uses). Name it anything.
 3. **Create**, then **Download JSON**.
-4. Save the downloaded file as **`client_secret.json`** in the VideoGen project folder (next to `app.py`).
+4. Upload the downloaded JSON in VideoGen → **Settings** → **Channels**: use **Upload shared OAuth client** to share it across all channels, or open a channel's edit dialog to give that channel its **own** client (it overrides the shared one — only needed when channels belong to different Google Cloud projects). Saving the file manually as `client_secret.json` in the project folder still works as the shared client.
 
-Both `client_secret.json` and the stored token (`youtube_token.json`) are gitignored — they never leave your machine or enter the repository.
+The client files and the stored per-channel tokens (`channels/<id>_yt_token.json`) are gitignored — they never leave your machine or enter the repository. One OAuth client can serve every channel; each channel signs in with its own Google account.
 
 ## 5. Connect VideoGen
 
-1. Open VideoGen → **Settings** → the **YouTube** card should now say *not connected*.
-2. Click **Connect YouTube** → a Google sign-in tab opens → choose the channel-owning account → allow the upload permission → the tab confirms "YouTube connected".
-3. The Settings card switches to *connected*. Done — this persists across restarts.
+1. Open VideoGen → **Settings** → the **Channels** card lists each channel with its YouTube status.
+2. Click **Connect YouTube** on a channel → a Google sign-in tab opens → choose the account owning **that** channel → allow the upload permission → the tab confirms "YouTube connected".
+3. The channel row switches to *connected*. Done — this persists across restarts. Repeat per channel.
 
 ## 6. Upload a video
 
-On any **finished** job page, click **Upload to YouTube**. The upload runs in the background with live progress; when it completes, the job shows the `youtu.be/...` link. The video arrives with:
+On any **finished** job page, click **Upload to YouTube**. The upload runs in the background with live progress and goes to the account connected for the job's channel; when it completes, the job shows the `youtu.be/...` link. The video arrives with:
 
 - your configured **privacy** (Settings → *YouTube privacy*; default **private** — an unpublished draft you review and publish from YouTube Studio),
-- the **made for kids** flag (Settings toggle; **off by default** — flip it if your uploads are child-directed under COPPA),
+- the **made for kids** flag — a per-channel toggle in the channel dialog (declare it for child-directed content under COPPA; it is independent of the channel's audience preset),
 - the **SEO title and description** generated for the job,
 - the generated **custom thumbnail** (requires a phone-verified channel; if it fails, the video still uploads and the reason is logged).
 

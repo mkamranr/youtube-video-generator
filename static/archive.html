@@ -16,9 +16,11 @@
       <p class="page-sub" style="margin:0">Files stay in <code>output/&lt;job_id&gt;/</code>; unarchive to bring a job back, or delete to remove it for good.</p>
     </div>
     <div class="spacer"></div>
+    <select id="channelFilter" style="max-width:200px"><option value="">All channels</option></select>
     <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search archived jobs..."></div>
   </div>
   <div id="jobs"><div class="empty">No archived jobs.</div></div>
+  <div class="row" id="pager" style="justify-content:center;align-items:center;gap:6px;margin:12px 0 8px" hidden></div>
 </main>
 <script src="/js/common.js"></script>
 <script>
@@ -44,6 +46,7 @@ function jobCard(j) {
       <div class="jc-url">${esc(j.url)}</div>
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
+        ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         <span>${timeAgo(j.created)}</span>
@@ -63,17 +66,58 @@ function jobCard(j) {
 let lastJobs = [];
 
 function applyFilter(jobs) {
+  const cf = $("#channelFilter").value;
   const q = ($("#jobSearch").value || "").trim().toLowerCase();
-  if (!q) return jobs;
-  return jobs.filter(j =>
-    [j.title, j.url, j.topic, j.id, j.status, j.art_style].join(" ").toLowerCase().includes(q));
+  let out = jobs;
+  if (cf) out = out.filter(j => j.channel_id === cf);
+  if (q) out = out.filter(j =>
+    [j.title, j.url, j.topic, j.id, j.status, j.art_style,
+     j.channel && j.channel.name].join(" ").toLowerCase().includes(q));
+  return out;
+}
+
+async function loadChannelFilter() {
+  try {
+    const o = await api("/options");
+    $("#channelFilter").innerHTML = `<option value="">All channels</option>` +
+      (o.channels || []).map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  } catch (e) { /* filter stays on All channels */ }
+}
+
+const PAGE_SIZE = 10;
+let page = 1;
+
+function goPage(n) { page = n; render(applyFilter(lastJobs)); }
+
+function renderPager(total) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const p = $("#pager");
+  p.hidden = pages <= 1;
+  if (pages <= 1) { p.innerHTML = ""; return; }
+  const btn = (label, target, dis, cur) =>
+    `<button class="btn ${cur ? "" : "secondary "}sm" ${dis ? "disabled" : ""} onclick="goPage(${target})">${label}</button>`;
+  const nums = [];
+  for (let i = 1; i <= pages; i++) {
+    if (i === 1 || i === pages || Math.abs(i - page) <= 2) nums.push(i);
+    else if (nums[nums.length - 1] !== "…") nums.push("…");
+  }
+  p.innerHTML = btn("‹", page - 1, page === 1, false)
+    + nums.map(n => n === "…" ? `<span class="hint">…</span>` : btn(n, n, false, n === page)).join("")
+    + btn("›", page + 1, page === pages, false)
+    + `<span class="hint" style="margin-left:8px">${total} job${total === 1 ? "" : "s"}</span>`;
 }
 
 function render(jobs) {
-  if (jobs.length) { $("#jobs").innerHTML = jobs.map(jobCard).join(""); return; }
-  $("#jobs").innerHTML = lastJobs.length
-    ? `<div class="empty">${icon("search")}No archived jobs match your search.</div>`
-    : `<div class="empty">${icon("archive")}No archived jobs.</div>`;
+  const pages = Math.max(1, Math.ceil(jobs.length / PAGE_SIZE));
+  if (page > pages) page = pages;
+  if (jobs.length) {
+    $("#jobs").innerHTML = jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(jobCard).join("");
+  } else {
+    $("#jobs").innerHTML = lastJobs.length
+      ? `<div class="empty">${icon("search")}No archived jobs match your search.</div>`
+      : `<div class="empty">${icon("archive")}No archived jobs.</div>`;
+  }
+  renderPager(jobs.length);
 }
 
 async function refresh() {
@@ -84,7 +128,9 @@ async function refresh() {
 }
 
 $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
-$("#jobSearch").addEventListener("input", () => render(applyFilter(lastJobs)));
+$("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
+$("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
+loadChannelFilter();
 refresh();
 </script>
 </body>

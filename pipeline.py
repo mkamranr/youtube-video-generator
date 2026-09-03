@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import comfy, llm, lyrics, transcript, tts, video
+from services import channels, comfy, llm, lyrics, transcript, tts, video
 
 
 @dataclass
@@ -24,6 +24,8 @@ class Job:
     video_length: str = "Auto"
     source: str = "youtube"
     topic: str = ""
+    channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
+    channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, audience, video_type}
     script_approved: bool = False
     status: str = "queued"          # queued|transcript|planning|tts|scenes|music|clips|assembling|done|failed
     detail: str = ""
@@ -111,6 +113,15 @@ def _length_params(job: Job):
     lo, hi = rng
     mid = (lo + hi) / 2.0
     return int(mid * 2.5), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
+
+
+def _logo_for(job: Job):
+    """The job's channel logo for the thumbnail overlay; legacy global logo as fallback."""
+    if job.channel_id:
+        p = channels.logo_path(job.channel_id)
+        if p.exists():
+            return p
+    return config.LOGO_FILE if config.LOGO_FILE.exists() else None
 
 
 def _progress(job: Job, status: str):
@@ -274,12 +285,14 @@ def _run(job: Job):
     if plan is None:
         job.set("planning", "asking vLLM for the story plan")
         plan = llm.write_narration(text, words=_length_params(job)[0],
-                                   art_style=config.ART_STYLES.get(job.art_style, ""))
+                                   art_style=config.ART_STYLES.get(job.art_style, ""),
+                                   channel=job.channel)
     plan["audio_mode"] = mode
     if not plan.get("seo_title"):
         job.set("planning", "writing SEO title and description")
         try:
-            plan.update(llm.write_seo(plan.get("title", ""), plan["narration"], text))
+            plan.update(llm.write_seo(plan.get("title", ""), plan["narration"], text,
+                                      channel=job.channel))
             job.add_log(f"seo title: {plan.get('seo_title', '')}")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"seo metadata failed ({e}); continuing without it")
@@ -304,7 +317,8 @@ def _run(job: Job):
             job.set("music", "writing music caption and lyrics with vLLM")
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
                                          standalone=True, seconds=l_target,
-                                         max_seconds=l_max, seconds_range=l_range)
+                                         max_seconds=l_max, seconds_range=l_range,
+                                         channel=job.channel)
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         if (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
@@ -371,7 +385,8 @@ def _run(job: Job):
         def review_issue(idx, issues):
             job.add_log(f"review fixed scene {idx}: " + "; ".join(issues)[:160])
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
-                                          on_progress=scene_progress, on_review_issue=review_issue)
+                                          on_progress=scene_progress, on_review_issue=review_issue,
+                                          channel=job.channel)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -386,7 +401,8 @@ def _run(job: Job):
             _check_cancel(job)
             job.set("thumbnail", "designing the thumbnail with vLLM")
             if not plan.get("thumbnail_prompt"):
-                plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"]))
+                plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
+                                                channel=job.channel))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("thumbnail", "rendering the thumbnail frame")
             tclient = comfy.ComfyClient()
@@ -398,8 +414,7 @@ def _run(job: Job):
                                should_stop=lambda: job.cancel_requested,
                                cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
             tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
-            video.make_thumbnail(traw, thumb, tw, th,
-                                 logo=config.LOGO_FILE if config.LOGO_FILE.exists() else None)
+            video.make_thumbnail(traw, thumb, tw, th, logo=_logo_for(job))
             job.add_log(f"thumbnail ready ({tw}x{th})")
         except JobCancelled:
             raise
@@ -410,7 +425,9 @@ def _run(job: Job):
     if mode == "narration+music":
         try:
             job.set("music", "writing music caption and lyrics with vLLM")
-            music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text)
+            music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
+                                         channel=job.channel)
+            music_plan["lyrics"] = "[Instrumental]"  # background bed: never sing over the narration
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("music", "generating music with ComfyUI")
@@ -514,23 +531,41 @@ class JobManager:
             except Exception:  # noqa: BLE001
                 pass
 
-    def submit(self, url: str, aspect_ratio: str = config.DEFAULT_ASPECT_RATIO,
-               art_style: str = "", video_length: str = "",
-               audio_mode: str = "", voice_id: str = "") -> Job:
-        audio_mode = audio_mode or config.AUDIO_MODE
+    @staticmethod
+    def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
+                         audio_mode: str, voice_id: str, channel: dict | None):
+        """Per-video choices: request value -> channel default -> global default; validated.
+        Real-video channels always use the built-in live-action look (art_style stays "")."""
+        ch = channel or {}
+        defaults = ch.get("defaults") or {}
+        audio_mode = audio_mode or defaults.get("audio_mode") or config.AUDIO_MODE
         if audio_mode not in config.AUDIO_MODES:
             raise ValueError(f"unsupported audio mode: {audio_mode}")
+        voice_id = "" if audio_mode == "music" else (voice_id or defaults.get("voice_id") or "")
+        aspect_ratio = aspect_ratio or defaults.get("aspect_ratio") or config.DEFAULT_ASPECT_RATIO
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
-        art_style = art_style or config.DEFAULT_ART_STYLE
-        if art_style not in config.ART_STYLES:
-            raise ValueError(f"unsupported art style: {art_style}")
-        video_length = video_length or config.DEFAULT_VIDEO_LENGTH
+        if ch.get("video_type") == "real":
+            art_style = ""
+        else:
+            art_style = art_style or defaults.get("art_style") or config.DEFAULT_ART_STYLE
+            if art_style not in config.ART_STYLES:
+                raise ValueError(f"unsupported art style: {art_style}")
+        video_length = video_length or defaults.get("video_length") or config.DEFAULT_VIDEO_LENGTH
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
+        snap = channels.snapshot(ch) if ch.get("id") else {}
+        return aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap
+
+    def submit(self, url: str, aspect_ratio: str = "",
+               art_style: str = "", video_length: str = "",
+               audio_mode: str = "", voice_id: str = "",
+               channel: dict | None = None) -> Job:
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap = \
+            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length)
+                  video_length=video_length, channel_id=cid, channel=snap)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -606,29 +641,20 @@ class JobManager:
     def submit_prompt(self, text: str, source_kind: str,
                       aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "",
-                      audio_mode: str = "", voice_id: str = "") -> Job:
+                      audio_mode: str = "", voice_id: str = "",
+                      channel: dict | None = None) -> Job:
         text = (text or "").strip()
-        audio_mode = audio_mode or config.AUDIO_MODE
-        if audio_mode not in config.AUDIO_MODES:
-            raise ValueError(f"unsupported audio mode: {audio_mode}")
         if len(text) < 3:
             raise ValueError("topic/description is too short")
         if source_kind not in ("topic", "description"):
             raise ValueError("invalid source kind")
-        aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
-        if aspect_ratio not in config.ASPECT_RATIOS:
-            raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
-        art_style = art_style or config.DEFAULT_ART_STYLE
-        if art_style not in config.ART_STYLES:
-            raise ValueError(f"unsupported art style: {art_style}")
-        video_length = video_length or config.DEFAULT_VIDEO_LENGTH
-        if video_length not in config.VIDEO_LENGTHS:
-            raise ValueError(f"unsupported video length: {video_length}")
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap = \
+            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length)
+                  video_length=video_length, channel_id=cid, channel=snap)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -651,7 +677,8 @@ class JobManager:
                     previous = None
             plan = llm.write_script_from_prompt(
                 job.topic, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
-                words=_length_params(job)[0], feedback=feedback, previous=previous)
+                words=_length_params(job)[0], feedback=feedback, previous=previous,
+                channel=job.channel)
             plan["audio_mode"] = job.audio_mode
             job.dir.mkdir(parents=True, exist_ok=True)
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -708,8 +735,11 @@ class JobManager:
                 raise ValueError("final video not found")
             if not youtube.has_secret():
                 raise ValueError("client_secret.json not found - place your OAuth client file in the project folder")
-            if not youtube.is_connected():
-                raise ValueError("YouTube is not connected - connect it on the Settings page first")
+            token_file = channels.token_path(job.channel_id) if job.channel_id else config.YT_TOKEN_FILE
+            if not youtube.is_connected(token_file):
+                raise ValueError("this channel is not connected to YouTube - connect it on the Settings page first"
+                                 if job.channel_id else
+                                 "YouTube is not connected - connect it on the Settings page first")
             job.set(yt_status="uploading", yt_progress=0, yt_error="")
         threading.Thread(target=self._yt_upload, args=(job,), daemon=True).start()
         return job
@@ -720,11 +750,16 @@ class JobManager:
             plan = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
             title = plan.get("seo_title") or plan.get("title") or job.title
             desc = plan.get("seo_description", "")
-            job.add_log("YouTube upload started")
+            token_file = channels.token_path(job.channel_id) if job.channel_id else config.YT_TOKEN_FILE
+            made_for_kids = job.channel.get("made_for_kids",
+                                            job.channel.get("audience") == "kids") \
+                if job.channel else config.YT_MADE_FOR_KIDS
+            target = f' to "{job.channel["name"]}"' if job.channel.get("name") else ""
+            job.add_log(f"YouTube upload started{target}")
             vid, thumb_err = youtube.upload(
                 job.dir / "final.mp4", job.dir / "thumbnail.jpg", title, desc,
-                config.YT_PRIVACY, config.YT_MADE_FOR_KIDS,
-                on_progress=lambda p: job.set(yt_progress=p))
+                config.YT_PRIVACY, made_for_kids,
+                on_progress=lambda p: job.set(yt_progress=p), token_file=token_file)
             job.set(yt_status="uploaded", yt_progress=100, yt_video_id=vid)
             job.add_log(f"uploaded to YouTube ({config.YT_PRIVACY}): https://youtu.be/{vid}")
             if thumb_err:
@@ -762,8 +797,7 @@ class JobManager:
                               on_progress=_progress(job, "thumbnail"),
                               cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
             tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
-            video.make_thumbnail(traw, d / "thumbnail.jpg", tw, th,
-                                 logo=config.LOGO_FILE if config.LOGO_FILE.exists() else None)
+            video.make_thumbnail(traw, d / "thumbnail.jpg", tw, th, logo=_logo_for(job))
             job.set("done", "thumbnail regenerated")
             job.add_log(f"thumbnail regenerated ({tw}x{th})")
         except Exception as e:  # noqa: BLE001

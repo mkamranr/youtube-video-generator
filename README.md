@@ -1,6 +1,6 @@
 # VideoGen — AI Video Generator for Your YouTube Channel
 
-VideoGen turns any YouTube video into a brand-new, kid-safe animated video — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
+VideoGen turns any YouTube video into a brand-new AI video tailored to one of your channels — animated or realistic, with content rules matching the channel's audience — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
 
 Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
 
@@ -8,17 +8,19 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 
 - **Three ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), or your own **description / short script** (the LLM builds on it faithfully). Topic/description jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
-- **Kid-safe by design** — every LLM prompt enforces family-friendly, gentle content; even "dark" styles render as playful and reassuring.
-- **Channel branding** — works for any YouTube channel: set your channel name once in Settings and it replaces any channel/brand names found in source content, across narration, lyrics, and SEO.
-- **Song or voiceover, chosen per video** — the New Video dialog offers **Generate Song** (an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals) or **Generate Voiceover** (the LLM writes the narration, Fish Speech speaks it, and a quiet music bed is mixed underneath). The `AUDIO_MODE` setting only preselects the dialog; a pure `narration` mode (no music bed) remains available via the setting/API.
+- **Multiple channels** — manage any number of channels in Settings, each with its own name, purpose, logo, audience (Kids / Family / General), video type (Animated / Real) and per-video defaults. Every video is generated to match the channel picked in the New Video dialog, and uploads go to that channel's own connected YouTube account. Real-video channels skip the art-style picker and use a built-in realistic live-action look.
+- **Audience-aware safety** — the channel's audience preset drives the LLM content rules: kids channels stay strictly gentle and family-friendly (even "dark" styles render playful and reassuring), family channels allow mild peril, general channels follow platform guidelines only.
+- **Channel branding** — each channel's name replaces any channel/brand names found in source content, across narration, lyrics, and SEO; its purpose text steers the tone of every script.
+- **Job dashboard** — the jobs list shows every job's parameters at a glance (channel, audio choice and voice, art style, target length, aspect ratio, clip progress), with a per-channel filter, text search and pagination; the archive page gets the same filter, search and pagination.
+- **Song or voiceover, chosen per video** — the New Video dialog offers **Generate Song** (an original song is generated **first**; its actual length sets the clip count and its lyrics drive the visuals) or **Generate Voiceover** (the LLM writes the narration, Fish Speech speaks it, and a gentle **instrumental** music bed — never sung lyrics — is mixed underneath at low volume). The channel's default audio preselects the dialog; a pure `narration` mode (no music bed) remains available via the API.
 - **Voice cloning with reference voices** — upload short speech samples (plus the exact text spoken in them) on the Settings page, then pick a voice per voiceover video; Fish Speech clones it for the narration. No selection = the model's default voice.
 - **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each 5-second clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
 - **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
-- **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with your **channel logo** (uploaded in Settings) overlaid top-right. One-click regeneration on any finished job.
+- **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with the **channel's logo** overlaid top-right. One-click regeneration on any finished job.
 - **SEO metadata** — a keyword-optimized YouTube title and description (with hashtags and a subscribe call-to-action) generated for every video.
 - **LLM review pass** — every generated scene and every drafted script is reviewed a second time by the LLM against the exact audio/content it must match, and inconsistencies (a wrong letter, a mismatched object, an unsafe detail) are fixed automatically. The reviewer is transcription-aware: if the speech recognizer misheard a letter, it trusts the word ("fairy" belongs to F). Toggleable via `SCRIPT_REVIEW`.
 - **Per-job target length** — pick Auto, 30-45 s, 45-60 s, 1-2 min, or 2-3 min when creating a job; a soft target that guides the script length and the generated song/narration duration.
-- **One-click YouTube upload** — connect your channel once (OAuth, `youtube.upload` scope only) and push any finished video straight to YouTube with live progress: uploaded **private** by default (review in YouTube Studio before publishing), with the SEO title/description, made-for-kids flag, and custom thumbnail applied. One-time Google Cloud setup guide: **docs/YOUTUBE.md**.
+- **One-click YouTube upload** — connect each channel to its own YouTube account (OAuth, `youtube.upload` scope only) and push any finished video straight to that channel with live progress: uploaded **private** by default (review in YouTube Studio before publishing), with the SEO title/description, the made-for-kids flag (a per-channel toggle), and custom thumbnail applied. One-time Google Cloud setup guide: **docs/YOUTUBE.md**.
 - **Title-named downloads & bundle** — the video and thumbnail download as `<Title>.mp4` / `<Title>.jpg`, and one click grabs the whole publish **bundle**: a ZIP with the video, thumbnail, audio track(s), and the SEO title/description in a text file.
 - **Full revision workflow** — edit any scene prompt in the UI, regenerate exactly the clips you want (they're clearly badged), then reassemble the final video with one click. Regenerations **jump the queue**, pausing the running job at a clip boundary and resuming it afterwards.
 - **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup (per artifact, plus an **orphan sweep** at startup and after every job that catches renders left behind by retries or crashes), transcript quality gating, and a self-restarting server watchdog.
@@ -148,12 +150,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `TTS_TOP_P` | `0.8` | Fish Speech nucleus sampling (0.1–1) |
 | `TTS_REPETITION_PENALTY` | `1.1` | Fish Speech penalty against repeated tokens (0.9–2) |
 | `TTS_CHUNK_CHARS` | `300` | Max characters per Fish request; longer narration is split and concatenated (100–500) |
-| `CHANNEL_NAME` | `My YouTube Channel` | Your channel name; replaces source channel/brand names |
-| `DEFAULT_ART_STYLE` | `Pixar-like 3D` | Preselected art style for new jobs |
-| `DEFAULT_ASPECT_RATIO` | `16:9 (Widescreen)` | Preselected aspect ratio |
 | `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |
-| `DEFAULT_VIDEO_LENGTH` | `Auto` | Preselected target length for new jobs |
-| `AUDIO_MODE` | `music` | Default preselection for the dialog's Audio choice: `music` / `narration` / `narration+music` |
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
 | `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
 | `NARRATION_WORDS` | `170` | Narration length target (narration modes) |
@@ -168,7 +165,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 
 Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
 
-The Settings page also hosts three non-setting tools: **Channel logo** (upload once; overlaid on the top-right corner of every generated thumbnail; stored locally, never committed), **Reference voices** (upload named speech samples with their transcripts for Fish Speech voice cloning; stored in `reference_audio/`, never committed), and **Generate style previews** (renders the art-style sample images with your own model).
+The Settings page also hosts three non-setting tools: **Channels** (add/edit channels — name, purpose, audience, video type, per-video defaults, logo and each channel's own YouTube connection; stored in `channels/`, never committed), **Reference voices** (upload named speech samples with their transcripts for Fish Speech voice cloning; stored in `reference_audio/`, never committed), and **Generate style previews** (renders the art-style sample images with your own model).
 
 ## Output layout
 

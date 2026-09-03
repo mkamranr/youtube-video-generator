@@ -16,7 +16,9 @@ LOGO_FILE = BASE_DIR / "channel_logo.png"   # uploaded via Settings; overlaid on
 VOICES_DIR = BASE_DIR / "reference_audio"   # reference voices for Fish Speech cloning (Settings)
 VOICES_INDEX = VOICES_DIR / "voices.json"
 YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client (Desktop type)
-YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # stored OAuth token (gitignored)
+YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # legacy global OAuth token (pre-channels)
+CHANNELS_DIR = BASE_DIR / "channels"        # per-channel store: index, logos, YouTube tokens
+CHANNELS_INDEX = CHANNELS_DIR / "channels.json"
 
 # ---- service endpoints (placeholders) -------------------------------------
 # Set your real service URLs via the Settings page (persisted to settings.json)
@@ -78,7 +80,12 @@ ART_STYLES = {
     "Experimental": "Experimental mixed-media animation: shifting art styles, collage textures, inventive transitions, playful visual surprises.",
 }
 DEFAULT_ART_STYLE = "Pixar-like 3D"
-CHANNEL_NAME = "My YouTube Channel"    # the channel these videos are published on (set yours in Settings)
+CHANNEL_NAME = "My YouTube Channel"    # legacy fallback (channels are managed in Settings now)
+
+# Channel presets: the audience decides the content-safety rules fed to the LLM (and the
+# YouTube made-for-kids flag); the video type decides animated vs realistic look.
+AUDIENCES = ["kids", "family", "general"]
+VIDEO_TYPES = ["animated", "real"]
 
 # Per-job soft target length presets (None = Auto, use the global settings)
 VIDEO_LENGTHS = {
@@ -155,16 +162,8 @@ EDITABLE_SETTINGS = {
                                "Fish Speech penalty against repeated tokens (0.9-2)"),
     "TTS_CHUNK_CHARS": (int, lambda v: 100 <= v <= 500, "TTS chunk length (chars)",
                         "Narration is split into chunks of at most this many characters per Fish request (100-500)"),
-    "DEFAULT_ASPECT_RATIO": (str, lambda v: v in ASPECT_RATIOS, "Default aspect ratio",
-                             "Preselected aspect ratio for new jobs"),
-    "DEFAULT_ART_STYLE": (str, lambda v: v in ART_STYLES, "Default art style",
-                          "Preselected art style for new jobs"),
     "DEFAULT_SOURCE": (str, lambda v: v in SOURCES, "Default source (Create from)",
                        "Preselected creation mode in the New Video dialog: url, topic or description"),
-    "DEFAULT_VIDEO_LENGTH": (str, lambda v: v in VIDEO_LENGTHS, "Default video length",
-                             "Preselected target length for new jobs"),
-    "CHANNEL_NAME": (str, lambda v: 0 < len(v.strip()) <= 80, "Channel name",
-                     "Videos are branded for this channel; any channel or brand name in the source content is replaced with it"),
     "CLIP_SECONDS": (float, lambda v: 2 <= v <= 15, "Clip length (s)",
                      "Duration of each generated clip (2-15 s)"),
     "NARRATION_WORDS": (int, lambda v: 30 <= v <= 500, "Narration words",
@@ -175,8 +174,6 @@ EDITABLE_SETTINGS = {
                        "8-step turbo sampling: ~3x faster, lower quality"),
     "CLIP_RETRIES": (int, lambda v: 0 <= v <= 5, "Clip retries",
                      "Retries per failed clip before failing the job"),
-    "AUDIO_MODE": (str, lambda v: v in AUDIO_MODES, "Default audio (new jobs)",
-                   "Preselected audio choice in the New Video dialog: music = Generate Song; narration/narration+music = Generate Voiceover"),
     "MUSIC_VOLUME": (float, lambda v: 0 <= v <= 1, "Music volume",
                      "Music level under the narration (narration+music mode, 0-1)"),
     "TARGET_VIDEO_SECONDS": (float, lambda v: v == 0 or 15 <= v <= 300, "Target video length (s)",
@@ -187,8 +184,6 @@ EDITABLE_SETTINGS = {
                            "Refuse when the transcript is too sparse for the video length (music/no speech)"),
     "YT_PRIVACY": (str, lambda v: v in ("private", "unlisted", "public"), "YouTube privacy",
                    "Privacy of uploaded videos: private (review in YouTube Studio first), unlisted or public"),
-    "YT_MADE_FOR_KIDS": (bool, lambda v: True, "Made for kids",
-                         "Marks uploads as made for kids (COPPA self-declaration)"),
     "SCRIPT_REVIEW": (bool, lambda v: True, "LLM review pass",
                       "After generating each scene (and each drafted script), the LLM reviews it once more against the audio/content and fixes inconsistencies (wrong letters, mismatched objects, safety issues)"),
     "COMFY_CLEANUP": (bool, lambda v: True, "Clean up ComfyUI",

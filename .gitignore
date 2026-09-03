@@ -15,3 +15,6 @@ server.err.log
 # python
 __pycache__/
 *.pyc
+
+# per-channel store (logos, OAuth tokens, index)
+channels/

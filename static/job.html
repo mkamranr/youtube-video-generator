@@ -48,6 +48,7 @@
   </div>
   <div class="job-meta">
     <span class="jid" id="jobIdLabel"></span>
+    <span id="channelLabel"></span>
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
     <span id="vlenLabel"></span>
@@ -341,6 +342,7 @@ function update(j) {
     $("#srcUrl").textContent = (j.source === "description" ? "description: " : "topic: ")
       + (t.length > 70 ? t.slice(0, 70) + "…" : t);
   }
+  $("#channelLabel").textContent = (j.channel && j.channel.name) || "";
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
@@ -532,7 +534,8 @@ $("#ytBtn").onclick = async () => {
 Uploading again will create a SECOND copy on your channel - the existing one is not replaced.
 
 Are you sure you want to upload it again?`
-    : "The video will be uploaded with your configured privacy setting and the SEO title/description.";
+    : `The video will be uploaded${lastJob && lastJob.channel && lastJob.channel.name
+        ? ` to the YouTube account connected for "${lastJob.channel.name}"` : ""} with your configured privacy setting and the SEO title/description.`;
   if (!(await askConfirm(msg, already ? "Upload to YouTube again?" : "Upload to YouTube?"))) return;
   try {
     await api(`/jobs/${jobId}/youtube-upload`, { method: "POST" });
