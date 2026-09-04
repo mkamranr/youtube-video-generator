@@ -37,6 +37,13 @@
   .clip-grid figure.stale figcaption { color: var(--warn); font-weight: 600; }
   .clip-regen { margin: 6px auto 0; display: none; }
   .clip-grid.selectable figure.stale .clip-regen { display: inline-flex; }
+  .sb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .sb-card { border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); padding: 10px; }
+  .sb-card img { width: 100%; border-radius: 6px; background: #0b0e14; display: block; }
+  .sb-card .sb-clips { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-top: 8px; }
+  .sb-card .sb-kicker { color: var(--accent); font-size: 11.5px; font-weight: 700; letter-spacing: .6px; margin-top: 6px; }
+  .sb-card .sb-head { font-weight: 700; margin-top: 2px; }
+  .sb-card .sb-body { color: var(--muted); font-size: 13px; margin-top: 3px; }
 </style>
 </head>
 <body>
@@ -54,6 +61,7 @@
     <span id="channelLabel"></span>
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
+    <span id="sbLabel"></span>
     <span id="vlenLabel"></span>
     <span id="aspect"></span>
     <span id="created"></span>
@@ -93,6 +101,17 @@
       <button class="btn sm" id="ytBtn" hidden></button>
       <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
     </div>
+    <div class="row" id="sbRow" hidden style="margin-top:14px;align-items:center;gap:14px">
+      <label class="switch"><input type="checkbox" id="sbToggle"><span class="track"></span> Story board overlay</label>
+      <button class="btn secondary sm" id="sbRegen" hidden>Regenerate story board</button>
+      <span class="hint" style="margin:0">Fact cards and related images drawn over the video. Changes apply when the final video is reassembled.</span>
+    </div>
+  </section>
+
+  <section class="card" id="sbSec" hidden>
+    <h2>Story board <span class="count" id="sbCount"></span></h2>
+    <div class="hint" style="margin:-6px 0 12px">The cards overlaid on the final video, in order, with the clips they cover.</div>
+    <div class="sb-grid" id="sbGrid"></div>
   </section>
 
   <section class="card" id="seoSec" hidden>
@@ -247,11 +266,33 @@ async function loadDetails(j) {
       $("#sceneCount").textContent = `(${d.plan.scenes.length})`;
       renderScenes(d.plan.scenes);
     }
+    renderStoryboard(d.plan.storyboard, j);
   }
   $("#logText").textContent = (d.log || []).join("\n");
 }
 
 let lastJob = null;
+
+function renderStoryboard(cards, j) {
+  const show = Array.isArray(cards) && cards.length && (j.storyboard || (j.files || []).some(f => f.startsWith("card_")));
+  $("#sbSec").hidden = !show;
+  if (!show) return;
+  const files = new Set(j.files || []);
+  $("#sbCount").textContent = `(${cards.length} card${cards.length === 1 ? "" : "s"})`;
+  $("#sbGrid").innerHTML = cards.map((c, i) => {
+    const n = String(i + 1).padStart(2, "0");
+    const png = `card_${n}.png`, jpg = `sbimg_${n}.jpg`;
+    const img = files.has(png) ? `<img src="${F(png)}?v=${j.updated}" alt="" loading="lazy">`
+              : files.has(jpg) ? `<img src="${F(jpg)}?v=${j.updated}" alt="" loading="lazy">` : "";
+    const range = c.start_clip === c.end_clip ? `clip ${c.start_clip}` : `clips ${c.start_clip}–${c.end_clip}`;
+    return `<div class="sb-card">${img}
+      <div class="sb-clips">${range}${c.image_prompt ? " · with image" : ""}</div>
+      ${c.kicker ? `<div class="sb-kicker">${esc(c.kicker)}</div>` : ""}
+      <div class="sb-head">${esc(c.headline || "")}</div>
+      ${c.body ? `<div class="sb-body">${esc(c.body)}</div>` : ""}
+    </div>`;
+  }).join("");
+}
 
 function renderScenes(scenes) {
   const stale = new Set((lastJob && lastJob.stale_clips) || []);
@@ -347,6 +388,7 @@ function update(j) {
   }
   $("#channelLabel").textContent = (j.channel && j.channel.name) || "";
   $("#artStyleLabel").textContent = j.art_style || "";
+  $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#created").textContent = "created " + timeAgo(j.created);
@@ -397,6 +439,9 @@ function update(j) {
     : "";
   $("#assembleBtn").hidden = !(done && j.needs_assemble);
   $("#assembleHint").hidden = !(done && j.needs_assemble);
+  $("#sbRow").hidden = !done;
+  $("#sbToggle").checked = !!j.storyboard;
+  $("#sbRegen").hidden = !(done && j.storyboard);
 
   const yt = j.yt_status || "";
   $("#ytBtn").hidden = !(done && yt !== "uploading");
@@ -545,6 +590,22 @@ Are you sure you want to upload it again?`
     toast("YouTube upload started");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
+};
+
+async function setStoryboard(enabled, regenerate) {
+  try {
+    await api(`/jobs/${jobId}/storyboard`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, regenerate }) });
+    toast(regenerate ? "Story board will be regenerated - reassemble the final video to apply"
+                     : enabled ? "Story board enabled - reassemble the final video to apply"
+                               : "Story board disabled - reassemble the final video to apply");
+    detailsStamp = null; refresh();
+  } catch (e) { toast(e.message, true); refresh(); }
+}
+$("#sbToggle").onchange = () => setStoryboard($("#sbToggle").checked, false);
+$("#sbRegen").onclick = async () => {
+  if (!(await askConfirm("Plan new story board cards and render their images again? The current cards are discarded; the final video is updated when you reassemble it.", "Regenerate story board?"))) return;
+  setStoryboard(true, true);
 };
 
 $("#assembleBtn").onclick = async () => {

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import channels, comfy, llm, lyrics, transcript, tts, video
+from services import channels, comfy, llm, lyrics, storyboard, transcript, tts, video
 
 
 @dataclass
@@ -26,8 +26,9 @@ class Job:
     topic: str = ""
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, audience, video_type}
+    storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     script_approved: bool = False
-    status: str = "queued"          # queued|transcript|planning|tts|scenes|music|clips|assembling|done|failed
+    status: str = "queued"          # queued|transcript|planning|tts|scenes|music|storyboard|clips|assembling|done|failed
     detail: str = ""
     title: str = ""
     clips_total: int = 0
@@ -185,19 +186,80 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
         client.scrub_file("input", "", first_frame)
 
 
+def _load_plan(job: Job) -> dict:
+    try:
+        return json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_plan(job: Job, plan: dict):
+    (job.dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+
+def _storyboard_assets(job: Job, plan: dict, n: int):
+    """Plan the story board cards (LLM) and render their related images (ComfyUI).
+    Non-fatal: on failure the job continues without the overlay for this assembly."""
+    job.set("storyboard", "planning the story board")
+    try:
+        _check_cancel(job)
+        storyboard.ensure_assets(job, plan, n, on_progress=_progress(job, "storyboard"),
+                                 add_log=job.add_log, should_stop=lambda: job.cancel_requested)
+        _save_plan(job, plan)
+        job.add_log("story board ready")
+    except JobCancelled:
+        raise
+    except Exception as e:  # noqa: BLE001
+        job.add_log(f"story board failed ({e}); continuing without the overlay")
+
+
+def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
+    """Concat the clips, overlay the story board cards (if enabled) and mix the audio
+    for the job's audio mode into final.mp4."""
+    d = job.dir
+    clips = [d / c for c in job.clips]
+    joined = video.concat_clips(clips, d / "clips_joined.mp4")
+    bounds = video.clip_boundaries(clips)
+    source = joined
+    if job.storyboard and isinstance(plan.get("storyboard"), list):
+        job.set("assembling", "drawing the story board cards")
+        try:
+            cards = storyboard.render_all(d, plan, clips, video.frame_size(joined),
+                                          accent=config.STORYBOARD_ACCENT)
+            job.set("assembling", f"overlaying {len(cards)} story board cards")
+            source = video.overlay_cards(joined, cards, d / "clips_cards.mp4")
+            job.add_log(f"story board: {len(cards)} cards overlaid")
+        except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
+            job.add_log(f"story board overlay failed ({e}); assembling without it")
+            source = joined
+    job.set("assembling", "mixing audio")
+    mode = job.audio_mode or "narration+music"
+    if mode == "music":
+        return video.mix_audio(source, d / "final.mp4", music=music_file,
+                               music_volume=1.0, clip_volume=0)
+    if mode == "narration+music":
+        # the clips' own sound is dropped by default: voice + music + per-clip effects clash
+        clip_vol = config.CLIP_AUDIO_VOLUME if config.CLIP_AUDIO_WITH_MUSIC else 0
+        return video.mix_audio(source, d / "final.mp4", narration=narration_file,
+                               music=music_file, clip_volume=clip_vol, clip_boundaries=bounds)
+    return video.mix_audio(source, d / "final.mp4", narration=narration_file,
+                           clip_boundaries=bounds)
+
+
 def _do_assemble(job: Job):
-    """Concat the job's clips and remix its audio into a new final.mp4."""
+    """Re-concat the job's clips, redo the story board overlay and remix its audio into a
+    new final.mp4 (story board assets are generated first if they are missing)."""
     d = job.dir
     job.set("assembling", "re-merging clips and mixing audio")
-    joined = video.concat_clips([d / c for c in job.clips], d / "clips_joined.mp4")
+    plan = _load_plan(job)
+    if job.storyboard and not storyboard.assets_ready(d, plan):
+        _storyboard_assets(job, plan, len(job.clips))
+        job.set("assembling", "re-merging clips and mixing audio")
     music_file = d / "music.mp3" if (d / "music.mp3").exists() else None
     narration_file = d / "narration.wav" if (d / "narration.wav").exists() else None
     if (job.audio_mode or "") == "music":
-        final = video.mix_audio(joined, d / "final.mp4", music=music_file,
-                                music_volume=1.0, clip_volume=0)
-    else:
-        final = video.mix_audio(joined, d / "final.mp4",
-                                narration=narration_file, music=music_file)
+        narration_file = None
+    final = _assemble(job, plan, narration_file, music_file)
     job.set(final=final.name, assemble_requested=False, needs_assemble=False)
     job.add_log("final video reassembled")
 
@@ -421,8 +483,11 @@ def _run(job: Job):
         except Exception as e:  # noqa: BLE001
             job.add_log(f"thumbnail generation failed ({e}); continuing without it")
 
-    # 6. secondary music track (narration+music mode only; non-fatal)
-    if mode == "narration+music":
+    # 6. secondary music track (narration+music mode only; non-fatal; reused on resume)
+    if mode == "narration+music" and (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
+        music_file = d / "music.mp3"
+        job.add_log("resume: reusing music track")
+    elif mode == "narration+music":
         try:
             job.set("music", "writing music caption and lyrics with vLLM")
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
@@ -444,7 +509,13 @@ def _run(job: Job):
             music_file = None
             job.add_log(f"music generation failed ({e}); continuing without music")
 
-    # 6. clips
+    # 6b. story board cards + related images (optional overlay; non-fatal)
+    if job.storyboard and not storyboard.assets_ready(d, plan):
+        _storyboard_assets(job, plan, n)
+    elif job.storyboard:
+        job.add_log("resume: reusing story board assets")
+
+    # 7. clips
     job.set("clips", f"generating {n} clips ({job.aspect_ratio})", clips_total=n, clips_done=0)
     client = comfy.ComfyClient()
     t2v = client.load_workflow(config.T2V_WORKFLOW)
@@ -467,14 +538,9 @@ def _run(job: Job):
         job.add_log(f"clip {i}/{n} done ({'text-to-video' if i == 1 else 'first-frame'})")
 
     _check_cancel(job)
-    # 7. assemble
+    # 8. assemble
     job.set("assembling", "concatenating clips and mixing audio")
-    joined = video.concat_clips([d / c for c in job.clips], d / "clips_joined.mp4")
-    if mode == "music":
-        final = video.mix_audio(joined, d / "final.mp4", music=music_file,
-                                music_volume=1.0, clip_volume=0)
-    else:
-        final = video.mix_audio(joined, d / "final.mp4", narration=narration_file, music=music_file)
+    final = _assemble(job, plan, narration_file, music_file)
     job.set("done", "finished", final=final.name)
     job.add_log("final video ready")
 
@@ -533,11 +599,18 @@ class JobManager:
 
     @staticmethod
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
-                         audio_mode: str, voice_id: str, channel: dict | None):
+                         audio_mode: str, voice_id: str, channel: dict | None,
+                         storyboard_flag=None):
         """Per-video choices: request value -> channel default -> global default; validated.
-        Real-video channels always use the built-in live-action look (art_style stays "")."""
+        Real/tech-video channels always use the built-in live-action look (art_style stays "");
+        the story board overlay defaults to the channel setting (on for tech channels)."""
         ch = channel or {}
         defaults = ch.get("defaults") or {}
+        if storyboard_flag is None:
+            storyboard_flag = defaults.get("storyboard")
+            if storyboard_flag is None:
+                storyboard_flag = ch.get("video_type") == "tech"
+        storyboard_flag = bool(storyboard_flag)
         audio_mode = audio_mode or defaults.get("audio_mode") or config.AUDIO_MODE
         if audio_mode not in config.AUDIO_MODES:
             raise ValueError(f"unsupported audio mode: {audio_mode}")
@@ -545,7 +618,7 @@ class JobManager:
         aspect_ratio = aspect_ratio or defaults.get("aspect_ratio") or config.DEFAULT_ASPECT_RATIO
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
-        if ch.get("video_type") == "real":
+        if ch.get("video_type") in config.REALISTIC_VIDEO_TYPES:
             art_style = ""
         else:
             art_style = art_style or defaults.get("art_style") or config.DEFAULT_ART_STYLE
@@ -555,17 +628,19 @@ class JobManager:
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
-        return aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap
+        return (aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap,
+                storyboard_flag)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
-               channel: dict | None = None) -> Job:
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap = \
-            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel)
+               channel: dict | None = None, storyboard_flag=None) -> Job:
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb = \
+            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
+                                  storyboard_flag)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length, channel_id=cid, channel=snap)
+                  video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -642,19 +717,20 @@ class JobManager:
                       aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
-                      channel: dict | None = None) -> Job:
+                      channel: dict | None = None, storyboard_flag=None) -> Job:
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description is too short")
         if source_kind not in ("topic", "description"):
             raise ValueError("invalid source kind")
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap = \
-            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel)
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb = \
+            self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
+                                  storyboard_flag)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length, channel_id=cid, channel=snap)
+                  video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -878,14 +954,40 @@ class JobManager:
 
     def request_assemble(self, job_id: str):
         """Reassembly is local ffmpeg work (no GPU): run it immediately in its own
-        thread instead of waiting behind rendering jobs in the queue."""
+        thread instead of waiting behind rendering jobs in the queue - unless the story
+        board still needs its LLM cards / ComfyUI images, which goes through the GPU queue
+        (front of the queue, like a clip regeneration)."""
         with self.lock:
             job = self._maintenance_target(job_id)
             if not job.clips:
                 raise ValueError("job has no clips to assemble")
             job.assemble_requested = True
+            if job.storyboard and not storyboard.assets_ready(job.dir, _load_plan(job)):
+                job.set("queued", "story board assets + reassembly requested")
+                self.queue.insert(0, job_id)
+                return job
             job.set("assembling", "re-merging clips and mixing audio")
         threading.Thread(target=self._assemble_now, args=(job,), daemon=True).start()
+        return job
+
+    def set_storyboard(self, job_id: str, enabled: bool, regenerate: bool = False):
+        """Switch the story board overlay of a finished job on/off (regenerate=True also
+        discards the planned cards and rendered images so they are created afresh). The
+        change is applied by the next reassembly."""
+        with self.lock:
+            job = self._maintenance_target(job_id)
+            if regenerate:
+                plan = _load_plan(job)
+                plan.pop("storyboard", None)
+                _save_plan(job, plan)
+                storyboard.clear_assets(job.dir)
+            changed = job.storyboard != bool(enabled) or regenerate
+            job.storyboard = bool(enabled)
+            if changed:
+                what = ("story board will be regenerated" if regenerate and enabled
+                        else "story board enabled" if enabled else "story board disabled")
+                job.set(needs_assemble=True, detail=f"{what} - reassemble the final video to apply")
+                job.add_log(what)
         return job
 
     def _assemble_now(self, job: Job):

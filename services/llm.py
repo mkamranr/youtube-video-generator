@@ -37,14 +37,27 @@ def _channel(ch: dict | None) -> dict:
     return ch
 
 
+VIDEO_KIND = {
+    "animated": "animated",
+    "real": "realistic, live-action-style",
+    "tech": "realistic, live-action-style technology explainer",
+}
+
+TECH_RULES = ("This is a TECH channel: be concrete and technically accurate - name the actual "
+              "technologies, mechanisms, numbers and trade-offs instead of vague hype; explain like a "
+              "knowledgeable, friendly tech presenter. Visuals favour devices, screens and interfaces, "
+              "code, data centres, chips, robots, dashboards and clean abstract data visualisations. ")
+
+
 def _system(channel: dict | None = None) -> str:
     ch = _channel(channel)
-    kind = "animated" if ch["video_type"] == "animated" else "realistic, live-action-style"
+    kind = VIDEO_KIND.get(ch["video_type"], VIDEO_KIND["real"])
     purpose = (f'Channel purpose: "{ch["purpose"]}" - keep every video aligned with this purpose '
                "and tone. ") if ch["purpose"].strip() else ""
     return (f"You are a creative director turning source content into a short, original "
             f"AI-generated {kind} video. "
             + AUDIENCE_RULES[ch["audience"]]
+            + (TECH_RULES if ch["video_type"] == "tech" else "")
             + purpose
             + f'The videos are published on the YouTube channel "{ch["name"]}": if the '
             "source content mentions any other channel, brand, show or creator name, NEVER use it - "
@@ -55,6 +68,13 @@ def _system(channel: dict | None = None) -> str:
 
 STYLE_EXAMPLE = ("Realistic live-action cinematic look, practical film photography style, anamorphic lens, "
                  "shallow depth of field, film grain, restrained grading for a premium feel, natural movement.")
+TECH_STYLE_EXAMPLE = ("Sleek modern tech-documentary look: real studios, labs and offices, devices and glowing "
+                      "screens, cool blue-and-graphite palette with warm accent lights, crisp shallow depth of "
+                      "field, smooth gimbal and slider camera moves, premium product-film polish.")
+
+
+def _style_example(channel: dict | None) -> str:
+    return TECH_STYLE_EXAMPLE if _channel(channel)["video_type"] == "tech" else STYLE_EXAMPLE
 
 SCENE_RULES = """Each scene prompt describes ONE continuous {secs}-second shot for a text-to-video model and must contain, in this order:
 - Scene overview: subject, setting, action, mood (2-3 sentences).
@@ -115,7 +135,7 @@ def write_narration(transcript: str, words: int | None = None, art_style: str = 
                       f'It MUST follow this art direction: "{art_style}" - keep that exact aesthetic '
                       f'and expand it with detail that fits this video\'s subject.')
     else:
-        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{STYLE_EXAMPLE}"'
+        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
     user = f"""Transcript of the source video:
 \"\"\"{transcript}\"\"\"
 
@@ -146,7 +166,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                       f'It MUST follow this art direction: "{art_style}" - keep that exact aesthetic '
                       f'and expand it with detail that fits this video.')
     else:
-        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{STYLE_EXAMPLE}"'
+        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
     if source_kind == "description":
         task = ('The user wrote the following description / short script for a video. Build the video '
                 'script from it, staying FAITHFUL to their content, characters, structure and intent - '
@@ -337,6 +357,53 @@ Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": 
     if not fixed:
         return narration, []
     return fixed, issues
+
+
+def write_storyboard(title: str, narration: str, segments: list, n: int,
+                     channel: dict | None = None, max_images: int | None = None,
+                     clip_seconds: float | None = None) -> list:
+    """Plan the on-screen story board cards: short facts/takeaways shown as styled text over
+    the video, each tied to a range of clips, some with a related still image.
+
+    Returns the raw card list (validated by storyboard.normalize_cards)."""
+    max_images = config.STORYBOARD_MAX_IMAGES if max_images is None else max_images
+    secs = clip_seconds or config.CLIP_SECONDS
+    segs = (list(segments) + [""] * n)[:n]
+    timeline = "\n".join(f'clip {i + 1} ({secs * i:.0f}-{secs * (i + 1):.0f}s): "{seg}"'
+                         for i, seg in enumerate(segs))
+    img_rule = (f'- "image_prompt": for AT MOST {max_images} cards (the ones where a picture adds the '
+                f'most), a prompt for ONE photorealistic still image that illustrates the card\'s fact '
+                f'(an object, device, place, abstract scene - never a person\'s face). The image generator '
+                f'CANNOT render writing: the prompt must not ask for any words, labels, captions, UI text, '
+                f'code on screens or lettering of any kind. Empty string "" for the other cards.'
+                if max_images > 0 else '- "image_prompt": always an empty string "".')
+    user = f"""We produced a short video titled "{title}" with this voiceover:
+\"\"\"{narration}\"\"\"
+
+The video is {n} clips of {secs:g} seconds; what is heard during each clip:
+{timeline}
+
+Design the on-screen STORY BOARD for it: styled text cards shown over the video (like the
+fact cards and lower-thirds of a tech explainer) that give viewers concrete, accurate
+facts, definitions, numbers and takeaways matching what is being said at that moment.
+Rules:
+- Between {max(2, n // 3)} and {max(3, (2 * n) // 3)} cards; each covers ONE clip or TWO consecutive clips
+  (5-10 seconds on screen); cards never overlap; keep some clips card-free for breathing room.
+- The FIRST clip is the intro: its card (if any) names the topic. The LAST clip usually gets a
+  short takeaway or call-to-action card.
+- Text is READ ON SCREEN, so keep it short and punchy: "headline" max 8 words, "body" one
+  sentence of max 18 words. Facts must be true and match the narration; no hype, no emojis.
+Return JSON: {{"cards": [{{"start_clip": 1, "end_clip": 1, "kicker": "...", "headline": "...", "body": "...", "image_prompt": "..."}}, ...]}} where:
+- "kicker": a 1-3 word uppercase label such as KEY FACT, DID YOU KNOW, HOW IT WORKS, BY THE NUMBERS, PRO TIP, TAKEAWAY.
+- "headline": the card's main line.
+- "body": the supporting sentence (may be "" when the headline says it all).
+{img_rule}
+Never mention real people's names or brands."""
+    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    cards = out.get("cards")
+    if not isinstance(cards, list) or not cards:
+        raise RuntimeError("vLLM returned no story board cards")
+    return cards
 
 
 def write_seo(title: str, narration: str, transcript: str, channel: dict | None = None) -> dict:

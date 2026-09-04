@@ -16,7 +16,7 @@ Or create a job from a prompt instead of URLs (one job per request):
 { "topic": "How bees make honey" }
 { "description": "A gentle bedtime story about ..." }
 ```
-Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. For a `real` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = default voice; ignored when `audio_mode` is `music`). Returns a list of job objects.
+Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. For a `real` or `tech` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `storyboard` (bool, optional) switches the on-screen story board overlay (fact cards + related images) for this video; omitted = the channel's default (on for `tech` channels). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = default voice; ignored when `audio_mode` is `music`). Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
 List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running).
@@ -38,11 +38,11 @@ One job object:
 }
 ```
 
-Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → clips → assembling → done | failed`.
+Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → [storyboard] → clips → assembling → done | failed` (`storyboard` only for jobs with the overlay enabled: the LLM plans the cards and ComfyUI renders their images).
 Prompt-based jobs (`source` = `topic`/`description`) start with `drafting → awaiting_approval` and enter the queue only when approved.
 
 ### `GET /jobs/{id}/details`
-Large payload for the job page: full `transcript` text, the parsed `plan` (narration/story, style, scenes, per-clip audio `segments`, `music` caption+lyrics, `seo_title`, `seo_description`, `thumbnail_prompt`), and the full `log`.
+Large payload for the job page: full `transcript` text, the parsed `plan` (narration/story, style, scenes, per-clip audio `segments`, `music` caption+lyrics, `seo_title`, `seo_description`, `thumbnail_prompt`, `storyboard` — the overlay cards as `[{start_clip, end_clip, kicker, headline, body, image_prompt}]`), and the full `log`.
 
 ### `GET /jobs/{id}/files/{name}`
 Download any artifact from the job folder (clips, `final.mp4`, `thumbnail.jpg`, `music.mp3`, `narration.wav`, `plan.json`, `transcript.txt`, …).
@@ -52,6 +52,9 @@ Publish-ready downloads named after the video title. `kind`: `video` (`<Title>.m
 
 ### `DELETE /jobs/{id}`
 Delete the job and all its local files. `409` if it is currently running.
+
+### `PUT /jobs/{id}/storyboard`
+Switch the story board overlay of a **finished** job: `{"enabled": true|false, "regenerate": false}`. `regenerate: true` also discards the planned cards and rendered images so they are created afresh. The change is applied by the next `POST /jobs/{id}/assemble` (the job gets `needs_assemble: true`); if cards or images still have to be generated, that reassembly goes through the GPU queue (front of the queue) instead of running immediately. `409` unless the job is `done` and idle.
 
 ### `POST /jobs/{id}/cancel`
 Cancel a queued or running job. Takes effect within seconds; the in-flight ComfyUI render is aborted (only if it belongs to this job). A cancelled *revision* request returns the job to `done`; a cancelled full run becomes `failed: cancelled by user`.
@@ -108,10 +111,10 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 
 ## Channels
 
-Channels are managed on the Settings page; each has a name, purpose, audience (`kids`/`family`/`general`), video type (`animated`/`real`), per-video defaults, an optional logo and its own YouTube connection. A default channel is created automatically on first start, migrated from the legacy single-channel settings (name, defaults, logo and YouTube token are carried over).
+Channels are managed on the Settings page; each has a name, purpose, audience (`kids`/`family`/`general`), video type (`animated`/`real`/`tech`), per-video defaults, an optional logo and its own YouTube connection. A default channel is created automatically on first start, migrated from the legacy single-channel settings (name, defaults, logo and YouTube token are carried over).
 
-- `GET /api/channels` — `{"channels": [{id, name, purpose, audience, video_type, made_for_kids, defaults, created, has_logo, has_secret, yt_connected}], "secret": bool, "audiences": [...], "video_types": [...], "art_styles": [...], "aspect_ratios": [...], "video_lengths": [...], "audio_modes": [...]}` (`secret` = client_secret.json present).
-- `POST /api/channels` / `PUT /api/channels/{id}` — create / update (partial updates allowed). `made_for_kids` (bool) is the channel's COPPA self-declaration for uploads, independent of `audience`. `defaults` holds `art_style`, `audio_mode`, `voice_id`, `aspect_ratio`, `video_length` and pre-fills the New Video dialog. Real-video channels always keep `art_style: ""` — the built-in realistic live-action look is used instead.
+- `GET /api/channels` — `{"channels": [{id, name, purpose, audience, video_type, made_for_kids, defaults, created, has_logo, has_secret, yt_connected}], "secret": bool, "audiences": [...], "video_types": [...], "realistic_video_types": ["real", "tech"], "art_styles": [...], "aspect_ratios": [...], "video_lengths": [...], "audio_modes": [...]}` (`secret` = client_secret.json present).
+- `POST /api/channels` / `PUT /api/channels/{id}` — create / update (partial updates allowed). `made_for_kids` (bool) is the channel's COPPA self-declaration for uploads, independent of `audience`. `defaults` holds `art_style`, `audio_mode`, `voice_id`, `aspect_ratio`, `video_length` and `storyboard` (bool; unset = on for `tech` channels) and pre-fills the New Video dialog. Real and tech channels always keep `art_style: ""` — the built-in realistic live-action look is used instead; `tech` channels also steer the LLM towards concrete, technically accurate explainer content.
 - `DELETE /api/channels/{id}` — remove a channel and its logo/token (`409` for the last remaining channel).
 - `POST /api/channels/{id}/logo` — multipart upload (`file`); stored as PNG (max 5 MB, downscaled to <=1024 px wide) and overlaid on the top-right corner of that channel's thumbnails. `GET /api/channels/{id}/logo` fetches it (404 if none); `DELETE` removes it.
 - `GET /api/channels/{id}/youtube/auth` — Google consent URL for connecting this channel's own YouTube account (scope: `youtube.upload` only); the loopback callback `GET /api/youtube/callback` stores the token per channel. `DELETE /api/channels/{id}/youtube/auth` disconnects the channel.
@@ -130,7 +133,7 @@ Voice samples for Fish Speech voice cloning, managed on the Settings page; pick 
 ## Settings & meta
 
 ### `GET /options`
-`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url", "default_audio_mode": "music", "channels": [...], "default_channel_id": "..."}` — the valid submit-form values, global fallbacks, and the channel list (same objects as `GET /api/channels`); the UI applies the selected channel's `defaults` client-side.
+`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url", "default_audio_mode": "music", "realistic_video_types": ["real", "tech"], "channels": [...], "default_channel_id": "..."}` — the valid submit-form values, global fallbacks, and the channel list (same objects as `GET /api/channels`); the UI applies the selected channel's `defaults` client-side.
 
 ### `GET /api/settings`
 `{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "art_styles": [...]}` — current values plus field metadata.

@@ -5,6 +5,7 @@ stored in settings.json and applied on top of the defaults below at import and o
 """
 import json
 import os
+import re
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -85,7 +86,10 @@ CHANNEL_NAME = "My YouTube Channel"    # legacy fallback (channels are managed i
 # Channel presets: the audience decides the content-safety rules fed to the LLM (and the
 # YouTube made-for-kids flag); the video type decides animated vs realistic look.
 AUDIENCES = ["kids", "family", "general"]
-VIDEO_TYPES = ["animated", "real"]
+# animated = art-style driven; real = built-in live-action look; tech = live-action tech
+# explainer look with the story-board text/image overlay switched on by default.
+VIDEO_TYPES = ["animated", "real", "tech"]
+REALISTIC_VIDEO_TYPES = ("real", "tech")     # no art-style picker, built-in realistic look
 
 # Per-job soft target length presets (None = Auto, use the global settings)
 VIDEO_LENGTHS = {
@@ -126,10 +130,13 @@ CLIP_SECONDS = 5                # length of each generated clip
 LIGHTNING_LORA = False          # True -> 8-step turbo LoRA (faster, lower quality)
 NARRATION_WORDS = 170           # target narration length (~65-75 s of speech)
 CLIP_AUDIO_VOLUME = 0.3         # model-generated ambience level under the narration
+CLIP_AUDIO_WITH_MUSIC = False   # narration+music: also keep the clips' own sound (off = voice + music only)
 CLIP_RETRIES = 1
 AUDIO_MODES = ["music", "narration", "narration+music"]
 AUDIO_MODE = "music"            # default preselection for the New Video dialog audio choice
-MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode)
+MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode, auto-ducked)
+STORYBOARD_MAX_IMAGES = 6       # story board overlay: max related images rendered per video (0 = text only)
+STORYBOARD_ACCENT = "#e9a13b"   # story board overlay accent colour (kicker text, side bar)
 TARGET_VIDEO_SECONDS = 90       # music mode: requested song length (the model may end earlier)
 MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
@@ -169,13 +176,24 @@ EDITABLE_SETTINGS = {
     "NARRATION_WORDS": (int, lambda v: 30 <= v <= 500, "Narration words",
                         "Target narration length; ~2.5 words/s of speech decides the clip count"),
     "CLIP_AUDIO_VOLUME": (float, lambda v: 0 <= v <= 1, "Clip ambience volume",
-                          "Volume of the clips' own audio under the narration (0-1)"),
+                          "Volume of the clips' own audio under the narration (0-1); it is dipped at every "
+                          "clip boundary and ducked while the voice speaks"),
+    "CLIP_AUDIO_WITH_MUSIC": (bool, lambda v: True, "Keep clip ambience under music",
+                              "Voiceover + music videos also mix in the clips' own generated sound. Off (default) = "
+                              "narration + music bed only, which avoids the three-layer clash"),
     "LIGHTNING_LORA": (bool, lambda v: True, "Lightning LoRA (fast preview)",
                        "8-step turbo sampling: ~3x faster, lower quality"),
     "CLIP_RETRIES": (int, lambda v: 0 <= v <= 5, "Clip retries",
                      "Retries per failed clip before failing the job"),
     "MUSIC_VOLUME": (float, lambda v: 0 <= v <= 1, "Music volume",
-                     "Music level under the narration (narration+music mode, 0-1)"),
+                     "Music level under the narration (narration+music mode, 0-1). The bed is ducked further "
+                     "while the voice speaks, looped if shorter than the video and faded out at the end"),
+    "STORYBOARD_MAX_IMAGES": (int, lambda v: 0 <= v <= 40, "Story board: max images",
+                              "Story board overlay: at most this many related images are rendered per video "
+                              "(each is one short ComfyUI render); 0 = text cards only"),
+    "STORYBOARD_ACCENT": (str, lambda v: bool(re.fullmatch(r"#[0-9a-fA-F]{6}", v)),
+                          "Story board: accent colour",
+                          "Hex colour of the story board cards' accent (kicker label and side bar), e.g. #e9a13b"),
     "TARGET_VIDEO_SECONDS": (float, lambda v: v == 0 or 15 <= v <= 300, "Target video length (s)",
                              "music mode: requested song length; 0 = no target, the song covers the full content"),
     "MIN_TRANSCRIPT_WORDS": (int, lambda v: 0 <= v <= 2000, "Min transcript words",

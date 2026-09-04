@@ -54,7 +54,7 @@ function navbar(active) {
 }
 
 /* ---- status helpers ---- */
-const STEP_LABELS = { queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", clips: "Clips", assembling: "Assemble", done: "Done" };
+const STEP_LABELS = { queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", clips: "Clips", assembling: "Assemble", done: "Done" };
 
 function orderFor(j) {
   const mid = j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
@@ -63,6 +63,7 @@ function orderFor(j) {
   const head = (j.source === "topic" || j.source === "description")
             ? ["drafting", "awaiting_approval", "queued", "planning"]
             : ["queued", "transcript", "planning"];
+  if (j.storyboard) mid.push("storyboard");
   return [...head, ...mid, "clips", "assembling", "done"];
 }
 

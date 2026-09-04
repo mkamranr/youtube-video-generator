@@ -2,7 +2,8 @@
 defaults, an optional logo and its own YouTube OAuth token.
 
 The channel decides how content is generated (tone/safety rules via the audience preset,
-animated vs realistic look via video_type, prompt framing via the purpose text) and which
+animated / realistic / tech look via video_type, prompt framing via the purpose text, the
+story-board overlay default) and which
 YouTube account the finished video is uploaded to. Index: channels/channels.json;
 per-channel files: channels/<id>_logo.png and channels/<id>_yt_token.json.
 """
@@ -21,15 +22,17 @@ MAX_NAME_CHARS = 80
 MAX_PURPOSE_CHARS = 2000
 
 DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length")
+BOOL_DEFAULT_KEYS = ("storyboard",)   # story board overlay on by default for this channel's videos
 
 
 def _read_index() -> dict:
     try:
         data = json.loads(config.CHANNELS_INDEX.read_text(encoding="utf-8"))
         if isinstance(data.get("channels"), list):
-            for c in data["channels"]:  # records created before the flag existed
+            for c in data["channels"]:  # records created before the flags existed
                 if isinstance(c, dict):
                     c.setdefault("made_for_kids", c.get("audience") == "kids")
+                    c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
             return data
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
@@ -79,7 +82,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
            "made_for_kids": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
-                        "video_length": config.DEFAULT_VIDEO_LENGTH}}
+                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None}}
     if base:
         for k in ("name", "purpose", "audience", "video_type", "made_for_kids"):
             if k in base:
@@ -94,6 +97,9 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     for k in DEFAULT_KEYS:
         if k in d:
             rec["defaults"][k] = str(d[k] or "").strip()
+    for k in BOOL_DEFAULT_KEYS:
+        if k in d and d[k] is not None:
+            rec["defaults"][k] = bool(d[k])
     if not rec["name"] or len(rec["name"]) > MAX_NAME_CHARS:
         raise ValueError(f"name must be 1-{MAX_NAME_CHARS} characters")
     if len(rec["purpose"]) > MAX_PURPOSE_CHARS:
@@ -103,7 +109,9 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     if rec["video_type"] not in config.VIDEO_TYPES:
         raise ValueError(f"video_type must be one of {config.VIDEO_TYPES}")
     df = rec["defaults"]
-    if rec["video_type"] == "real":
+    if df.get("storyboard") is None:   # unset -> on for tech channels, off otherwise
+        df["storyboard"] = rec["video_type"] == "tech"
+    if rec["video_type"] in config.REALISTIC_VIDEO_TYPES:
         df["art_style"] = ""  # realistic channels use the built-in live-action direction
     elif df["art_style"] and df["art_style"] not in config.ART_STYLES:
         raise ValueError(f"art_style must be one of {list(config.ART_STYLES)}")

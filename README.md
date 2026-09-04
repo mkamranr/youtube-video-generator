@@ -1,6 +1,6 @@
 # VideoGen — AI Video Generator for Your YouTube Channel
 
-VideoGen turns any YouTube video into a brand-new AI video tailored to one of your channels — animated or realistic, with content rules matching the channel's audience — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
+VideoGen turns any YouTube video into a brand-new AI video tailored to one of your channels — animated, realistic or tech-explainer, with content rules matching the channel's audience — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
 
 Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
 
@@ -8,7 +8,9 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 
 - **Three ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), or your own **description / short script** (the LLM builds on it faithfully). Topic/description jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
-- **Multiple channels** — manage any number of channels in Settings, each with its own name, purpose, logo, audience (Kids / Family / General), video type (Animated / Real) and per-video defaults. Every video is generated to match the channel picked in the New Video dialog, and uploads go to that channel's own connected YouTube account. Real-video channels skip the art-style picker and use a built-in realistic live-action look.
+- **Multiple channels** — manage any number of channels in Settings, each with its own name, purpose, logo, audience (Kids / Family / General), video type (Animated / Real / Tech) and per-video defaults. Every video is generated to match the channel picked in the New Video dialog, and uploads go to that channel's own connected YouTube account. Real and Tech channels skip the art-style picker and use a built-in realistic live-action look; **Tech** channels additionally get concrete, technically accurate scripts (devices, screens, code, data-centre visuals) and the on-screen story board switched on by default.
+- **On-screen story board** — an optional overlay (per video, default on for Tech channels) of styled fact cards: the LLM plans a kicker (KEY FACT, HOW IT WORKS, BY THE NUMBERS…), a headline and a one-line body for the right moments of the narration, some with a **related still image** rendered by the video model in a shape matching the video (square for portrait, 4:3 for square, 16:9 for landscape); the cards are drawn with Pillow (rounded lower-third panel, accent bar, framed picture — layouts for landscape, portrait and square) and composited over the clips with fades, timed to the actual clip cuts. Toggle or regenerate it on any finished job, then reassemble.
+- **Clean voiceover mix** — voiceover videos mix narration + an instrumental bed only: the clips' own generated sound effects are dropped by default (they clashed with the voice and the music and jumped at every cut; `CLIP_AUDIO_WITH_MUSIC` brings them back). The music bed is **side-chain ducked** under the voice, looped with a cross-fade when the model ends the track early, faded out at the end, and the mix is trimmed to the video and soft-limited. When ambience is kept it is dipped to silence around every clip cut.
 - **Audience-aware safety** — the channel's audience preset drives the LLM content rules: kids channels stay strictly gentle and family-friendly (even "dark" styles render playful and reassuring), family channels allow mild peril, general channels follow platform guidelines only.
 - **Channel branding** — each channel's name replaces any channel/brand names found in source content, across narration, lyrics, and SEO; its purpose text steers the tone of every script.
 - **Job dashboard** — the jobs list shows every job's parameters at a glance (channel, audio choice and voice, art style, target length, aspect ratio, clip progress), with a per-channel filter, text search and pagination; the archive page gets the same filter, search and pagination.
@@ -154,8 +156,11 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
 | `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
 | `NARRATION_WORDS` | `170` | Narration length target (narration modes) |
-| `CLIP_AUDIO_VOLUME` | `0.3` | Clips' own ambience level under narration (0–1) |
-| `MUSIC_VOLUME` | `0.25` | Music level under narration (narration+music mode) |
+| `CLIP_AUDIO_VOLUME` | `0.3` | Clips' own ambience level under narration (0–1); dipped at clip cuts, ducked under the voice |
+| `CLIP_AUDIO_WITH_MUSIC` | `off` | Voiceover + music videos also keep the clips' own sound (off = narration + music bed only) |
+| `MUSIC_VOLUME` | `0.25` | Music level under narration (narration+music mode); ducked further while the voice speaks |
+| `STORYBOARD_MAX_IMAGES` | `6` | Story board: max related images rendered per video (one short ComfyUI render each; 0 = text cards only) |
+| `STORYBOARD_ACCENT` | `#e9a13b` | Story board: accent colour of the cards (kicker text, side bar) |
 | `LIGHTNING_LORA` | `off` | 8-step turbo sampling: ~3× faster, lower quality |
 | `CLIP_RETRIES` | `1` | Retries per failed clip before the job fails |
 | `MIN_TRANSCRIPT_WORDS` | `50` | Refuse videos with fewer transcript words |
@@ -173,11 +178,14 @@ Each job writes to `output/<job_id>/`:
 
 ```
 transcript.txt      cleaned source captions
-plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO
+plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO,
+                    story board cards (kicker/headline/body, clip range, image prompt)
 music.mp3           generated song            narration.wav   TTS voiceover (narration modes)
 clip_01..NN.mp4     generated clips           frame_NN.jpg    chaining frames
 thumbnail.jpg       YouTube thumbnail matching the video aspect (channel logo overlaid if uploaded)
-clips_joined.mp4    concatenated clips        final.mp4       finished video with mixed audio
+sbimg_NN.jpg        story board related images   card_NN.png   rendered story board overlays
+clips_joined.mp4    concatenated clips        clips_cards.mp4 clips with the story board overlaid
+final.mp4           finished video with mixed audio
 job.json            job state (enables crash-safe resume)
 ```
 

@@ -42,6 +42,7 @@ class Submit(BaseModel):
     video_length: str = ""
     audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
+    storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
 
 
 def _queued_detail(job_id: str) -> str:
@@ -93,9 +94,11 @@ def create_jobs(body: Submit):
             text = body.topic if prompt_kind == "topic" else body.description
             return [_job_json(manager.submit_prompt(text, prompt_kind, body.aspect_ratio,
                                                     body.art_style, body.video_length,
-                                                    body.audio_mode, vid, channel=ch))]
+                                                    body.audio_mode, vid, channel=ch,
+                                                    storyboard_flag=body.storyboard))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
-                                         body.audio_mode, vid, channel=ch)) for u in urls]
+                                         body.audio_mode, vid, channel=ch,
+                                         storyboard_flag=body.storyboard)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -164,6 +167,22 @@ def update_scenes(job_id: str, body: SceneUpdates):
 def regen_clips(job_id: str, body: RegenBody):
     try:
         return _job_json(manager.request_regen(job_id, body.clips))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+class StoryboardBody(BaseModel):
+    enabled: bool = True
+    regenerate: bool = False   # also discard the planned cards/images so they are made afresh
+
+
+@app.put("/jobs/{job_id}/storyboard")
+def set_storyboard(job_id: str, body: StoryboardBody):
+    """Enable/disable the story board overlay on a finished job; applied by the next reassembly."""
+    try:
+        return _job_json(manager.set_storyboard(job_id, body.enabled, body.regenerate))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -334,6 +353,7 @@ def options():
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
             "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music",
+            "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
             "channels": chans, "default_channel_id": chans[0]["id"] if chans else ""}
 
 
@@ -362,6 +382,7 @@ def list_channels_api():
     return {"channels": [_channel_json(c) for c in channels.list_channels()],
             "secret": youtube.has_secret(),
             "audiences": config.AUDIENCES, "video_types": config.VIDEO_TYPES,
+            "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
             "art_styles": list(config.ART_STYLES), "aspect_ratios": config.ASPECT_RATIOS,
             "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES}
 

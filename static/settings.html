@@ -63,15 +63,19 @@
             <select id="chVideoType">
               <option value="animated">Animated videos</option>
               <option value="real">Real videos</option>
+              <option value="tech">Tech videos</option>
             </select>
           </div>
         </div>
         <label for="chPurpose">Purpose</label>
         <textarea id="chPurpose" placeholder="What this channel is about — its niche, tone and goals. Guides every generated script, e.g. 'Animated learning videos that teach preschoolers letters, numbers and nature.'"></textarea>
-        <div class="hint" style="margin-top:4px">The audience preset sets the content-safety rules (kids = strictly gentle; family = no gore/explicit content; general = platform guidelines only). Real-video channels use a built-in realistic live-action look instead of an art style.</div>
+        <div class="hint" style="margin-top:4px">The audience preset sets the content-safety rules (kids = strictly gentle; family = no gore/explicit content; general = platform guidelines only). Real and Tech channels use a built-in realistic live-action look instead of an art style; Tech channels also get concrete, technically accurate scripts and the on-screen story board by default.</div>
         <label class="switch" style="margin-top:12px"><input type="checkbox" id="chKids"><span class="track"></span>
           Made for kids</label>
         <div class="hint">Uploads from this channel are self-declared as made for kids on YouTube (COPPA). Independent of the audience preset.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chStoryboard"><span class="track"></span>
+          Story board overlay by default</label>
+        <div class="hint">New videos of this channel get styled fact cards and related images drawn over the footage, timed to the narration (can be switched per video). Preselected for Tech channels.</div>
         <div class="row" style="margin-top:12px">
           <div class="grow" id="chStyleField" style="min-width:200px">
             <label for="chStyle">Default art style</label>
@@ -340,7 +344,7 @@ async function refreshChannels() {
       <div class="row" style="margin-bottom:8px;align-items:center">
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
         <b style="min-width:140px">${esc(c.name)}</b>
-        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : "animated")}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
         <div class="spacer"></div>
         ${(c.has_secret || chData.secret) ? (c.yt_connected
@@ -353,7 +357,9 @@ async function refreshChannels() {
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
 }
 
-function chApplyType() { $("#chStyleField").hidden = $("#chVideoType").value === "real"; }
+const CH_REAL_TYPES = ["real", "tech"];
+function chApplyType() { $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value); }
+function chTypeChanged() { chApplyType(); $("#chStoryboard").checked = $("#chVideoType").value === "tech"; }
 function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "music"; }
 
 async function chLoadVoices(selected) {
@@ -381,6 +387,7 @@ async function chOpen(c) {
   $("#chAudience").value = c ? c.audience : "kids";
   $("#chVideoType").value = c ? c.video_type : "animated";
   $("#chKids").checked = c ? !!c.made_for_kids : $("#chAudience").value === "kids";
+  $("#chStoryboard").checked = c ? !!(d.storyboard != null ? d.storyboard : c.video_type === "tech") : false;
   if (d.art_style) $("#chStyle").value = d.art_style;
   $("#chAudio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
   if (d.aspect_ratio) $("#chAspect").value = d.aspect_ratio;
@@ -410,7 +417,8 @@ $("#chSave").onclick = async () => {
     video_type: $("#chVideoType").value,
     made_for_kids: $("#chKids").checked,
     defaults: {
-      art_style: $("#chVideoType").value === "real" ? "" : $("#chStyle").value,
+      art_style: CH_REAL_TYPES.includes($("#chVideoType").value) ? "" : $("#chStyle").value,
+      storyboard: $("#chStoryboard").checked,
       audio_mode: $("#chAudio").value,
       voice_id: $("#chAudio").value === "music" ? "" : $("#chVoice").value,
       aspect_ratio: $("#chAspect").value,
@@ -511,7 +519,7 @@ $("#chClose").onclick = chCloseModal;
 $("#chCancel").onclick = chCloseModal;
 $("#chModal").addEventListener("click", ev => { if (ev.target === $("#chModal")) chCloseModal(); });
 document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#chModal").classList.contains("open")) chCloseModal(); });
-$("#chVideoType").onchange = chApplyType;
+$("#chVideoType").onchange = chTypeChanged;
 $("#chAudio").onchange = chApplyAudio;
 
 async function refreshVoices() {
