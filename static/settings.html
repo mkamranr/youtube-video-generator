@@ -130,6 +130,27 @@
     <div id="userList"><div class="hint">loading…</div></div>
   </div>
 
+  <div class="modal-backdrop" id="ytFinishModal">
+    <div class="modal" style="max-width:580px">
+      <div class="modal-head">
+        <h3>Finish the YouTube connection</h3>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="ytFinishClose" title="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p style="margin:0 0 10px">You are using VideoGen from a different computer than the one it runs on. After you allow access, Google sends your browser to <code id="ytRedirect"></code>, which cannot load here — the "This site can't be reached" page is expected.</p>
+        <p style="margin:0 0 12px">Copy the <b>full address</b> from that tab's address bar (it contains <code>code=…</code>) and paste it below.</p>
+        <label for="ytPaste">Address Google sent you to</label>
+        <input type="text" id="ytPaste" placeholder="http://localhost:8080/api/youtube/callback?state=…&amp;code=…" autocomplete="off" spellcheck="false">
+        <div class="hint">If the connection completes on its own (you opened the app on the server itself), this window closes automatically. A pending sign-in stays valid for 10 minutes.</div>
+        <div class="row" style="margin-top:14px">
+          <button class="btn" id="ytFinishGo">Finish connection</button>
+          <button class="btn secondary" id="ytFinishCancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop" id="userModal">
     <div class="modal" style="max-width:460px">
       <div class="modal-head">
@@ -245,7 +266,23 @@
         <div class="field">
           <label for="MUSIC_VOLUME">Music volume</label>
           <input type="number" id="MUSIC_VOLUME" min="0" max="1" step="0.05">
-          <div class="hint">Background music level under the narration (0-1)</div>
+          <div class="hint">Background music level under the narration (0-1); ducked further while the voice speaks, looped if the track ends early, faded out at the end</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="CLIP_AUDIO_WITH_MUSIC"><span class="track"></span>
+            Keep clip ambience under music</label>
+          <div class="hint">Voiceover + music videos also mix in the clips' own generated sound. Off (default) = narration + music bed only, which avoids the three-layer clash</div>
+        </div>
+        <div class="field">
+          <label for="STORYBOARD_MAX_IMAGES">Story board: max images</label>
+          <input type="number" id="STORYBOARD_MAX_IMAGES" min="0" max="40" step="1">
+          <div class="hint">At most this many related images are rendered per video for the story board cards (one short ComfyUI render each); 0 = text cards only</div>
+        </div>
+        <div class="field">
+          <label for="STORYBOARD_ACCENT">Story board: accent colour</label>
+          <input type="text" id="STORYBOARD_ACCENT" placeholder="#e9a13b" spellcheck="false">
+          <div class="hint">Hex colour of the cards' kicker label and side bar, e.g. #e9a13b</div>
         </div>
         <div class="field">
           <label>&nbsp;</label>
@@ -273,6 +310,11 @@
             <option value="public">Public</option>
           </select>
           <div class="hint">Privacy of uploaded videos; private lets you review in YouTube Studio first</div>
+        </div>
+        <div class="field full">
+          <label for="PUBLIC_BASE_URL">Public base URL (YouTube OAuth redirect)</label>
+          <input type="text" id="PUBLIC_BASE_URL" placeholder="leave empty for the localhost redirect (Desktop OAuth client)" spellcheck="false">
+          <div class="hint">Empty (default): Google returns to <code>http://localhost:&lt;port&gt;/api/youtube/callback</code>, which Desktop-type OAuth clients allow; from another computer you paste that address into the dialog to finish. Set the HTTPS address users open the app with (e.g. <code>https://videogen.example.com</code>) together with a <b>Web</b>-type OAuth client that has <code>&lt;url&gt;/api/youtube/callback</code> registered for a fully automatic sign-in.</div>
         </div>
         <div class="field">
           <label for="MIN_TRANSCRIPT_WORDS">Min transcript words</label>
@@ -327,6 +369,7 @@
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
                 "NARRATION_WORDS", "CLIP_SECONDS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY",
+                "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT", "PUBLIC_BASE_URL",
                 "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS"];
 
 async function load() {
@@ -516,6 +559,8 @@ async function chDelete(id) {
   catch (e) { toast(e.message, true); }
 }
 
+let ytManual = null;   // {id, timer} while a connection waits for the pasted Google address
+
 async function chConnect(id) {
   try {
     const d = await api(`/api/channels/${id}/youtube/auth`);
@@ -525,14 +570,45 @@ async function chConnect(id) {
     const t = setInterval(async () => {
       const s = await api("/api/channels");
       const c = s.channels.find(x => x.id === id);
-      if ((c && c.yt_connected) || ++tries > 60) {
+      if ((c && c.yt_connected) || ++tries > 200) {
         clearInterval(t);
+        if (ytManual && ytManual.timer === t) ytFinishClose();
         refreshChannels();
         if (c && c.yt_connected) toast("YouTube connected");
       }
     }, 3000);
+    // the loopback redirect cannot reach a server on another machine: ask for the address
+    if (d.manual) ytFinishOpen(id, d.redirect_uri, t);
   } catch (e) { toast(e.message, true); }
 }
+
+function ytFinishOpen(id, redirect, timer) {
+  ytManual = { id, timer };
+  $("#ytRedirect").textContent = redirect;
+  $("#ytPaste").value = "";
+  $("#ytFinishModal").classList.add("open");
+}
+function ytFinishClose() { $("#ytFinishModal").classList.remove("open"); ytManual = null; }
+
+$("#ytFinishGo").onclick = async () => {
+  if (!ytManual) return;
+  const url = $("#ytPaste").value.trim();
+  if (!url) { toast("Paste the address Google sent you to", true); return; }
+  $("#ytFinishGo").disabled = true;
+  try {
+    await api(`/api/channels/${ytManual.id}/youtube/finish`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    clearInterval(ytManual.timer);
+    ytFinishClose();
+    toast("YouTube connected");
+    refreshChannels();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#ytFinishGo").disabled = false; }
+};
+$("#ytFinishClose").innerHTML = icon("x");
+$("#ytFinishClose").onclick = ytFinishClose;
+$("#ytFinishCancel").onclick = ytFinishClose;
+$("#ytFinishModal").addEventListener("click", ev => { if (ev.target === $("#ytFinishModal")) ytFinishClose(); });
 
 async function chDisconnect(id) {
   if (!confirm("Disconnect this channel from YouTube? The stored token is deleted.")) return;

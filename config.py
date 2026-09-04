@@ -147,6 +147,7 @@ MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption covera
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
 SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
+PUBLIC_BASE_URL = ""            # https://host users open the app with; "" = localhost OAuth redirect
 YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)
 WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
 TTS_TEMPERATURE = 0.8           # Fish Speech sampling temperature
@@ -206,6 +207,12 @@ EDITABLE_SETTINGS = {
                            "Refuse when the transcript is too sparse for the video length (music/no speech)"),
     "YT_PRIVACY": (str, lambda v: v in ("private", "unlisted", "public"), "YouTube privacy",
                    "Privacy of uploaded videos: private (review in YouTube Studio first), unlisted or public"),
+    "PUBLIC_BASE_URL": (str, lambda v: v == "" or v.startswith("http"), "Public base URL (YouTube OAuth)",
+                        "Leave empty (default): Google returns to http://localhost:<port>/api/youtube/callback, "
+                        "which Desktop-type OAuth clients allow; from another computer you paste that address "
+                        "into Settings to finish. Set to the HTTPS address users open the app with (e.g. "
+                        "https://videogen.example.com) together with a Web-type OAuth client that has "
+                        "<url>/api/youtube/callback registered for a fully automatic sign-in"),
     "SCRIPT_REVIEW": (bool, lambda v: True, "LLM review pass",
                       "After generating each scene (and each drafted script), the LLM reviews it once more against the audio/content and fixes inconsistencies (wrong letters, mismatched objects, safety issues)"),
     "COMFY_CLEANUP": (bool, lambda v: True, "Clean up ComfyUI",

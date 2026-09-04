@@ -257,7 +257,7 @@ server {
 
 Run uvicorn with `--proxy-headers --forwarded-allow-ips=127.0.0.1` (already in the systemd unit) so the cookie gets the `Secure` flag. Video files are served by the app itself; if `final.mp4` downloads stall behind a proxy, raise its buffering/timeouts.
 
-**YouTube OAuth behind a proxy or on a remote host:** the Google consent flow redirects the browser back to `<the URL you opened the app with>/api/youtube/callback`. Register that exact origin's redirect URI in your Google Cloud OAuth client (see docs/YOUTUBE.md); `http://localhost:8080/...` only works when the browser runs on the app host.
+**YouTube OAuth on a remote host:** with the default Desktop-type Google client the consent flow always returns to `http://localhost:<port>/api/youtube/callback` (the only kind of redirect Google allows for such clients). On the server machine that completes by itself; from any other computer the page cannot load and you paste its address into the *Finish the YouTube connection* dialog in Settings — no Google Cloud changes needed. If you have an HTTPS domain, you can instead create a Web-type client with `https://your-domain/api/youtube/callback` registered and set **Settings → Public base URL** to `https://your-domain` for a fully automatic sign-in. Details: docs/YOUTUBE.md.
 
 ## 8. First run and accounts
 

@@ -25,7 +25,8 @@ The app requests only the `https://www.googleapis.com/auth/youtube.upload` scope
 ## 4. Create the OAuth client
 
 1. **APIs & Services → Credentials → + Create credentials → OAuth client ID**.
-2. Application type: **Desktop app** (this matters — Desktop clients allow the localhost redirect VideoGen uses). Name it anything.
+2. Application type: **Desktop app** (this matters — Desktop clients allow the `http://localhost:<port>/api/youtube/callback` redirect VideoGen uses, and it works even when VideoGen runs on a server you reach over the network; see step 5). Name it anything.
+   *Alternative for servers with an HTTPS domain:* choose **Web application** instead, add `https://your-domain/api/youtube/callback` under *Authorized redirect URIs*, and set **Settings → Public base URL** to `https://your-domain`. Google requires HTTPS and a real domain for Web clients (raw IP addresses are refused), so most self-hosted setups are simpler with the Desktop client.
 3. **Create**, then **Download JSON**.
 4. Upload the downloaded JSON in VideoGen → **Settings** → **Channels**: use **Upload shared OAuth client** to share it across all channels, or open a channel's edit dialog to give that channel its **own** client (it overrides the shared one — only needed when channels belong to different Google Cloud projects). Saving the file manually as `client_secret.json` in the project folder still works as the shared client.
 
@@ -34,8 +35,10 @@ The client files and the stored per-channel tokens (`channels/<id>_yt_token.json
 ## 5. Connect VideoGen
 
 1. Open VideoGen → **Settings** → the **Channels** card lists each channel with its YouTube status.
-2. Click **Connect YouTube** on a channel → a Google sign-in tab opens → choose the account owning **that** channel → allow the upload permission → the tab confirms "YouTube connected".
-3. The channel row switches to *connected*. Done — this persists across restarts. Repeat per channel.
+2. Click **Connect YouTube** on a channel → a Google sign-in tab opens → choose the account owning **that** channel → allow the upload permission.
+3. **Browser on the same machine as VideoGen:** the tab confirms "YouTube connected" by itself.
+   **VideoGen on a server, browser elsewhere:** Google sends the tab to `http://localhost:<port>/api/youtube/callback?state=…&code=…`, which cannot load on your computer — the "This site can't be reached" page is expected. Copy the **full address** from that tab's address bar and paste it into the **Finish the YouTube connection** dialog that VideoGen opened when you clicked Connect (a pending sign-in stays valid for 10 minutes), then click **Finish connection**.
+4. The channel row switches to *connected*. Done — this persists across restarts. Repeat per channel.
 
 ## 6. Upload a video
 
@@ -53,6 +56,8 @@ Re-uploading is allowed (e.g. after regenerating clips) — the app warns you ex
 - **`Error 403: access_denied` at sign-in** — your account is not a test user (Testing mode). Add it under *OAuth consent screen → Test users*, or publish the app (step 3).
 - **"Google hasn't verified this app"** — expected for an unverified personal project; click *Advanced → Go to … (unsafe)* to continue.
 - **Uploads stop working after ~a week** — Testing-mode token expiry; reconnect in Settings, or publish the app to stop the expiry.
-- **`redirect_uri_mismatch`** — the OAuth client is not a *Desktop app* type; create a new client with the correct type and replace `client_secret.json`.
+- **"Access blocked: Authorization Error" right after clicking Connect** (before any sign-in) — the redirect Google was given is not one it accepts for your client. This happened in versions before the localhost redirect when VideoGen was opened via a server address; update VideoGen, or check that *Public base URL* is either empty (Desktop client) or exactly the HTTPS origin registered on a Web client.
+- **`redirect_uri_mismatch`** — with a *Desktop app* client, *Public base URL* must be empty; with a *Web application* client, `<Public base URL>/api/youtube/callback` must be listed under its authorized redirect URIs (HTTPS, real domain).
+- **"This site can't be reached" at `localhost:8080/api/youtube/callback` after allowing access** — expected when your browser is not on the server: copy that address into the *Finish the YouTube connection* dialog (step 5). If you closed the dialog, click Connect YouTube again and paste it there.
 - **Thumbnail not set, video uploaded** — the channel may not be verified for custom thumbnails (verify at [youtube.com/verify](https://www.youtube.com/verify)); also allow a few minutes of processing after upload before it shows in YouTube Studio, and note Shorts surfaces may display a video frame in some places regardless of the set thumbnail.
 - **Quota**: the YouTube API grants 10,000 units/day by default; one upload costs ~1,600 — roughly 6 uploads/day. Request more in the Cloud Console if needed.

@@ -53,6 +53,16 @@ def auth_url(redirect_uri: str, token_file, secret_file=None) -> str:
     return url
 
 
+def pending_state_for(token_file) -> str:
+    """The most recent pending consent flow started for this channel ("" if none).
+    Used when the user pastes a bare authorization code instead of the full callback URL."""
+    with _lock:
+        now = time.time()
+        cands = [(v["ts"], k) for k, v in _flows.items()
+                 if v["token_file"] == str(token_file) and now - v["ts"] <= FLOW_TTL]
+    return max(cands)[1] if cands else ""
+
+
 def finish_auth(code: str, state: str) -> None:
     from google_auth_oauthlib.flow import Flow
     with _lock:

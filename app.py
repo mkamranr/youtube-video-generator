@@ -6,7 +6,7 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import requests
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
@@ -677,6 +677,46 @@ def regen_thumbnail(job_id: str):
         raise HTTPException(409, str(e))
 
 
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _oauth_redirect(request: Request) -> tuple:
+    """(redirect_uri, manual) for the Google consent flow.
+
+    Desktop-type OAuth clients accept only loopback redirects, so by default the flow
+    returns to http://localhost:<port>/api/youtube/callback. That completes automatically
+    when the browser runs on the server machine; from any other computer the page cannot
+    load and the user pastes its address into Settings instead (manual=True). A configured
+    PUBLIC_BASE_URL (Web-type client on an HTTPS domain) is used verbatim."""
+    if config.PUBLIC_BASE_URL:
+        return config.PUBLIC_BASE_URL.rstrip("/") + "/api/youtube/callback", False
+    host = (request.url.hostname or "").lower()
+    port = request.url.port or (443 if request.url.scheme == "https" else 80)
+    suffix = "" if port in (80, 443) else f":{port}"
+    return f"http://localhost{suffix}/api/youtube/callback", host not in LOOPBACK_HOSTS
+
+
+def _parse_oauth_return(text: str) -> tuple:
+    """(code, state) from the pasted callback address, its query string, or a bare code."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("paste the address of the page Google sent you to")
+    if "code=" in text:
+        query = urlsplit(text).query if "://" in text else text.lstrip("?")
+        q = parse_qs(query)
+        code, state = (q.get("code") or [""])[0].strip(), (q.get("state") or [""])[0].strip()
+        if not code:
+            raise ValueError("no authorization code found in the pasted address")
+        return code, state
+    if " " in text or "/" in text:
+        raise ValueError("that does not look like a Google callback address or authorization code")
+    return text, ""
+
+
+class OAuthFinish(BaseModel):
+    url: str
+
+
 @app.get("/api/channels/{cid}/youtube/auth")
 def channel_youtube_auth(cid: str, request: Request):
     from services import youtube
@@ -686,11 +726,36 @@ def channel_youtube_auth(cid: str, request: Request):
     if not youtube.has_secret(secret):
         raise HTTPException(409, "no OAuth client secret - upload one for this channel "
                                  "or a shared one on the Settings page")
-    redirect = str(request.base_url).rstrip("/") + "/api/youtube/callback"
+    redirect, manual = _oauth_redirect(request)
     try:
-        return {"url": youtube.auth_url(redirect, channels.token_path(cid), secret_file=secret)}
+        return {"url": youtube.auth_url(redirect, channels.token_path(cid), secret_file=secret),
+                "redirect_uri": redirect, "manual": manual}
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"could not start authorization: {e}")
+
+
+@app.post("/api/channels/{cid}/youtube/finish")
+def channel_youtube_finish(cid: str, body: OAuthFinish):
+    """Complete a consent flow whose loopback redirect could not reach the server: the user
+    pastes the address Google sent the browser to (or the bare authorization code)."""
+    from services import youtube
+    if not channels.get_channel(cid):
+        raise HTTPException(404, "unknown channel")
+    try:
+        code, state = _parse_oauth_return(body.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not state:
+        state = youtube.pending_state_for(channels.token_path(cid))
+        if not state:
+            raise HTTPException(409, "no authorization in progress - click Connect YouTube again")
+    try:
+        youtube.finish_auth(code, state)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"Google rejected the code: {str(e)[:200]}")
+    return _channel_json(channels.get_channel(cid))
 
 
 async def _read_secret_upload(file: UploadFile) -> bytes:
