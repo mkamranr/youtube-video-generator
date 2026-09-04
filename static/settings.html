@@ -467,9 +467,10 @@ function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "m
 async function chLoadVoices(selected) {
   try {
     const d = await api("/api/voices");
-    $("#chVoice").innerHTML = `<option value="">Default voice</option>` +
+    $("#chVoice").innerHTML = `<option value="">Default voice — same voice for the whole video</option>
+      <option value="random">Default voice — random voice per segment</option>` +
       d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
-    $("#chVoice").value = selected && d.voices.some(v => v.id === selected) ? selected : "";
+    $("#chVoice").value = selected === "random" || (selected && d.voices.some(v => v.id === selected)) ? selected : "";
   } catch (e) { /* voice list is optional */ }
 }
 

@@ -127,7 +127,7 @@ def create_jobs(body: Submit):
         chans = channels.list_channels()
         ch = chans[0] if chans else None
     vid = body.voice_id.strip()
-    if vid and not voices.get_voice(vid):
+    if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
         raise HTTPException(400, "unknown reference voice")
     try:
         if prompt_kind:
@@ -260,13 +260,14 @@ def _toggle_archive(job_id: str, flag: bool):
 
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
+    """Remove the job and its whole output folder (clips, audio, final video, cards)."""
     try:
-        manager.delete(job_id)
+        freed, warning = manager.delete(job_id)
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
         raise HTTPException(409, str(e))
-    return {"deleted": job_id}
+    return {"deleted": job_id, "freed_mb": round(freed / 1e6, 1), "warning": warning}
 
 
 @app.post("/jobs/{job_id}/resume")

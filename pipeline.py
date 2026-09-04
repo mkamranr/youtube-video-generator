@@ -1,7 +1,10 @@
 """Job model + the end-to-end generation pipeline."""
 import json
 import math
+import os
+import re
 import shutil
+import stat
 import threading
 import time
 import traceback
@@ -415,9 +418,12 @@ def _run(job: Job):
             duration = tts.audio_duration(narration_file)
             job.add_log("resume: reusing narration audio")
         else:
-            ref_audio, ref_text = None, ""
-            if job.voice_id:
-                from services import voices
+            from services import voices
+            ref_audio, ref_text, keep_voice = None, "", True
+            if job.voice_id == voices.RANDOM_VOICE:
+                keep_voice = False
+                job.add_log("narration voice: default, a new random voice per segment")
+            elif job.voice_id:
                 v = voices.get_voice(job.voice_id)
                 vpath = voices.voice_audio_path(job.voice_id)
                 if v and vpath.exists():
@@ -425,10 +431,12 @@ def _run(job: Job):
                     job.add_log(f"narration voice: {v['name']}")
                 else:
                     job.add_log(f"reference voice {job.voice_id} no longer exists - using the default voice")
+            else:
+                job.add_log("narration voice: default, kept the same for the whole video")
             job.set("tts", "synthesizing narration with Fish Speech")
             duration = tts.synthesize(plan["narration"], narration_file,
                                       on_progress=_progress(job, "tts"),
-                                      ref_audio=ref_audio, ref_text=ref_text)
+                                      ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
             job.add_log(f"narration: {duration:.1f}s")
         n = max(1, math.ceil(duration / config.CLIP_SECONDS))
         sync_text = plan["narration"]
@@ -546,6 +554,58 @@ def _run(job: Job):
 
 
 # ---------------------------------------------------------------------------
+JOB_DIR_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")   # output/<job id> folders
+
+
+def dir_size(path: Path) -> int:
+    try:
+        return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def remove_job_dir(path: Path) -> tuple:
+    """Delete a job folder. Returns (bytes_freed, warning_or_None).
+
+    job.json goes first so a half-deleted folder can never resurrect the job at the next
+    start; read-only files are made writable; files still held open (Windows keeps a video
+    locked while the browser streams it) are retried for a few seconds. Whatever stays
+    locked is reported in the warning and removed by the startup sweep."""
+    path = Path(path)
+    if not path.exists():
+        return 0, None
+    size = dir_size(path)
+    (path / "job.json").unlink(missing_ok=True)
+
+    def onerror(func, p, _exc):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except OSError:
+            pass
+
+    for attempt in range(4):          # ~5 s in total before giving the leftovers to the sweep
+        shutil.rmtree(path, onerror=onerror)
+        if not path.exists():
+            return size, None
+        time.sleep(0.5 * (attempt + 1))
+    left = dir_size(path)
+    n = sum(1 for f in path.rglob("*") if f.is_file())
+    return size - left, (f"{n} file(s) ({left / 1e6:.1f} MB) are still in use and could not be "
+                         f"removed yet - they are cleaned up automatically at the next server start")
+
+
+def sweep_deleted_dirs() -> int:
+    """Remove job folders whose job.json is gone (a delete that hit locked files)."""
+    freed = 0
+    for d in config.OUTPUT_DIR.glob("*"):
+        if d.is_dir() and JOB_DIR_RE.match(d.name) and not (d / "job.json").exists():
+            got, warn = remove_job_dir(d)
+            freed += got
+            print(f"leftover job folder {d.name}: " + (warn or f"removed ({got / 1e6:.1f} MB)"))
+    return freed
+
+
 class JobManager:
     """Serial worker: one job at a time so the GPU is not contended."""
 
@@ -574,6 +634,7 @@ class JobManager:
 
     def _load_existing(self):
         config.OUTPUT_DIR.mkdir(exist_ok=True)
+        sweep_deleted_dirs()
         for p in sorted(config.OUTPUT_DIR.glob("*/job.json")):
             try:
                 j = Job.load(p)
@@ -1007,17 +1068,23 @@ class JobManager:
         job.set(archived=archived)
         return job
 
-    def delete(self, job_id: str):
+    def delete(self, job_id: str) -> tuple:
+        """Remove the job and its whole output folder. Returns (bytes_freed, warning):
+        warning is set when some files stayed locked (they are swept at the next start)."""
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
             if job_id == self.current:
                 raise ValueError("job is currently running and cannot be deleted")
+            if job.status in ("assembling", "thumbnail", "drafting"):
+                raise ValueError(f"job is busy ({job.status}) - wait until it finishes, then delete it")
+            if job.yt_status == "uploading":
+                raise ValueError("job is uploading to YouTube - wait until the upload finishes")
             if job_id in self.queue:
                 self.queue.remove(job_id)
             self.jobs.pop(job_id)
-        shutil.rmtree(job.dir, ignore_errors=True)
+        return remove_job_dir(job.dir)
 
     def list(self):
         return sorted(self.jobs.values(), key=lambda j: j.created, reverse=True)

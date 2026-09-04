@@ -19,6 +19,12 @@ from services.tts import audio_duration
 
 _lock = threading.Lock()
 
+# Special voice_id values for the built-in (non-cloned) voice:
+#   ""       -> default voice, kept the same for the whole video (the first narration chunk
+#               becomes the reference for the following chunks)
+#   "random" -> default voice, a new random speaker for every chunk (Fish Speech's raw behaviour)
+RANDOM_VOICE = "random"
+
 MIN_SECONDS = 1
 MAX_SECONDS = 120
 MAX_NAME_CHARS = 60

@@ -38,7 +38,11 @@ async function unarchiveJob(ev, id) {
 async function removeJob(ev, id) {
   ev.preventDefault(); ev.stopPropagation();
   if (!confirm("Delete this job and all its files permanently?")) return;
-  try { await api(`/jobs/${id}`, { method: "DELETE" }); toast("Job deleted"); await refresh(); }
+  try {
+    const r = await api(`/jobs/${id}`, { method: "DELETE" });
+    toast(r.warning ? `Job deleted - ${r.warning}` : `Job deleted - ${r.freed_mb} MB freed`, !!r.warning);
+    await refresh();
+  }
   catch (e) { toast(e.message, true); }
 }
 

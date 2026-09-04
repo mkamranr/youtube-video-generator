@@ -66,7 +66,7 @@
             </div>
             <div class="grow" id="voiceField" style="min-width:170px" hidden>
               <label for="voice">Voice</label>
-              <select id="voice"><option value="">Default voice</option></select>
+              <select id="voice"><option value="">Default voice — same voice for the whole video</option><option value="random">Default voice — random voice per segment</option></select>
             </div>
             <div class="grow" style="min-width:160px">
               <label for="vlen">Video length</label>
@@ -157,14 +157,16 @@ async function loadVoices() {
     voicesById = {};
     d.voices.forEach(v => { voicesById[v.id] = v.name; });
     const cur = $("#voice").value;
-    $("#voice").innerHTML = `<option value="">Default voice</option>` +
+    $("#voice").innerHTML = `<option value="">Default voice — same voice for the whole video</option>
+      <option value="random">Default voice — random voice per segment</option>` +
       d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
-    $("#voice").value = cur && d.voices.some(v => v.id === cur) ? cur : "";
+    $("#voice").value = cur === "random" || (cur && d.voices.some(v => v.id === cur)) ? cur : "";
   } catch (e) { /* voice list is optional */ }
 }
 
 function audioLabel(j) {
   if ((j.audio_mode || "") === "music") return "Song";
+  if (j.voice_id === "random") return "Voiceover (random voices)";
   const v = j.voice_id && voicesById[j.voice_id];
   return "Voiceover" + (v ? ` (${esc(v)})` : "");
 }
@@ -228,7 +230,11 @@ async function archiveJob(ev, id) {
 async function removeJob(ev, id) {
   ev.preventDefault(); ev.stopPropagation();
   if (!confirm("Delete this job and all its files?")) return;
-  try { await api(`/jobs/${id}`, { method: "DELETE" }); toast("Job deleted"); await refresh(); }
+  try {
+    const r = await api(`/jobs/${id}`, { method: "DELETE" });
+    toast(r.warning ? `Job deleted - ${r.warning}` : `Job deleted - ${r.freed_mb} MB freed`, !!r.warning);
+    await refresh();
+  }
   catch (e) { toast(e.message, true); }
 }
 

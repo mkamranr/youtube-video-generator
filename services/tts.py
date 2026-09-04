@@ -92,7 +92,13 @@ def _predict_chunk(client: Client, text: str, ref_audio=None, ref_text: str = ""
 
 
 def synthesize(text: str, out_wav: Path, on_progress=None,
-               ref_audio: Path = None, ref_text: str = "") -> float:
+               ref_audio: Path = None, ref_text: str = "", keep_voice: bool = True) -> float:
+    """Speak `text` into out_wav, chunk by chunk.
+
+    Without a reference sample Fish Speech invents a new voice for every request, so a
+    long narration would switch speakers at each chunk. keep_voice=True (default) makes
+    the first chunk's audio the reference for all following chunks, so one video keeps one
+    voice; keep_voice=False keeps the old behaviour (a random voice per chunk)."""
     free_comfy_vram()
     client = Client(config.FISH_URL, verbose=False)
     chunks = split_chunks(text)
@@ -109,6 +115,8 @@ def synthesize(text: str, out_wav: Path, on_progress=None,
             subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", src,
                             "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(part)], check=True)
             parts.append(part)
+            if i == 1 and ref_audio is None and keep_voice and len(chunks) > 1:
+                ref_audio, ref_text = part, chunk   # clone the voice we just got for the rest
         if len(parts) == 1:
             shutil.copy(parts[0], out_wav)
         else:
