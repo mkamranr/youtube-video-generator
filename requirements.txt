@@ -7,6 +7,8 @@ youtube-transcript-api
 yt-dlp
 openai
 static-ffmpeg
+pillow
+python-multipart
 faster-whisper
 google-api-python-client
 google-auth

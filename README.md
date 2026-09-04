@@ -26,6 +26,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **Title-named downloads & bundle** — the video and thumbnail download as `<Title>.mp4` / `<Title>.jpg`, and one click grabs the whole publish **bundle**: a ZIP with the video, thumbnail, audio track(s), and the SEO title/description in a text file.
 - **Full revision workflow** — edit any scene prompt in the UI, regenerate exactly the clips you want (they're clearly badged), then reassemble the final video with one click. Regenerations **jump the queue**, pausing the running job at a clip boundary and resuming it afterwards.
 - **Robust operations** — crash-safe resume (every pipeline step is idempotent), instant cancel (including aborting the in-flight GPU render), a serial GPU queue with live status messages, automatic ComfyUI server cleanup (per artifact, plus an **orphan sweep** at startup and after every job that catches renders left behind by retries or crashes), transcript quality gating, and a self-restarting server watchdog.
+- **Login and user accounts** — the whole app sits behind a sign-in screen. On the very first start a one-time **setup** page creates the administrator account; it never appears again. Admins add and remove users, reset passwords and grant admin rights on the Settings page; every signed-in user sees and manages all videos, channels and settings, and can change their own password. Sessions are signed cookies (30 days); passwords are stored as scrypt hashes in `users/` (never committed).
 - **Polished web UI** — dark/light theme, a **New Video** dialog behind a *Create new video* button, a type-to-search art-style picker with live model-rendered previews, search across the Jobs and Archived Jobs lists, configurable dialog defaults, live progress with a pipeline stepper, rich per-job detail pages, archive/cancel/delete, and a runtime Settings page with service health checks.
 
 ## Screenshots
@@ -86,7 +87,7 @@ YouTube URL
 | faster-whisper (local, CPU) | Word-timestamped lyric transcription | in-process |
 | ffmpeg/ffprobe (bundled via `static-ffmpeg`) | Frame extraction, concat, audio mixing | local |
 
-See **docs/ARCHITECTURE.md** for module-level detail, **docs/API.md** for the HTTP API, **docs/YOUTUBE.md** for the YouTube upload setup, and **docs/DOCKER.md** for containerized deployment.
+See **docs/ARCHITECTURE.md** for module-level detail, **docs/API.md** for the HTTP API (including sign-in for scripts), **docs/YOUTUBE.md** for the YouTube upload setup, **docs/DEPLOYMENT.md** for Windows / Linux / Docker deployments, and **docs/DOCKER.md** for the container details.
 
 ## Installation
 
@@ -110,15 +111,15 @@ start_server.bat
 python -m uvicorn app:app --host 127.0.0.1 --port 8080
 ```
 
-Open **http://localhost:8080**.
+Open **http://localhost:8080** — the first visit shows the one-time **Create the admin account** screen (see *First run* below), every later visit the sign-in page.
 
-### Docker
+### Deploying for real use
 
-A ready-to-use `Dockerfile` and `docker-compose.yml` are included; every setting can be supplied as a `VIDEOGEN_*` environment variable. See **docs/DOCKER.md** for the full deployment guide.
+**docs/DEPLOYMENT.md** covers every supported deployment: Windows (interactive watchdog, Task Scheduler, NSSM service), Linux (virtualenv + systemd unit), Docker (compose or plain `docker run`), HTTPS via Caddy/nginx, first-run accounts, updating, backups and troubleshooting. The container specifics — image, volumes, every `VIDEOGEN_*` variable — are in **docs/DOCKER.md**.
 
 ## Usage
 
-1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; or a **description / short script** — one job per topic/description), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), and an **Art style** (type to search; a preview image shows how each style looks). The fields pre-select your defaults from Settings. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
+1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; or a **description / short script** — one job per topic/description), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), an **Art style** (type to search; a preview image shows how each style looks — hidden for Real and Tech channels, which use the built-in live-action look), and the **Add story board cards** switch (on by default for Tech channels): styled fact cards with related images drawn over the video. The fields pre-select your defaults from Settings. You need to be signed in; every user sees the same job list. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
    - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
 3. **Publish** — when done, push the video straight to your channel with **Upload to YouTube** (private by default, with SEO title/description, thumbnail and made-for-kids flag applied — see docs/YOUTUBE.md for the one-time setup), or download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
@@ -137,6 +138,10 @@ Note: a regenerated clip keeps its opening continuity (seeded from the previous 
 - **Resume** a failed job (connection timeout, service down, crash) with one click once the services are back: it re-enters the queue and continues from the exact step it failed at - the plan, music, narration and every finished clip are reused.
 - **Archive** finished jobs to keep the main list clean (Archived Jobs page; unarchive anytime).
 - **Delete** removes a job and all its local files permanently.
+
+## First run
+
+Open the app in a browser: it shows the **Create the admin account** screen until the first user exists. That account is the administrator — sign in with it, then add more users under Settings → Users. Accounts and the session signing key live in `users/`; delete that folder to start over (everyone is signed out and the setup screen returns). For scripts, sign in with `POST /api/auth/login` and reuse the cookie (see docs/API.md).
 
 ## Configuration
 
@@ -170,7 +175,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 
 Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
 
-The Settings page also hosts three non-setting tools: **Channels** (add/edit channels — name, purpose, audience, video type, per-video defaults, logo and each channel's own YouTube connection; stored in `channels/`, never committed), **Reference voices** (upload named speech samples with their transcripts for Fish Speech voice cloning; stored in `reference_audio/`, never committed), and **Generate style previews** (renders the art-style sample images with your own model).
+The Settings page also hosts four non-setting tools: **Users** (admins only: add users, reset passwords, grant or revoke admin rights; everyone gets a *Your account* card to change their own password), **Channels** (add/edit channels — name, purpose, audience, video type, per-video defaults, logo and each channel's own YouTube connection; stored in `channels/`, never committed), **Reference voices** (upload named speech samples with their transcripts for Fish Speech voice cloning; stored in `reference_audio/`, never committed), and **Generate style previews** (renders the art-style sample images with your own model).
 
 ## Output layout
 
