@@ -1,5 +1,6 @@
 .git
 output/
+users/
 settings.json
 server.log
 server.err.log

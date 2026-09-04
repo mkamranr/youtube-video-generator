@@ -41,6 +41,7 @@ Every setting from the Configuration table in the README can be supplied as an e
 | `VIDEOGEN_TTS_CHUNK_CHARS` | `300` |
 | `VIDEOGEN_TARGET_VIDEO_SECONDS` | `90` (`0` = no target) |
 | `VIDEOGEN_COMFY_CLEANUP` | `true` / `false` |
+| `VIDEOGEN_SECRET_KEY` | any long random string — signs the login session cookies (optional; without it a random key is generated once into `/app/users/session_secret`) |
 | …and every other `EDITABLE_SETTINGS` key | |
 
 Booleans accept `1/true/yes/on` (case-insensitive); numbers are parsed and range-validated — invalid values are ignored with the previous value kept.
@@ -53,6 +54,7 @@ Booleans accept `1/true/yes/on` (case-insensitive); numbers are parsed and range
 | `/root/.cache/huggingface` | faster-whisper model cache (~150 MB, downloaded once) | named volume `whisper-cache` |
 | `/app/reference_audio` | Reference voices for Fish Speech cloning (Settings page) | `./data/reference_audio` bind mount |
 | `/app/channels` | Channels: index, logos and per-channel YouTube tokens (Settings page) | `./data/channels` bind mount |
+| `/app/users` | Login accounts (username, role, password hash) and the session signing key — **required**, or every container recreation returns to the first-run setup screen and signs everyone out | `./data/users` bind mount |
 | `/app/settings.json` | Settings-page changes | optional single-file bind (create `data/settings.json` containing `{}` first), or rely on env vars |
 
 The compose file ships with the first two configured.

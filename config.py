@@ -20,6 +20,10 @@ YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client 
 YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # legacy global OAuth token (pre-channels)
 CHANNELS_DIR = BASE_DIR / "channels"        # per-channel store: index, logos, YouTube tokens
 CHANNELS_INDEX = CHANNELS_DIR / "channels.json"
+USERS_DIR = Path(os.environ.get("VIDEOGEN_USERS_DIR") or BASE_DIR / "users")  # login accounts
+USERS_INDEX = USERS_DIR / "users.json"
+SESSION_SECRET_FILE = USERS_DIR / "session_secret"   # random key signing the session cookies
+SESSION_DAYS = 30                                    # how long a login stays valid
 
 # ---- service endpoints (placeholders) -------------------------------------
 # Set your real service URLs via the Settings page (persisted to settings.json)

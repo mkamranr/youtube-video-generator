@@ -120,6 +120,65 @@
     </div>
   </div>
 
+  <div class="card" id="usersCard" hidden>
+    <div class="row" style="align-items:center;margin-bottom:8px">
+      <h2 style="margin:0">Users</h2>
+      <div class="spacer"></div>
+      <button class="btn secondary sm" id="userAdd" type="button">Add user</button>
+    </div>
+    <div class="hint" style="margin-bottom:10px">Everyone who can sign in sees and manages all videos, channels and settings. Only admins manage users. There must always be at least one admin.</div>
+    <div id="userList"><div class="hint">loading…</div></div>
+  </div>
+
+  <div class="modal-backdrop" id="userModal">
+    <div class="modal" style="max-width:460px">
+      <div class="modal-head">
+        <h3 id="userModalTitle">Add user</h3>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="userClose" title="Close"></button>
+      </div>
+      <div class="modal-body">
+        <label for="uName">Username</label>
+        <input type="text" id="uName" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. jane">
+        <div class="hint">3–40 characters: letters, digits, dot, dash or underscore.</div>
+        <label for="uPassword" style="margin-top:12px" id="uPasswordLabel">Password</label>
+        <input type="password" id="uPassword" autocomplete="new-password">
+        <div class="hint">At least 8 characters. Share it with the user; they can change it on their own Settings page.</div>
+        <div id="uRoleField" style="margin-top:12px">
+          <label for="uRole">Role</label>
+          <select id="uRole">
+            <option value="user">User — videos, channels and settings</option>
+            <option value="admin">Admin — everything, plus user management</option>
+          </select>
+        </div>
+        <div class="row" style="margin-top:18px">
+          <button class="btn" id="userSave">Save</button>
+          <button class="btn secondary" id="userCancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Your account</h2>
+    <div class="hint" style="margin-bottom:10px">Signed in as <b id="meName">…</b>. Changing your password signs out your other devices.</div>
+    <div class="row" style="align-items:flex-end">
+      <div class="grow" style="min-width:180px;max-width:240px">
+        <label for="pwCurrent">Current password</label>
+        <input type="password" id="pwCurrent" autocomplete="current-password">
+      </div>
+      <div class="grow" style="min-width:180px;max-width:240px">
+        <label for="pwNew">New password</label>
+        <input type="password" id="pwNew" autocomplete="new-password">
+      </div>
+      <div class="grow" style="min-width:180px;max-width:240px">
+        <label for="pwConfirm">Confirm new password</label>
+        <input type="password" id="pwConfirm" autocomplete="new-password">
+      </div>
+      <button class="btn secondary sm" id="pwChange" type="button" style="margin-bottom:2px">Change password</button>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Reference voices</h2>
     <div class="hint" style="margin-bottom:10px">Voice samples for Fish Speech voice cloning. Upload 5-30 s of clean speech and enter the exact text spoken in it; pick a voice in the New Video dialog when generating a voiceover.</div>
@@ -522,6 +581,96 @@ document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#chMo
 $("#chVideoType").onchange = chTypeChanged;
 $("#chAudio").onchange = chApplyAudio;
 
+// ---- users (admin) ---------------------------------------------------------
+let userEditing = null;   // user id being edited (password reset); null = adding
+
+async function refreshUsers() {
+  const me = await userReady;
+  $("#meName").textContent = me ? me.username : "?";
+  if (!me || me.role !== "admin") { $("#usersCard").hidden = true; return; }
+  $("#usersCard").hidden = false;
+  const box = $("#userList");
+  try {
+    const d = await api("/api/users");
+    box.innerHTML = d.users.map(u => `
+      <div class="row" style="margin-bottom:8px;align-items:center">
+        <b style="min-width:140px">${esc(u.username)}${u.id === me.id ? ' <span class="hint">(you)</span>' : ""}</b>
+        ${chBadge(u.role)}
+        <span class="hint">added ${timeAgo(u.created)}</span>
+        <div class="spacer"></div>
+        <button class="btn secondary sm" type="button" onclick="userResetPw('${esc(u.id)}','${esc(u.username)}')">Reset password</button>
+        ${u.id === me.id ? "" : `<button class="btn secondary sm" type="button" onclick="userSetRole('${esc(u.id)}','${u.role === "admin" ? "user" : "admin"}')">${u.role === "admin" ? "Make user" : "Make admin"}</button>
+        <button class="btn danger sm" type="button" onclick="userDelete('${esc(u.id)}','${esc(u.username)}')">Delete</button>`}
+      </div>`).join("") || `<div class="hint">No users.</div>`;
+  } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
+}
+
+function userOpen(editId, username) {
+  userEditing = editId || null;
+  $("#userModalTitle").textContent = userEditing ? `Reset password for ${username}` : "Add user";
+  $("#uName").value = username || "";
+  $("#uName").disabled = !!userEditing;
+  $("#uPassword").value = "";
+  $("#uPasswordLabel").textContent = userEditing ? "New password" : "Password";
+  $("#uRole").value = "user";
+  $("#uRoleField").hidden = !!userEditing;
+  $("#userModal").classList.add("open");
+  setTimeout(() => (userEditing ? $("#uPassword") : $("#uName")).focus(), 150);
+}
+function userCloseModal() { $("#userModal").classList.remove("open"); }
+function userResetPw(id, username) { userOpen(id, username); }
+
+$("#userSave").onclick = async () => {
+  $("#userSave").disabled = true;
+  try {
+    if (userEditing) {
+      await api(`/api/users/${userEditing}`, { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: $("#uPassword").value }) });
+      toast("Password reset");
+    } else {
+      await api("/api/users", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: $("#uName").value.trim(), password: $("#uPassword").value, role: $("#uRole").value }) });
+      toast("User added");
+    }
+    userCloseModal(); refreshUsers();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#userSave").disabled = false; }
+};
+
+async function userSetRole(id, role) {
+  try {
+    await api(`/api/users/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role }) });
+    toast(role === "admin" ? "User is now an admin" : "Admin rights removed"); refreshUsers();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function userDelete(id, username) {
+  if (!confirm(`Delete user "${username}"? They are signed out immediately and can no longer log in.`)) return;
+  try { await api(`/api/users/${id}`, { method: "DELETE" }); toast("User deleted"); refreshUsers(); }
+  catch (e) { toast(e.message, true); }
+}
+
+$("#userAdd").onclick = () => userOpen(null, "");
+$("#userClose").innerHTML = icon("x");
+$("#userClose").onclick = userCloseModal;
+$("#userCancel").onclick = userCloseModal;
+$("#userModal").addEventListener("click", ev => { if (ev.target === $("#userModal")) userCloseModal(); });
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#userModal").classList.contains("open")) userCloseModal(); });
+
+$("#pwChange").onclick = async () => {
+  const cur = $("#pwCurrent").value, nw = $("#pwNew").value, cf = $("#pwConfirm").value;
+  if (!cur || !nw) { toast("Enter your current and new password", true); return; }
+  if (nw !== cf) { toast("The new passwords do not match", true); return; }
+  $("#pwChange").disabled = true;
+  try {
+    await api("/api/auth/password", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: cur, new_password: nw }) });
+    toast("Password changed");
+    $("#pwCurrent").value = $("#pwNew").value = $("#pwConfirm").value = "";
+  } catch (e) { toast(e.message, true); }
+  finally { $("#pwChange").disabled = false; }
+};
+
 async function refreshVoices() {
   const box = $("#voiceList");
   try {
@@ -567,6 +716,7 @@ load().catch(e => toast(e.message, true));
 checkHealth();
 previewStatus(true);
 refreshChannels();
+refreshUsers();
 refreshVoices();
 </script>
 </body>

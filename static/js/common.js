@@ -32,6 +32,9 @@ const ICONS = {
   back: '<path d="M14.5 5.5L8 12l6.5 6.5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
   upload: '<path d="M12 15.5V4.5M7 9l5-4.5L17 9"/><path d="M4.5 19.5h15"/>',
+  user: '<circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20c.8-3.6 3.7-5.6 7.5-5.6s6.7 2 7.5 5.6"/>',
+  logout: '<path d="M14 5.5h4a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5h-4"/><path d="M10 8l-4 4 4 4M6 12h9"/>',
+  lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
 };
 
 function icon(name) {
@@ -49,6 +52,7 @@ function navbar(active) {
       <a href="/settings" class="${active === "settings" ? "active" : ""}">${icon("gear")} Settings</a>
     </div>
     <div class="spacer"></div>
+    <span class="user" id="navUser"></span>
     <button class="icon-btn" id="themeToggle" title="Toggle dark/light theme" onclick="toggleTheme()">${icon(theme === "light" ? "moon" : "sun")}</button>
   </nav>`;
 }
@@ -74,10 +78,37 @@ async function api(path, opts) {
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { msg = (await r.json()).detail || msg; } catch (e) { /* ignore */ }
+    // session expired / not signed in: send the browser to the login page (or the
+    // first-run setup) - except for the auth calls themselves, which report the error
+    if (r.status === 401 && !path.startsWith("/api/auth/") && !["/login", "/setup"].includes(location.pathname)) {
+      const target = msg === "setup required" ? "/setup"
+                   : "/login?next=" + encodeURIComponent(location.pathname + location.search);
+      location.replace(target);
+      await new Promise(() => {});   // never resolves: the page is navigating away
+    }
     throw new Error(msg);
   }
   return r.json();
 }
+
+/* ---- current user (fills the navbar; pages may read `currentUser` after `userReady`) ---- */
+let currentUser = null;
+const userReady = (async () => {
+  if (["/login", "/setup"].includes(location.pathname)) return null;
+  try {
+    currentUser = (await api("/api/auth/me")).user || null;
+  } catch (e) { currentUser = null; }
+  const slot = $("#navUser");
+  if (slot && currentUser) {
+    slot.innerHTML = `<span class="who" title="${esc(currentUser.role)}">${icon("user")} ${esc(currentUser.username)}${currentUser.role === "admin" ? ' <span class="role">admin</span>' : ""}</span>
+      <button class="icon-btn" id="logoutBtn" title="Sign out">${icon("logout")}</button>`;
+    $("#logoutBtn").onclick = async () => {
+      try { await fetch("/api/auth/logout", { method: "POST" }); } catch (e) { /* ignore */ }
+      location.replace("/login");
+    };
+  }
+  return currentUser;
+})();
 
 function pct(j) {
   if (j.status === "done") return 100;

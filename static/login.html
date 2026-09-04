@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Sign in</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main class="auth-wrap">
+  <div class="card auth-card">
+    <div class="auth-brand"><span class="logo" aria-hidden="true"></span> VideoGen</div>
+    <h1 class="page-title" style="margin-bottom:4px">Sign in</h1>
+    <p class="page-sub" style="margin:0 0 18px">Use the account an administrator created for you.</p>
+    <form id="form" autocomplete="on">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required autofocus>
+      <label for="password" style="margin-top:12px">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+      <div class="auth-error" id="error" hidden></div>
+      <button class="btn auth-submit" id="go" type="submit">Sign in</button>
+    </form>
+  </div>
+  <button class="icon-btn auth-theme" id="themeToggle" title="Toggle dark/light theme" onclick="toggleTheme()"></button>
+</main>
+<script src="/js/common.js"></script>
+<script>
+$("#themeToggle").innerHTML = icon(document.documentElement.dataset.theme === "light" ? "moon" : "sun");
+const params = new URLSearchParams(location.search);
+const next = (() => { const n = params.get("next") || "/"; return n.startsWith("/") && !n.startsWith("//") ? n : "/"; })();
+
+function showError(msg) { const e = $("#error"); e.textContent = msg; e.hidden = !msg; }
+
+(async () => {
+  try {
+    const s = await api("/api/auth/status");
+    if (s.setup_required) { location.replace("/setup"); return; }
+    if (s.authenticated) { location.replace(next); }
+  } catch (e) { /* the form still works */ }
+})();
+
+$("#form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  showError("");
+  $("#go").disabled = true;
+  try {
+    await api("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#username").value.trim(), password: $("#password").value }) });
+    location.replace(next);
+  } catch (e) {
+    showError(e.message);
+    $("#password").value = ""; $("#password").focus();
+  } finally { $("#go").disabled = false; }
+});
+</script>
+</body>
+</html>

@@ -22,6 +22,8 @@ services:
       - whisper-cache:/root/.cache/huggingface
       # Channels: index, logos and per-channel YouTube tokens
       - ./data/channels:/app/channels
+      # Login accounts (password hashes) and the session signing key
+      - ./data/users:/app/users
       # Optional: persist Settings-page changes across container recreation.
       # Create an empty file first: echo {} > data/settings.json
       # - ./data/settings.json:/app/settings.json

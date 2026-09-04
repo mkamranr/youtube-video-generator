@@ -27,11 +27,20 @@ services/
                        through ComfyUI, Pillow card drawing (landscape/portrait/square layouts), schedule
                        aligned to the real clip cut points
   ffbin.py             Locates modern ffmpeg/ffprobe (static-ffmpeg bundle, env override, PATH fallback)
-static/                Web UI: index (submit + job list), job (detail/revision), archive, settings;
-                       shared css/app.css and js/common.js (nav, status pills, mode-aware stepper)
+  users.py             Login accounts (users/users.json): username, role, scrypt password hash;
+                       last-admin guards
+  auth.py              Signed session cookies (HMAC-SHA256, stdlib only), current_user /
+                       require_user / require_admin dependencies, login throttling
+static/                Web UI: index (submit + job list), job (detail/revision), archive, settings,
+                       login, setup; shared css/app.css and js/common.js (nav + user slot, status
+                       pills, mode-aware stepper, 401 -> login redirect)
 workflows/             ComfyUI API-format workflow JSONs (text-to-video, first-frame video, music)
 start_server.bat       Watchdog: relaunches uvicorn whenever it exits; logs to server.log
 ```
+
+## Authentication
+
+A single `auth_gate` HTTP middleware in `app.py` runs outermost: it resolves the session cookie once per request (`auth.current_user`, cached on `request.state`) and lets through only signed-in users, the public paths (`/login`, `/setup`, `/api/auth/*`, `/api/ping`, `/api/youtube/callback`, `/css/*`, `/js/*`) — the `StaticFiles` mount and job file downloads are therefore covered too. While no account exists every protected request is sent to the one-time `/setup` page, which creates the first admin; afterwards `/setup` redirects to `/login`. Sessions are stateless: the cookie payload `{uid, exp, ps}` is HMAC-signed with a key from `VIDEOGEN_SECRET_KEY` or `users/session_secret` (generated once); `ps` fingerprints the password hash so a password change invalidates old sessions. Admin-only routes use `Depends(auth.require_admin)`. Jobs are shared: there is no per-user ownership.
 
 ## Job lifecycle
 
@@ -74,6 +83,8 @@ output/<job_id>/
   transcript.txt      plan.json           music.mp3          narration.wav
   clip_01..NN.mp4     frame_NN.jpg        thumbnail.jpg      thumb_raw.mp4
   sbimg_NN.jpg        card_NN.png         clips_joined.mp4   clips_cards.mp4    final.mp4
+users/
+  users.json          login accounts (scrypt hashes)     session_secret   cookie signing key
 ```
 
 `settings.json` (repo root, untracked) holds runtime setting overrides applied on top of `config.py` defaults at import and on every save.

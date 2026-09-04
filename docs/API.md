@@ -1,6 +1,31 @@
 # HTTP API Reference
 
-Base URL: `http://localhost:8080`. All request/response bodies are JSON. Errors return `{"detail": "<message>"}` with an appropriate status code (`400` invalid input, `404` unknown job, `409` state conflict).
+Base URL: `http://localhost:8080`. All request/response bodies are JSON. Errors return `{"detail": "<message>"}` with an appropriate status code (`400` invalid input, `401` not signed in, `403` admin required, `404` unknown job, `409` state conflict, `429` login throttled).
+
+## Authentication
+
+Every endpoint and page requires a signed-in user, except the login/setup pages, `/api/auth/*`, `/api/ping`, `/api/youtube/callback` and the `/css/*`, `/js/*` assets. Sessions are HMAC-signed `vg_session` cookies (HttpOnly, 30 days; invalidated when the user's password changes). Browser navigations without a session are redirected to `/login?next=…` (or `/setup` while no account exists); API calls get `401`.
+
+- `GET /api/auth/status` — `{"setup_required": bool, "authenticated": bool, "user": {id, username, role}|null}`.
+- `POST /api/auth/setup` `{username, password}` — first run only: creates the administrator and signs in (`409` once any user exists).
+- `POST /api/auth/login` `{username, password}` — sets the session cookie (`401` wrong credentials; after 5 failures per client+username within 10 minutes, `429` for 60 s). `POST /api/auth/logout` clears it. `GET /api/auth/me` returns the current user.
+- `PUT /api/auth/password` `{current_password, new_password}` — change your own password (other sessions are signed out, this one is renewed).
+
+Scripted use: sign in once and reuse the cookie jar:
+
+```bash
+curl -c cookies.txt -H 'Content-Type: application/json' -d '{"username":"admin","password":"…"}' http://localhost:8080/api/auth/login
+curl -b cookies.txt http://localhost:8080/jobs
+```
+
+### Users (admin only)
+
+Roles: `admin` (everything, plus user management) and `user` (everything except user management). There is always at least one admin.
+
+- `GET /api/users` — `{"users": [{id, username, role, created}], "roles": ["admin", "user"]}`.
+- `POST /api/users` `{username, password, role}` — `201` with the new user. Usernames: 3–40 characters `[a-z0-9._-]` (lower-cased); passwords: at least 8 characters.
+- `PUT /api/users/{id}` `{role?, password?}` — change the role and/or reset the password (`409` when demoting the last admin).
+- `DELETE /api/users/{id}` — `409` for the last admin or your own account.
 
 ## Jobs
 
@@ -150,4 +175,4 @@ Pings ComfyUI, vLLM and Fish Speech concurrently: `{"comfyui": {"ok": true, "ms"
 
 ## Pages (HTML)
 
-`/` (jobs + submit) · `/job/{id}` (job detail) · `/archive` (archived jobs) · `/settings`.
+`/` (jobs + submit) · `/job/{id}` (job detail) · `/archive` (archived jobs) · `/settings` · `/login` · `/setup` (first run only).

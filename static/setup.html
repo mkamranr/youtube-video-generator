@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Setup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<main class="auth-wrap">
+  <div class="card auth-card">
+    <div class="auth-brand"><span class="logo" aria-hidden="true"></span> VideoGen</div>
+    <h1 class="page-title" style="margin-bottom:4px">Welcome — create the admin account</h1>
+    <p class="page-sub" style="margin:0 0 18px">This is a one-time setup. The account you create here is the administrator: it can sign in, generate videos and add more users on the Settings page. This screen disappears once the account exists.</p>
+    <form id="form" autocomplete="on">
+      <label for="username">Admin username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" placeholder="e.g. admin" required autofocus>
+      <div class="hint">3–40 characters: letters, digits, dot, dash or underscore.</div>
+      <label for="password" style="margin-top:12px">Password</label>
+      <input type="password" id="password" name="password" autocomplete="new-password" required minlength="8">
+      <div class="hint">At least 8 characters.</div>
+      <label for="confirm" style="margin-top:12px">Confirm password</label>
+      <input type="password" id="confirm" name="confirm" autocomplete="new-password" required minlength="8">
+      <div class="auth-error" id="error" hidden></div>
+      <button class="btn auth-submit" id="go" type="submit">Create admin account</button>
+    </form>
+  </div>
+  <button class="icon-btn auth-theme" id="themeToggle" title="Toggle dark/light theme" onclick="toggleTheme()"></button>
+</main>
+<script src="/js/common.js"></script>
+<script>
+$("#themeToggle").innerHTML = icon(document.documentElement.dataset.theme === "light" ? "moon" : "sun");
+function showError(msg) { const e = $("#error"); e.textContent = msg; e.hidden = !msg; }
+
+(async () => {
+  try {
+    const s = await api("/api/auth/status");
+    if (!s.setup_required) { location.replace(s.authenticated ? "/" : "/login"); }
+  } catch (e) { /* the form still works */ }
+})();
+
+$("#form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  showError("");
+  if ($("#password").value !== $("#confirm").value) { showError("The passwords do not match."); return; }
+  $("#go").disabled = true;
+  try {
+    await api("/api/auth/setup", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#username").value.trim(), password: $("#password").value }) });
+    location.replace("/");
+  } catch (e) { showError(e.message); }
+  finally { $("#go").disabled = false; }
+});
+</script>
+</body>
+</html>

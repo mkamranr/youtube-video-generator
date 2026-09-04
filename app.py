@@ -6,16 +6,17 @@ import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from urllib.parse import quote
 
 import requests
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import channels, voices
+from services import auth, channels, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -27,9 +28,48 @@ async def no_cache_static(request, call_next):
     """UI assets change often during development: force browsers to revalidate."""
     response = await call_next(request)
     path = request.url.path
-    if path.endswith((".js", ".css", ".html")) or path in ("/", "/settings", "/archive") or path.startswith("/job/"):
+    if path.endswith((".js", ".css", ".html")) or path in ("/", "/settings", "/archive", "/login", "/setup") \
+            or path.startswith("/job/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+# ---- authentication gate -----------------------------------------------------
+# Everything needs a signed-in user except the login/setup pages, the auth endpoints,
+# the static assets those pages need, the container health probe and Google's OAuth
+# callback (which lands in a fresh browser tab without our cookie).
+PUBLIC_PATHS = {"/login", "/setup", "/api/ping", "/api/auth/status", "/api/auth/login",
+                "/api/auth/setup", "/api/auth/logout", "/api/youtube/callback"}
+PUBLIC_PREFIXES = ("/css/", "/js/")
+
+
+def _wants_html(request: Request) -> bool:
+    return request.method == "GET" and "text/html" in request.headers.get("accept", "")
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    path = request.url.path
+    user = auth.current_user(request)
+    if path in ("/login", "/setup"):
+        if user is not None:
+            return RedirectResponse("/", status_code=302)
+        setup = not users.has_users()
+        if path == "/setup" and not setup:
+            return RedirectResponse("/login", status_code=302)
+        if path == "/login" and setup:
+            return RedirectResponse("/setup", status_code=302)
+        return await call_next(request)
+    if user is not None or path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+    if not users.has_users():   # first run: nobody can sign in yet
+        if _wants_html(request):
+            return RedirectResponse("/setup", status_code=302)
+        return JSONResponse({"detail": "setup required"}, status_code=401)
+    if _wants_html(request):
+        nxt = path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse(f"/login?next={quote(nxt, safe='')}", status_code=302)
+    return JSONResponse({"detail": "not authenticated"}, status_code=401)
 
 
 class Submit(BaseModel):
@@ -329,6 +369,142 @@ def download(job_id: str, kind: str):
             z.writestr(f"{title}.txt", text)
         return FileResponse(zpath, filename=f"{title}.zip", media_type="application/zip")
     raise HTTPException(404, "unknown download kind")
+
+
+# ---- authentication -----------------------------------------------------------
+class Credentials(BaseModel):
+    username: str
+    password: str
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
+class UserUpdate(BaseModel):
+    role: str | None = None       # admin | user
+    password: str | None = None   # set a new password (admin reset)
+
+
+@app.get("/api/ping")
+def ping():
+    """Unauthenticated liveness probe (container health checks)."""
+    return {"ok": True}
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    u = auth.current_user(request)
+    return {"setup_required": not users.has_users(), "authenticated": u is not None,
+            "user": users.public(u) if u else None}
+
+
+@app.post("/api/auth/setup")
+def auth_setup(body: Credentials, request: Request):
+    """First run only: create the administrator account and sign in."""
+    if users.has_users():
+        raise HTTPException(409, "setup already completed - sign in instead")
+    try:
+        rec = users.add_user(body.username, body.password, "admin")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"user": rec})
+    auth.set_cookie(resp, users.get_user(rec["id"]), request)
+    return resp
+
+
+@app.post("/api/auth/login")
+def auth_login(body: Credentials, request: Request):
+    wait = auth.locked_for(request, body.username)
+    if wait:
+        raise HTTPException(429, f"too many failed attempts - try again in {wait} s")
+    user = users.verify_password(body.username, body.password)
+    if user is None:
+        auth.record_failure(request, body.username)
+        raise HTTPException(401, "wrong username or password")
+    auth.clear_failures(request, body.username)
+    resp = JSONResponse({"user": users.public(user)})
+    auth.set_cookie(resp, user, request)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    resp = JSONResponse({"ok": True})
+    auth.clear_cookie(resp)
+    return resp
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(auth.require_user)):
+    return {"user": users.public(user)}
+
+
+@app.put("/api/auth/password")
+def change_own_password(body: PasswordChange, request: Request, user: dict = Depends(auth.require_user)):
+    if not users.check_password(body.current_password, user["pw_hash"]):
+        raise HTTPException(400, "current password is incorrect")
+    try:
+        users.set_password(user["id"], body.new_password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({"ok": True})   # other sessions are invalidated; this one is renewed
+    auth.set_cookie(resp, users.get_user(user["id"]), request)
+    return resp
+
+
+# ---- users (admin only) ---------------------------------------------------------
+@app.get("/api/users")
+def list_users_api(admin: dict = Depends(auth.require_admin)):
+    return {"users": users.list_users(), "roles": list(users.ROLES)}
+
+
+@app.post("/api/users", status_code=201)
+def create_user(body: UserCreate, admin: dict = Depends(auth.require_admin)):
+    try:
+        return users.add_user(body.username, body.password, body.role)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/users/{uid}")
+def update_user(uid: str, body: UserUpdate, admin: dict = Depends(auth.require_admin)):
+    """Change a user's role and/or reset their password."""
+    if body.role is not None and body.role not in users.ROLES:
+        raise HTTPException(400, f"role must be one of {list(users.ROLES)}")
+    if body.role is None and not body.password:
+        raise HTTPException(400, "nothing to update")
+    try:
+        if body.role is not None:
+            users.set_role(uid, body.role)
+        if body.password:
+            users.set_password(uid, body.password)
+    except KeyError:
+        raise HTTPException(404, "unknown user")
+    except ValueError as e:
+        raise HTTPException(409 if "last admin" in str(e) else 400, str(e))
+    rec = users.get_user(uid)
+    if rec is None:
+        raise HTTPException(404, "unknown user")
+    return users.public(rec)
+
+
+@app.delete("/api/users/{uid}")
+def delete_user_api(uid: str, admin: dict = Depends(auth.require_admin)):
+    try:
+        users.delete_user(uid, acting_uid=admin["id"])
+    except KeyError:
+        raise HTTPException(404, "unknown user")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"ok": True}
 
 
 # ---- options / settings / health ------------------------------------------
@@ -692,6 +868,16 @@ def job_page(job_id: str):
 @app.get("/settings")
 def settings_page():
     return FileResponse(config.STATIC_DIR / "settings.html")
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(config.STATIC_DIR / "login.html")
+
+
+@app.get("/setup")
+def setup_page():
+    return FileResponse(config.STATIC_DIR / "setup.html")
 
 
 @app.get("/archive")

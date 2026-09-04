@@ -302,6 +302,23 @@ audio { width: 100%; }
   border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s;
 }
 .switch input:checked + .track { background: var(--accent); border-color: var(--accent); }
+
+/* ---- authentication: login / setup pages and the navbar user slot ---- */
+input[type=password], input[type=email] {
+  width: 100%; box-sizing: border-box; background: var(--surface-2); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 11px; font: inherit; font-size: 14px;
+}
+input[type=password]:focus, input[type=email]:focus { outline: none; border-color: var(--accent); }
+.auth-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; position: relative; }
+.auth-card { width: 100%; max-width: 420px; padding: 28px 28px 24px; margin: 0; }
+.auth-brand { display: flex; align-items: center; gap: 10px; font-family: "Bricolage Grotesque", "Archivo", sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 18px; }
+.auth-brand .logo { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: inline-block; }
+.auth-error { color: var(--err); font-size: 13px; margin-top: 12px; }
+.auth-submit { width: 100%; justify-content: center; margin-top: 18px; }
+.auth-theme { position: absolute; top: 18px; right: 18px; }
+.nav .user { display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; font-size: 13px; color: var(--muted); }
+.nav .user .who { display: inline-flex; align-items: center; gap: 6px; }
+.nav .user .role { border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
 .switch input:checked + .track::after { transform: translateX(18px); background: var(--accent-ink); }
 .health { display: flex; flex-direction: column; gap: 10px; }
 .health-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
