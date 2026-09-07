@@ -127,9 +127,11 @@ ASPECT_RATIOS = [
     "16:9 (Widescreen)", "9:16 (Portrait Widescreen)", "1:1 (Square)", "4:3 (Standard)",
     "3:4 (Portrait Standard)", "3:2 (Photo)", "2:3 (Portrait Photo)", "21:9 (Ultrawide)",
 ]
+MEGAPIXELS_OPTIONS = [round(0.2 + 0.1 * i, 1) for i in range(9)]   # 0.2 … 1.0 (ResolutionSelector)
 
 # ---- generation defaults (editable in Settings) ---------------------------
 DEFAULT_ASPECT_RATIO = ASPECT_RATIOS[0]
+DEFAULT_MEGAPIXELS = 0.4        # clip resolution in megapixels; per-video override in the New Video dialog (thumbnails: 1.0)
 CLIP_SECONDS = 5                # length of each generated clip
 LIGHTNING_LORA = False          # True -> 8-step turbo LoRA (faster, lower quality)
 NARRATION_WORDS = 170           # target narration length (~65-75 s of speech)
@@ -178,6 +180,10 @@ EDITABLE_SETTINGS = {
                        "Preselected creation mode in the New Video dialog: url, topic, description or transcript"),
     "CLIP_SECONDS": (float, lambda v: 2 <= v <= 15, "Clip length (s)",
                      "Duration of each generated clip (2-15 s)"),
+    "DEFAULT_MEGAPIXELS": (float, lambda v: any(abs(v - o) < 1e-6 for o in MEGAPIXELS_OPTIONS),
+                           "Clip resolution (megapixels)",
+                           "Default ResolutionSelector megapixels for every clip (0.2-1.0 in 0.1 steps); "
+                           "can be changed per video in the New Video dialog. Thumbnails always render at 1.0"),
     "NARRATION_WORDS": (int, lambda v: 30 <= v <= 500, "Narration words",
                         "Target narration length; ~2.5 words/s of speech decides the clip count"),
     "CLIP_AUDIO_VOLUME": (float, lambda v: 0 <= v <= 1, "Clip ambience volume",

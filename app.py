@@ -79,6 +79,7 @@ class Submit(BaseModel):
     transcript: str = ""     # a pasted transcript or song lyrics used as the script itself
     channel_id: str = ""       # "" -> the first channel (backcompat for scripted API use)
     aspect_ratio: str = ""
+    megapixels: float | None = None   # clip resolution (0.2-1.0); None -> Settings default
     art_style: str = ""
     video_length: str = ""
     audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
@@ -138,10 +139,12 @@ def create_jobs(body: Submit):
             return [_job_json(manager.submit_prompt(text, prompt_kind, body.aspect_ratio,
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,
-                                                    storyboard_flag=body.storyboard))]
+                                                    storyboard_flag=body.storyboard,
+                                                    megapixels=body.megapixels))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
-                                         storyboard_flag=body.storyboard)) for u in urls]
+                                         storyboard_flag=body.storyboard,
+                                         megapixels=body.megapixels)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -529,6 +532,7 @@ def _channel_secret(cid: str):
 def options():
     chans = [_channel_json(c) for c in channels.list_channels()]
     return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
+            "megapixels_options": config.MEGAPIXELS_OPTIONS, "default_megapixels": config.DEFAULT_MEGAPIXELS,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
@@ -542,6 +546,7 @@ def get_settings():
     meta = {k: {"label": v[2], "help": v[3], "type": ("bool" if v[0] is bool else "number" if v[0] in (int, float) else "text")}
             for k, v in config.EDITABLE_SETTINGS.items()}
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
+            "megapixels_options": config.MEGAPIXELS_OPTIONS,
             "art_styles": list(config.ART_STYLES), "video_lengths": list(config.VIDEO_LENGTHS),
             "sources": config.SOURCES}
 

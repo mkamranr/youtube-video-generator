@@ -50,9 +50,10 @@ class ComfyClient:
     @staticmethod
     def build(template: dict, prompt: str, filename_prefix: str, seed: int | None = None,
               first_frame: str | None = None, seconds: float | None = None,
-              aspect_ratio: str | None = None) -> dict:
+              aspect_ratio: str | None = None, megapixels: float | None = None) -> dict:
         seconds = config.CLIP_SECONDS if seconds is None else seconds
         aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
+        megapixels = config.DEFAULT_MEGAPIXELS if megapixels is None else float(megapixels)
         wf = copy.deepcopy(template)
         wf[config.NODE_PROMPT]["inputs"]["prompt"] = prompt
         wf[config.NODE_SEED]["inputs"]["noise_seed"] = seed if seed is not None else random.randint(0, 2**53)
@@ -63,6 +64,7 @@ class ComfyClient:
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
         wf[config.NODE_RESOLUTION]["inputs"]["aspect_ratio"] = aspect_ratio
+        wf[config.NODE_RESOLUTION]["inputs"]["megapixels"] = megapixels
         if first_frame is not None:
             wf[config.NODE_LOAD_IMAGE]["inputs"]["image"] = first_frame
         return wf

@@ -77,6 +77,10 @@
               <label for="ar">Aspect ratio</label>
               <select id="ar"></select>
             </div>
+            <div class="grow" style="min-width:140px">
+              <label for="mp">Resolution (megapixels)</label>
+              <select id="mp"></select>
+            </div>
           </div>
         </div>
         <div class="msec">
@@ -188,7 +192,8 @@ async function submit() {
     toast("Pick an art style from the list", true); return;
   }
   let body = { channel_id: $("#channel").value,
-               aspect_ratio: $("#ar").value, art_style: real ? "" : $("#artstyle").value,
+               aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
+               art_style: real ? "" : $("#artstyle").value,
                video_length: $("#vlen").value, audio_mode: $("#audio").value,
                voice_id: $("#audio").value === "music" ? "" : $("#voice").value,
                storyboard: $("#storyboard").checked };
@@ -261,6 +266,7 @@ function jobCard(j) {
         ${j.storyboard ? `<span>Story board</span>` : ""}
         <span>${j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
+        ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
            return n ? `<span style="color:var(--warn);font-weight:600">${n} clip${n>1?"s":""} need${n>1?"":"s"} regeneration</span>` : ""; })()}
@@ -388,6 +394,8 @@ async function loadOptions() {
   $("#channelFilter").innerHTML = `<option value="">All channels</option>` +
     channelsList.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
+  $("#mp").innerHTML = (o.megapixels_options || []).map(v =>
+    `<option value="${v}" ${v === o.default_megapixels ? "selected" : ""}>${v} MP</option>`).join("");
   artStyles = o.art_styles;
   $("#artstyle").value = o.default_art_style;
   $("#source").value = o.default_source || "url";

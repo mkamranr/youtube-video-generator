@@ -24,6 +24,7 @@ class Job:
     id: str
     url: str
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
+    megapixels: float | None = None  # clip resolution; None (legacy jobs) = the current Settings default
     audio_mode: str = ""
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     art_style: str = ""
@@ -178,7 +179,8 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     for attempt in range(config.CLIP_RETRIES + 1):
         try:
             wf = client.build(template, prompt, f"videogen/{job.id}/clip_{i:02d}",
-                              first_frame=first_frame, aspect_ratio=job.aspect_ratio)
+                              first_frame=first_frame, aspect_ratio=job.aspect_ratio,
+                              megapixels=job.megapixels)
             client.run(wf, dest, on_progress=progress,
                        should_stop=lambda: job.cancel_requested,
                        cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
@@ -527,7 +529,8 @@ def _run(job: Job):
         job.add_log("resume: reusing story board assets")
 
     # 7. clips
-    job.set("clips", f"generating {n} clips ({job.aspect_ratio})", clips_total=n, clips_done=0)
+    mp = job.megapixels if job.megapixels is not None else config.DEFAULT_MEGAPIXELS
+    job.set("clips", f"generating {n} clips ({job.aspect_ratio}, {mp:g} MP)", clips_total=n, clips_done=0)
     client = comfy.ComfyClient()
     t2v = client.load_workflow(config.T2V_WORKFLOW)
     i2v = client.load_workflow(config.I2V_WORKFLOW)
@@ -664,8 +667,9 @@ class JobManager:
     @staticmethod
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
                          audio_mode: str, voice_id: str, channel: dict | None,
-                         storyboard_flag=None):
+                         storyboard_flag=None, megapixels=None):
         """Per-video choices: request value -> channel default -> global default; validated.
+        Megapixels has no channel level: request value -> Settings default.
         Real/tech-video channels always use the built-in live-action look (art_style stays "");
         the story board overlay defaults to the channel setting (on for tech channels)."""
         ch = channel or {}
@@ -682,6 +686,16 @@ class JobManager:
         aspect_ratio = aspect_ratio or defaults.get("aspect_ratio") or config.DEFAULT_ASPECT_RATIO
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
+        if megapixels in (None, "", 0):
+            mp = float(config.DEFAULT_MEGAPIXELS)
+        else:
+            try:
+                mp = float(megapixels)
+            except (TypeError, ValueError):
+                raise ValueError(f"unsupported megapixels: {megapixels}")
+        if not any(abs(mp - o) < 1e-6 for o in config.MEGAPIXELS_OPTIONS):
+            raise ValueError(f"unsupported megapixels: {megapixels}")
+        mp = round(mp, 1)
         if ch.get("video_type") in config.REALISTIC_VIDEO_TYPES:
             art_style = ""
         else:
@@ -693,18 +707,18 @@ class JobManager:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
         return (aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap,
-                storyboard_flag)
+                storyboard_flag, mp)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
-               channel: dict | None = None, storyboard_flag=None) -> Job:
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb = \
+               channel: dict | None = None, storyboard_flag=None, megapixels=None) -> Job:
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag)
+                                  storyboard_flag, megapixels)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
-                  aspect_ratio=aspect_ratio, audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
+                  aspect_ratio=aspect_ratio, megapixels=mp, audio_mode=audio_mode, voice_id=voice_id,
+                  art_style=art_style, video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -781,18 +795,18 @@ class JobManager:
                       aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
-                      channel: dict | None = None, storyboard_flag=None) -> Job:
+                      channel: dict | None = None, storyboard_flag=None, megapixels=None) -> Job:
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description/transcript is too short")
         if source_kind not in PROMPT_SOURCES:
             raise ValueError("invalid source kind")
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag)
+                                  storyboard_flag, megapixels)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
-                  detail="writing script with the LLM", aspect_ratio=aspect_ratio,
+                  detail="writing script with the LLM", aspect_ratio=aspect_ratio, megapixels=mp,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
         job.save()

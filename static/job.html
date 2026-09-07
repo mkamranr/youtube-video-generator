@@ -64,6 +64,7 @@
     <span id="sbLabel"></span>
     <span id="vlenLabel"></span>
     <span id="aspect"></span>
+    <span id="mp"></span>
     <span id="created"></span>
   </div>
 
@@ -399,6 +400,7 @@ function update(j) {
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
+  $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
   $("#created").textContent = "created " + timeAgo(j.created);
   $("#progress").style.width = pct(j) + "%";
   const sl = $("#statusline");

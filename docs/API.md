@@ -33,7 +33,7 @@ Roles: `admin` (everything, plus user management) and `user` (everything except 
 Submit one job per URL.
 
 ```json
-{ "urls": ["https://www.youtube.com/watch?v=..."], "aspect_ratio": "16:9 (Widescreen)", "art_style": "Pixar-like 3D" }
+{ "urls": ["https://www.youtube.com/watch?v=..."], "aspect_ratio": "16:9 (Widescreen)", "megapixels": 0.6, "art_style": "Pixar-like 3D" }
 ```
 Or create a job from a prompt instead of URLs (one job per request):
 
@@ -43,7 +43,7 @@ Or create a job from a prompt instead of URLs (one job per request):
 { "transcript": "Twinkle, twinkle, little star ..." }
 ```
 `transcript` is a pasted transcript or song lyrics used as the script itself: the LLM keeps the text and only fixes typos, timestamps, cue/section tags and TTS-unreadable bits (the `Video length` word target is not applied).
-Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. For a `real` or `tech` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `storyboard` (bool, optional) switches the on-screen story board overlay (fact cards + related images) for this video; omitted = the channel's default (on for `tech` channels). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = the built-in voice kept the same for the whole video, `"random"` = the built-in voice with a new random speaker per narration chunk; ignored when `audio_mode` is `music`). Returns a list of job objects.
+Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. `megapixels` (optional, one of `GET /options`' `megapixels_options`: 0.2–1.0 in 0.1 steps) sets the clip resolution for this video; omitted = the `DEFAULT_MEGAPIXELS` setting (there is no channel level). For a `real` or `tech` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `storyboard` (bool, optional) switches the on-screen story board overlay (fact cards + related images) for this video; omitted = the channel's default (on for `tech` channels). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = the built-in voice kept the same for the whole video, `"random"` = the built-in voice with a new random speaker per narration chunk; ignored when `audio_mode` is `music`). Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
 List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running).
@@ -56,7 +56,7 @@ One job object:
   "id": "20260826-060951-2e6720",
   "url": "...", "source": "youtube", "topic": "", "title": "...", "status": "clips",
   "detail": "clip 12/31: sampling 8/20",
-  "aspect_ratio": "16:9 (Widescreen)", "art_style": "Pixar-like 3D", "audio_mode": "music",
+  "aspect_ratio": "16:9 (Widescreen)", "megapixels": 0.4, "art_style": "Pixar-like 3D", "audio_mode": "music",
   "clips_total": 31, "clips_done": 11, "clips": ["clip_01.mp4", "..."],
   "final": "final.mp4", "error": "",
   "stale_clips": [5], "regen_queue": [], "needs_assemble": false, "archived": false,
@@ -162,10 +162,10 @@ Voice samples for Fish Speech voice cloning, managed on the Settings page; pick 
 ## Settings & meta
 
 ### `GET /options`
-`{"aspect_ratios": [...], "default_aspect_ratio": "...", "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url", "default_audio_mode": "music", "realistic_video_types": ["real", "tech"], "channels": [...], "default_channel_id": "..."}` — the valid submit-form values, global fallbacks, and the channel list (same objects as `GET /api/channels`); the UI applies the selected channel's `defaults` client-side.
+`{"aspect_ratios": [...], "default_aspect_ratio": "...", "megapixels_options": [0.2, ..., 1.0], "default_megapixels": 0.4, "art_styles": [...], "default_art_style": "...", "video_lengths": [...], "default_video_length": "...", "default_source": "url", "default_audio_mode": "music", "realistic_video_types": ["real", "tech"], "channels": [...], "default_channel_id": "..."}` — the valid submit-form values, global fallbacks, and the channel list (same objects as `GET /api/channels`); the UI applies the selected channel's `defaults` client-side.
 
 ### `GET /api/settings`
-`{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "art_styles": [...]}` — current values plus field metadata.
+`{"settings": {...}, "meta": {name: {label, help, type}}, "aspect_ratios": [...], "megapixels_options": [...], "art_styles": [...]}` — current values plus field metadata.
 
 ### `PUT /api/settings`
 Partial update; values are validated (range/enum) and persisted to `settings.json`, applying to new jobs immediately.
