@@ -120,7 +120,8 @@ Open **http://localhost:8080** — the first visit shows the one-time **Create t
 ## Usage
 
 1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; a **description / short script**; or a **transcript / lyrics** you paste, kept as the script with only fixes — one job per topic/description/transcript), a **Video length** (Auto … 2-3 min, a soft target for script and audio duration), an **Aspect ratio**, an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), an **Art style** (type to search; a preview image shows how each style looks — hidden for Real and Tech channels, which use the built-in live-action look), and the **Add story board cards** switch (on by default for Tech channels): styled fact cards with related images drawn over the video. The fields pre-select your defaults from Settings. You need to be signed in; every user sees the same job list. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
-   - **Topic/description jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
+   - **Topic/description/transcript jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
+   - **Transcript / lyrics jobs** keep your text as the script: the LLM only fixes typos and grammar and strips timestamps, cue tags like `[Music]`, speaker labels and section tags like `[Verse]`/`[Chorus]` — it never expands, shortens or reorders your words, and the *Video length* target is not applied (the audio is as long as your text). The pasted text is shown in the job page's **Transcript** card. Pair it with **Generate Voiceover** for a read-aloud script, or **Generate Song** to have your lyrics sung.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
 3. **Publish** — when done, push the video straight to your channel with **Upload to YouTube** (private by default, with SEO title/description, thumbnail and made-for-kids flag applied — see docs/YOUTUBE.md for the one-time setup), or download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
 
@@ -182,7 +183,7 @@ The Settings page also hosts four non-setting tools: **Users** (admins only: add
 Each job writes to `output/<job_id>/`:
 
 ```
-transcript.txt      cleaned source captions
+transcript.txt      cleaned source captions (URL jobs) or the pasted transcript / lyrics (transcript jobs)
 plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO,
                     story board cards (kicker/headline/body, clip range, image prompt)
 music.mp3           generated song            narration.wav   TTS voiceover (narration modes)

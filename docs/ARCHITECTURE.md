@@ -47,6 +47,7 @@ A single `auth_gate` HTTP middleware in `app.py` runs outermost: it resolves the
 Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → [storyboard] → clips → assembling → done | failed`.
 
 - One background worker thread processes the queue serially (single GPU). Queued jobs' `detail` is computed live at request time (position, what is running).
+- **Prompt jobs** (`job.source` = `topic` / `description` / `transcript`, `job.topic` = the submitted text) skip the transcript fetch. `submit_prompt` creates the job at `drafting` and `_draft_script` runs `llm.write_script_from_prompt` in its own thread — never in the GPU queue — then parks the job at `awaiting_approval`; `POST /jobs/{id}/approve` (optionally with an edited title/script) enqueues it, and *Request new draft* re-runs the draft with the user's feedback and the previous narration. The three sources differ only in the drafting prompt: `topic` invents a script of about the target word count, `description` expands the user's text faithfully, and `transcript` keeps the text as the narration verbatim — only typos, timestamps, cue/section tags and speaker labels are fixed, and no word target is applied. For `transcript` jobs the pasted text is also written to `transcript.txt` at submit time so the job page's Transcript card can show it.
 - **music mode** (default): the song is generated *first*; its measured duration decides the clip count (`ceil(duration / CLIP_SECONDS)`); faster-whisper assigns the sung words to each clip's time window; scenes are then written **one LLM call per clip** from exactly those words (one-call-per-scene prevents alignment drift on long videos). The final mix is the song alone.
 - **narration modes**: Fish TTS narration length decides the clip count; scenes come from evenly split narration segments; final mix = narration (full) + an optional gentle instrumental music bed (the music model is sent `[Instrumental]` as lyrics, so nothing is ever sung over the narration). The clips' own generated sound is dropped in narration+music mode unless `CLIP_AUDIO_WITH_MUSIC` is on (three independent layers — voice, music, per-clip effects that change at every cut — sounded like a mess); in pure narration mode it stays, dipped to silence around each clip cut. Beds are side-chain compressed under the narration; a music track the model ended early is looped with a cross-fade, and always fades out at the end. The result is trimmed to the video length and soft-limited. The audio mode and an optional reference voice (`voice_id`) are chosen per job in the New Video dialog; a job whose reference voice was deleted logs a note and falls back to the default voice.
 - Clips: clip 1 uses the T2V workflow; clips 2..N use the first-frame workflow seeded with the previous clip's last frame (ffmpeg extraction → ComfyUI image upload), giving visual continuity.
@@ -80,7 +81,8 @@ Before any generation, captions are cleaned of cue tags (`[Music]` etc.) and val
 ```
 output/<job_id>/
   job.json            persisted job state (resume source of truth)
-  transcript.txt      plan.json           music.mp3          narration.wav
+  transcript.txt      source captions, or the pasted text for transcript jobs
+  plan.json           music.mp3           narration.wav
   clip_01..NN.mp4     frame_NN.jpg        thumbnail.jpg      thumb_raw.mp4
   sbimg_NN.jpg        card_NN.png         clips_joined.mp4   clips_cards.mp4    final.mp4
 users/

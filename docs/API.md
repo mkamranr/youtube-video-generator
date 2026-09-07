@@ -54,7 +54,7 @@ One job object:
 ```json
 {
   "id": "20260826-060951-2e6720",
-  "url": "...", "title": "...", "status": "clips",
+  "url": "...", "source": "youtube", "topic": "", "title": "...", "status": "clips",
   "detail": "clip 12/31: sampling 8/20",
   "aspect_ratio": "16:9 (Widescreen)", "art_style": "Pixar-like 3D", "audio_mode": "music",
   "clips_total": 31, "clips_done": 11, "clips": ["clip_01.mp4", "..."],
@@ -64,6 +64,8 @@ One job object:
   "log": ["..."], "created": 0, "updated": 0
 }
 ```
+
+`source` is `youtube` for URL jobs, else `topic` / `description` / `transcript`; `topic` holds the submitted prompt text for prompt jobs (empty for URL jobs). `script_approved` is `true` once a prompt job's draft has been approved.
 
 Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → [storyboard] → clips → assembling → done | failed` (`storyboard` only for jobs with the overlay enabled: the LLM plans the cards and ComfyUI renders their images).
 Prompt-based jobs (`source` = `topic`/`description`/`transcript`) start with `drafting → awaiting_approval` and enter the queue only when approved.

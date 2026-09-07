@@ -159,7 +159,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                              words: int | None = None, feedback: str = "",
                              previous: str | None = None,
                              channel: dict | None = None) -> dict:
-    """Draft a video script (title/narration/style) from a user topic or description."""
+    """Draft a video script (title/narration/style) from a user topic, description or pasted transcript."""
     words = words or config.NARRATION_WORDS
     if art_style:
         style_rule = (f'one sentence describing the global visual style applied to every shot. '
