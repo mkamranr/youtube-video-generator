@@ -1,7 +1,10 @@
 .git
 output/
 users/
+channels/
+reference_audio/
 settings.json
+.env
 server.log
 server.err.log
 __pycache__/

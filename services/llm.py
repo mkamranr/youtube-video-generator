@@ -167,7 +167,20 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                       f'and expand it with detail that fits this video.')
     else:
         style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
-    if source_kind == "description":
+    narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
+                      f'no headings, no stage directions, no emojis. It will drive the whole video. '
+                      f'Stay close to {words} words.')
+    if source_kind == "transcript":
+        text = text[: config.MAX_TRANSCRIPT_CHARS]
+        task = ('The user pasted the COMPLETE script for a video below - a transcript or song lyrics. '
+                'Use it AS the narration: keep their wording, order, content and length. Do NOT expand, '
+                'shorten, summarise, reorder or rewrite it. Only fix real problems: typos and grammar, '
+                'timestamps, cue tags like [Music], speaker labels, section tags like [Verse] or [Chorus], '
+                'and anything a TTS voice could not read aloud naturally. If the text has no problems, '
+                'return it unchanged:\n"""' + text + '"""')
+        narration_rule = ('the corrected script, plain spoken English, no headings, no stage directions, '
+                          'no emojis. It will be read aloud by a TTS voice and drive the whole video.')
+    elif source_kind == "description":
         task = ('The user wrote the following description / short script for a video. Build the video '
                 'script from it, staying FAITHFUL to their content, characters, structure and intent - '
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
@@ -182,7 +195,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
 
 Return JSON with keys:
 - "title": short title.
-- "narration": the full script as a voiceover of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will drive the whole video. Stay close to {words} words.
+- "narration": {narration_rule}
 - "style": {style_rule}
 """
     plan = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
@@ -418,11 +431,20 @@ Original source transcript excerpt (for topic keywords):
 
 Write YouTube upload metadata optimized for SEO and reach. Return JSON with keys:
 - "seo_title": one compelling, keyword-rich title, max 70 characters, no clickbait lies, no quotes, no emojis at the start (one emoji at the end is allowed if it fits the topic).
-- "seo_description": a description of 2-3 short paragraphs (120-200 words total): the first sentence hooks and contains the main keyword; naturally weave in related search keywords; end with a call-to-action inviting viewers to subscribe to "{name}" and then 4-6 relevant hashtags on the last line.
+- "seo_keywords": 5-8 search phrases people would type to find this video (the main topic first, then related and long-tail phrases).
+- "seo_description": a description of 2-3 short paragraphs (120-200 words total). The first sentence hooks and contains the main keyword. Work every keyword from "seo_keywords" into the text naturally, in the words a viewer would search for - repeat the main keyword 2-3 times, and never list keywords bare. End with a call-to-action inviting viewers to subscribe to "{name}", then a final line of 4-6 hashtags made from those keywords. Hashtags are all lowercase with no spaces, e.g. #spacefacts #kidslearning.
 Never mention that the video is AI-generated unless the content is about AI. Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
     return {"seo_title": str(out.get("seo_title", "")).strip()[:100],
-            "seo_description": str(out.get("seo_description", "")).strip()}
+            "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
+
+
+_HASHTAG = re.compile(r"(?<!\w)#(\w+)")
+
+
+def _lowercase_hashtags(text: str) -> str:
+    """YouTube hashtags are case-insensitive but display as written; keep them uniformly lowercase."""
+    return _HASHTAG.sub(lambda m: "#" + m.group(1).lower(), text)
 
 
 def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None) -> dict:

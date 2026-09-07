@@ -158,6 +158,26 @@ async function copyText(text, okMsg) {
   return ok;
 }
 
+// Voice <select>: the two built-in defaults, then the reference voices from /api/voices.
+// A saved id that is no longer in the library stays selected as a disabled placeholder,
+// so a deleted or lost voice file is visible instead of silently becoming "Default voice".
+function fillVoiceSelect(sel, voices, selected) {
+  sel.innerHTML = `<option value="">Default voice — same voice for the whole video</option>
+    <option value="random">Default voice — random voice per segment</option>` +
+    voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+  selectVoice(sel, selected);
+}
+
+function selectVoice(sel, id) {
+  if (!id || [...sel.options].some(o => o.value === id)) { sel.value = id || ""; return; }
+  const missing = document.createElement("option");
+  missing.value = id;
+  missing.disabled = true;
+  missing.textContent = `Saved voice no longer exists (${id}) — upload it again in Settings`;
+  sel.appendChild(missing);
+  sel.value = id;
+}
+
 let toastTimer = null;
 function toast(msg, isError) {
   let el = $("#toast");

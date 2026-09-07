@@ -14,9 +14,11 @@ Run VideoGen as a container. The container hosts the web app and pipeline worker
 git clone https://github.com/mkamranr/youtube-video-generator.git
 cd youtube-video-generator
 
-# 1. Edit docker-compose.yml: set the VIDEOGEN_*_URL variables to your services.
-#    If a service runs on the Docker host itself, use host.docker.internal
-#    (Docker Desktop) or the host's LAN IP - never "localhost".
+# 1. Tell compose where your GPU services run (never "localhost" - inside the
+#    container that is the container itself). .env is gitignored.
+cp .env.example .env
+#    GPU_HOST=<LAN IP of the ComfyUI/vLLM/Fish machine>   or host.docker.internal
+#    when they run on the Docker host itself (Docker Desktop).
 
 # 2. Build and start
 docker compose up -d --build

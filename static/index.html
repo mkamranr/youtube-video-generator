@@ -46,6 +46,7 @@
                 <option value="url" selected>YouTube URLs</option>
                 <option value="topic">Topic</option>
                 <option value="description">Description / short script</option>
+                <option value="transcript">Transcript / lyrics</option>
               </select>
             </div>
           </div>
@@ -124,7 +125,10 @@ const SOURCE_UI = {
            sub: "Enter one topic. The LLM writes the script immediately (without using the video queue); you review and approve it, then video generation starts." },
   description: { label: "Description / short script", ph: "Describe the video, or paste your own short script...",
                  sub: "Write a description or short script for one video. The LLM builds the full script from it; you review and approve it, then video generation starts." },
+  transcript: { label: "Transcript / lyrics", ph: "Paste the full transcript or song lyrics...",
+                sub: "Paste a complete transcript or song lyrics for one video. The LLM keeps your text as the script and only fixes issues; you review and approve it, then video generation starts." },
 };
+const SOURCE_PREFIX = { topic: "topic: ", description: "description: ", transcript: "transcript: " };
 
 function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; }
 
@@ -141,7 +145,7 @@ function applyChannel() {
   if (d.video_length) $("#vlen").value = d.video_length;
   $("#audio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
   applyAudio();
-  loadVoices().then(() => { if (d.voice_id) $("#voice").value = d.voice_id; });
+  loadVoices().then(() => { if (d.voice_id) selectVoice($("#voice"), d.voice_id); });
   const real = isRealistic(ch);
   $("#artstyleBlock").hidden = real;
   if (!real && d.art_style) $("#artstyle").value = d.art_style;
@@ -156,11 +160,7 @@ async function loadVoices() {
     const d = await api("/api/voices");
     voicesById = {};
     d.voices.forEach(v => { voicesById[v.id] = v.name; });
-    const cur = $("#voice").value;
-    $("#voice").innerHTML = `<option value="">Default voice — same voice for the whole video</option>
-      <option value="random">Default voice — random voice per segment</option>` +
-      d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
-    $("#voice").value = cur === "random" || (cur && d.voices.some(v => v.id === cur)) ? cur : "";
+    fillVoiceSelect($("#voice"), d.voices, $("#voice").value);
   } catch (e) { /* voice list is optional */ }
 }
 
@@ -194,6 +194,7 @@ async function submit() {
                storyboard: $("#storyboard").checked };
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
   else if (mode === "topic") body.topic = raw;
+  else if (mode === "transcript") body.transcript = raw;
   else body.description = raw;
   $("#go").disabled = true;
   try {
@@ -251,7 +252,7 @@ function jobCard(j) {
     ${thumbHTML(j)}
     <div class="jc-main">
       <div class="jc-title">${esc(j.title || j.url || j.topic)}</div>
-      <div class="jc-url">${esc(j.url || (j.topic ? (j.source === "description" ? "description: " : "topic: ") + j.topic.slice(0, 90) : ""))}</div>
+      <div class="jc-url">${esc(j.url || (j.topic ? (SOURCE_PREFIX[j.source] || "topic: ") + j.topic.slice(0, 90) : ""))}</div>
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
         ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
@@ -348,14 +349,11 @@ function render(jobs) {
   renderChips();
 }
 
-// jobs that need the user come first: approvals, then failures, then live work
-const STATUS_WEIGHT = { awaiting_approval: 0, failed: 1, queued: 3, done: 4 };
-
 async function refresh() {
   try {
     lastJobs = await api("/jobs");
-    lastJobs.sort((a, b) =>
-      (STATUS_WEIGHT[a.status] ?? 2) - (STATUS_WEIGHT[b.status] ?? 2) || b.created - a.created);
+    // newest first; job ids start with the creation timestamp, so they break ties
+    lastJobs.sort((a, b) => (b.created - a.created) || String(b.id).localeCompare(String(a.id)));
     render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
 }

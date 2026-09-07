@@ -76,6 +76,7 @@ class Submit(BaseModel):
     urls: list[str] = []
     topic: str = ""
     description: str = ""
+    transcript: str = ""     # a pasted transcript or song lyrics used as the script itself
     channel_id: str = ""       # "" -> the first channel (backcompat for scripted API use)
     aspect_ratio: str = ""
     art_style: str = ""
@@ -116,9 +117,10 @@ def _job_json(job):
 @app.post("/jobs")
 def create_jobs(body: Submit):
     urls = [u.strip() for u in body.urls if u.strip()]
-    prompt_kind = "topic" if body.topic.strip() else "description" if body.description.strip() else ""
+    prompt_kind = ("topic" if body.topic.strip() else "description" if body.description.strip()
+                   else "transcript" if body.transcript.strip() else "")
     if not urls and not prompt_kind:
-        raise HTTPException(400, "provide urls, a topic, or a description")
+        raise HTTPException(400, "provide urls, a topic, a description, or a transcript")
     if body.channel_id:
         ch = channels.get_channel(body.channel_id)
         if not ch:
@@ -131,7 +133,8 @@ def create_jobs(body: Submit):
         raise HTTPException(400, "unknown reference voice")
     try:
         if prompt_kind:
-            text = body.topic if prompt_kind == "topic" else body.description
+            text = {"topic": body.topic, "description": body.description,
+                    "transcript": body.transcript}[prompt_kind]
             return [_job_json(manager.submit_prompt(text, prompt_kind, body.aspect_ratio,
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,

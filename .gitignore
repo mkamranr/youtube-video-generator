@@ -4,6 +4,7 @@ reference_audio/
 
 # local runtime configuration
 settings.json
+.env
 channel_logo.png
 client_secret.json
 youtube_token.json

@@ -240,6 +240,7 @@
             <option value="url">YouTube URLs</option>
             <option value="topic">Topic</option>
             <option value="description">Description / short script</option>
+            <option value="transcript">Transcript / lyrics</option>
           </select>
           <div class="hint">Preselected creation mode in the New Video dialog</div>
         </div>
@@ -467,10 +468,7 @@ function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "m
 async function chLoadVoices(selected) {
   try {
     const d = await api("/api/voices");
-    $("#chVoice").innerHTML = `<option value="">Default voice — same voice for the whole video</option>
-      <option value="random">Default voice — random voice per segment</option>` +
-      d.voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
-    $("#chVoice").value = selected === "random" || (selected && d.voices.some(v => v.id === selected)) ? selected : "";
+    fillVoiceSelect($("#chVoice"), d.voices, selected);
   } catch (e) { /* voice list is optional */ }
 }
 

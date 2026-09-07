@@ -104,7 +104,7 @@ VIDEO_LENGTHS = {
     "2-3 minutes": (120, 180),
 }
 DEFAULT_VIDEO_LENGTH = "Auto"
-SOURCES = ["url", "topic", "description"]
+SOURCES = ["url", "topic", "description", "transcript"]
 DEFAULT_SOURCE = "url"
 
 
@@ -175,7 +175,7 @@ EDITABLE_SETTINGS = {
     "TTS_CHUNK_CHARS": (int, lambda v: 100 <= v <= 500, "TTS chunk length (chars)",
                         "Narration is split into chunks of at most this many characters per Fish request (100-500)"),
     "DEFAULT_SOURCE": (str, lambda v: v in SOURCES, "Default source (Create from)",
-                       "Preselected creation mode in the New Video dialog: url, topic or description"),
+                       "Preselected creation mode in the New Video dialog: url, topic, description or transcript"),
     "CLIP_SECONDS": (float, lambda v: 2 <= v <= 15, "Clip length (s)",
                      "Duration of each generated clip (2-15 s)"),
     "NARRATION_WORDS": (int, lambda v: 30 <= v <= 500, "Narration words",

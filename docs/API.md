@@ -40,7 +40,9 @@ Or create a job from a prompt instead of URLs (one job per request):
 ```json
 { "topic": "How bees make honey" }
 { "description": "A gentle bedtime story about ..." }
+{ "transcript": "Twinkle, twinkle, little star ..." }
 ```
+`transcript` is a pasted transcript or song lyrics used as the script itself: the LLM keeps the text and only fixes typos, timestamps, cue/section tags and TTS-unreadable bits (the `Video length` word target is not applied).
 Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. For a `real` or `tech` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `storyboard` (bool, optional) switches the on-screen story board overlay (fact cards + related images) for this video; omitted = the channel's default (on for `tech` channels). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = the built-in voice kept the same for the whole video, `"random"` = the built-in voice with a new random speaker per narration chunk; ignored when `audio_mode` is `music`). Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
@@ -64,7 +66,7 @@ One job object:
 ```
 
 Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → [storyboard] → clips → assembling → done | failed` (`storyboard` only for jobs with the overlay enabled: the LLM plans the cards and ComfyUI renders their images).
-Prompt-based jobs (`source` = `topic`/`description`) start with `drafting → awaiting_approval` and enter the queue only when approved.
+Prompt-based jobs (`source` = `topic`/`description`/`transcript`) start with `drafting → awaiting_approval` and enter the queue only when approved.
 
 ### `GET /jobs/{id}/details`
 Large payload for the job page: full `transcript` text, the parsed `plan` (narration/story, style, scenes, per-clip audio `segments`, `music` caption+lyrics, `seo_title`, `seo_description`, `thumbnail_prompt`, `storyboard` — the overlay cards as `[{start_clip, end_clip, kicker, headline, body, image_prompt}]`), and the full `log`.

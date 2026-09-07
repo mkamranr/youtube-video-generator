@@ -6,12 +6,14 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # Point these at your GPU services. Use the Docker host's LAN IP or
-      # host.docker.internal - NOT localhost (that would be the container itself).
-      VIDEOGEN_COMFY_URL: "http://host.docker.internal:8188"
-      VIDEOGEN_VLLM_URL: "http://host.docker.internal:8000/v1"
-      VIDEOGEN_VLLM_MODEL: "agents-a1"
-      VIDEOGEN_FISH_URL: "http://host.docker.internal:7860/"
+      # GPU_HOST is the machine running ComfyUI, vLLM and Fish Speech. Set it in a
+      # .env file next to this compose file (see .env.example; .env is gitignored):
+      # the Docker host's LAN IP or host.docker.internal - NOT localhost (that
+      # would be the container itself).
+      VIDEOGEN_COMFY_URL: "http://${GPU_HOST:-host.docker.internal}:8188/"
+      VIDEOGEN_VLLM_URL: "http://${GPU_HOST:-host.docker.internal}:8000/v1"
+      VIDEOGEN_VLLM_MODEL: "${VLLM_MODEL:-agents-a1}"
+      VIDEOGEN_FISH_URL: "http://${GPU_HOST:-host.docker.internal}:7860/"
       # Any setting can be overridden the same way, e.g.:
       # VIDEOGEN_TARGET_VIDEO_SECONDS: "0"
       # VIDEOGEN_YT_PRIVACY: "unlisted"
@@ -24,6 +26,9 @@ services:
       - ./data/channels:/app/channels
       # Login accounts (password hashes) and the session signing key
       - ./data/users:/app/users
+      # Reference voices for voice cloning (Settings page) - without this mount
+      # every rebuild or recreate resets the voice library to empty
+      - ./data/reference_audio:/app/reference_audio
       # Optional: persist Settings-page changes across container recreation.
       # Create an empty file first: echo {} > data/settings.json
       # - ./data/settings.json:/app/settings.json

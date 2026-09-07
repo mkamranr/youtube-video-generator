@@ -391,7 +391,7 @@ function update(j) {
   } else {
     $("#srcUrl").removeAttribute("href");
     const t = j.topic || "";
-    $("#srcUrl").textContent = (j.source === "description" ? "description: " : "topic: ")
+    $("#srcUrl").textContent = ({ description: "description: ", transcript: "transcript: " }[j.source] || "topic: ")
       + (t.length > 70 ? t.slice(0, 70) + "…" : t);
   }
   $("#channelLabel").textContent = (j.channel && j.channel.name) || "";

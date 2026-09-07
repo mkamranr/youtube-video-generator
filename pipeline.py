@@ -16,6 +16,9 @@ import config
 from services import channels, comfy, llm, lyrics, storyboard, transcript, tts, video
 
 
+PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
+
+
 @dataclass
 class Job:
     id: str
@@ -25,8 +28,8 @@ class Job:
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     art_style: str = ""
     video_length: str = "Auto"
-    source: str = "youtube"
-    topic: str = ""
+    source: str = "youtube"         # youtube | topic | description | transcript
+    topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, audience, video_type}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
@@ -314,7 +317,7 @@ def _run(job: Job):
 
     # 1. source text: transcript for YouTube jobs, the user's prompt otherwise
     tfile = d / "transcript.txt"
-    if job.source in ("topic", "description"):
+    if job.source in PROMPT_SOURCES:
         text = job.topic
     elif tfile.exists() and tfile.stat().st_size > 50:
         text = tfile.read_text(encoding="utf-8")
@@ -762,7 +765,7 @@ class JobManager:
                 raise ValueError("only failed jobs can be resumed")
             job.cancel_requested = False
             job.pause_requested = False
-            restart_draft = job.source in ("topic", "description") and not job.script_approved
+            restart_draft = job.source in PROMPT_SOURCES and not job.script_approved
             if restart_draft:
                 job.set("drafting", "resumed - writing script with the LLM", error="", archived=False)
                 job.add_log("resumed by user - restarting the script draft")
@@ -781,8 +784,8 @@ class JobManager:
                       channel: dict | None = None, storyboard_flag=None) -> Job:
         text = (text or "").strip()
         if len(text) < 3:
-            raise ValueError("topic/description is too short")
-        if source_kind not in ("topic", "description"):
+            raise ValueError("topic/description/transcript is too short")
+        if source_kind not in PROMPT_SOURCES:
             raise ValueError("invalid source kind")
         aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
@@ -793,6 +796,9 @@ class JobManager:
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
         job.save()
+        if source_kind == "transcript":   # shown by the job page's Transcript card
+            job.dir.mkdir(parents=True, exist_ok=True)
+            (job.dir / "transcript.txt").write_text(text, encoding="utf-8")
         with self.lock:
             self.jobs[job.id] = job
         self._start_draft(job)

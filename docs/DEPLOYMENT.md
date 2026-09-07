@@ -192,12 +192,12 @@ The image contains the app only; the GPU services stay outside the container. Fu
 ```bash
 git clone https://github.com/mkamranr/youtube-video-generator.git
 cd youtube-video-generator
-# edit docker-compose.yml: VIDEOGEN_*_URL -> your services (host.docker.internal or a LAN IP, never localhost)
+cp .env.example .env   # set GPU_HOST to the machine running ComfyUI/vLLM/Fish (host.docker.internal or a LAN IP, never localhost)
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Persisted through bind mounts under `./data/`: `output/`, `channels/`, `users/` (accounts + signing key) and optionally `settings.json`; the whisper model lives in a named volume. **Mount `users/`** — without it every container recreation returns to the first-run setup screen and signs everyone out. Set `VIDEOGEN_SECRET_KEY` in the `environment:` block for a stable key across rebuilds.
+Persisted through bind mounts under `./data/`: `output/`, `channels/`, `users/` (accounts + signing key), `reference_audio/` (uploaded voices) and optionally `settings.json`; the whisper model lives in a named volume. **Mount `users/`** — without it every container recreation returns to the first-run setup screen and signs everyone out. Set `VIDEOGEN_SECRET_KEY` in the `environment:` block for a stable key across rebuilds.
 
 On Linux hosts `host.docker.internal` needs `extra_hosts: ["host.docker.internal:host-gateway"]` under the service, or use the host's LAN IP.
 
