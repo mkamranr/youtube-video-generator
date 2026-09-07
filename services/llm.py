@@ -467,6 +467,19 @@ def write_music(title: str, narration: str, transcript: str,
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
     video's story in order, so the words being sung at any moment match the visuals."""
     transcript = transcript[:8000]
+    kids = _channel(channel)["audience"] == "kids"
+    # sung words per second: young children need slow, clearly enunciated singing
+    wps = 1.3 if kids else 2
+    kids_rule = ("" if not kids else
+                 " The audience is YOUNG CHILDREN (early education): the music must be soft, gentle and "
+                 "calm - slow tempo (65-90 BPM), simple sparse instrumentation (soft piano, ukulele, "
+                 "glockenspiel, light hand percussion, warm pads), low dynamics, no busy or loud "
+                 "arrangements, no dense drums, no fast rhythms. "
+                 + ("Vocals: one warm friendly singer, slow clear sing-along delivery with short simple "
+                    "words and pauses between lines so every word is understood; simple repeating "
+                    "melody; keep instrumental gaps short. " if standalone else
+                    "It sits far in the background so every narrated word stays clear. ")
+                 + "State the slow tempo, the soft instruments and the gentle mood explicitly in the caption.")
     if standalone:
         ceiling = int(max_seconds or ((seconds or 90) * 2))
         if seconds_range:
@@ -474,21 +487,21 @@ def write_music(title: str, narration: str, transcript: str,
             target = (lo + hi) // 2
             length_rule = (f"Aim for a song BETWEEN {lo} and {hi} seconds; the recording is HARD-CUT at "
                            f"{ceiling} seconds, so the lyrics MUST reach the story's ENDING and the song "
-                           f"must finish within that range. Budget roughly 2 sung words per second: about "
-                           f"{target * 2} words of lyrics in total across all sections. If the content "
+                           f"must finish within that range. Budget roughly {wps:g} sung words per second: about "
+                           f"{int(target * wps)} words of lyrics in total across all sections. If the content "
                            f"cannot fit, compress or summarize it - never leave the story unfinished.")
         elif seconds:
             target = int(seconds)
             length_rule = (f"Aim for a song of about {target} seconds; the recording is HARD-CUT at "
                            f"{ceiling} seconds, so the lyrics MUST reach the story's ENDING and the song "
-                           f"must finish well before that. Budget roughly 2 sung words per second: about "
-                           f"{target * 2} words of lyrics in total across all sections. If the content "
+                           f"must finish well before that. Budget roughly {wps:g} sung words per second: about "
+                           f"{int(target * wps)} words of lyrics in total across all sections. If the content "
                            f"cannot fit, compress or summarize it - never leave the story unfinished.")
         else:
             length_rule = (f"There is NO length target: give EVERY story beat its own lyric moment - do NOT "
                            f"compress or summarize the content (no skipping ahead). The recording is HARD-CUT "
                            f"at {ceiling} seconds, so the song must still reach its ENDING before that "
-                           f"(budget roughly 2 sung words per second when sizing the lyrics).")
+                           f"(budget roughly {wps:g} sung words per second when sizing the lyrics).")
         role = ("This track is the ONLY audio of the video - there is no narration. "
                 "The song must TELL THE VIDEO'S STORY IN ORDER: the lyrics follow the story beats "
                 "from beginning to end, so that whatever is being sung at any moment is what the "
@@ -510,7 +523,7 @@ Story of the video, in order:
 Original transcript excerpt (for flavor and vocabulary):
 \"\"\"{transcript}\"\"\"
 
-Design one music track for this video. {role}
+Design one music track for this video. {role}{kids_rule}
 Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
 - "lyrics": {lyrics_rule}
