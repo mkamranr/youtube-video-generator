@@ -110,6 +110,8 @@
     </div>
   </div>
 
+  <div class="notice" id="gpuBanner" hidden></div>
+
   <div class="chips" id="statusChips"></div>
 
   <div class="card" style="padding:20px 20px 8px">
@@ -277,6 +279,7 @@ function jobCard(j) {
       <div style="display:flex;gap:8px;align-items:center">
         ${j.status === "awaiting_approval" ? `<button class="btn sm" onclick="event.preventDefault();location.href='/job/${j.id}'">Review script</button>` : ""}
         ${j.status === "failed" ? `<button class="btn sm" onclick="resumeJob(event,'${j.id}')">Resume</button>` : ""}
+        ${j.status === "done" && j.final ? `<button class="btn sm" onclick="bundleDownload(event,'${j.id}')" title="Download the video, thumbnail, audio and SEO text as one ZIP">Bundle</button>` : ""}
         ${canDelete ? `<button class="btn secondary sm" onclick="archiveJob(event,'${j.id}')">Archive</button>
                        <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>`
                     : `<button class="btn danger sm" onclick="cancelJob(event,'${j.id}')">Cancel</button>`}
@@ -362,6 +365,23 @@ async function refresh() {
     lastJobs.sort((a, b) => (b.created - a.created) || String(b.id).localeCompare(String(a.id)));
     render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
+  refreshSchedule();
+}
+
+let scheduleTick = 0;
+async function refreshSchedule() {
+  if (scheduleTick++ % 10) return;   // every ~30 s
+  try {
+    const s = await api("/api/schedule");
+    const b = $("#gpuBanner");
+    if (!s.enabled) { b.hidden = true; return; }
+    const fmt = m => { const h = Math.floor(m / 60), r = m % 60; return h ? (r ? `${h} h ${r} min` : `${h} h`) : `${r} min`; };
+    b.innerHTML = s.open
+      ? `<strong>GPU window ${esc(s.start)}–${esc(s.end)}</strong> · open, closes at ${esc(s.next_close)} (in ${fmt(s.closes_in_min)})`
+      : `<strong>GPU window ${esc(s.start)}–${esc(s.end)}</strong> · closed, opens at ${esc(s.next_open)} (in ${fmt(s.opens_in_min)}) · renders wait, script writing and narration keep running`;
+    b.classList.toggle("closed", !s.open);
+    b.hidden = false;
+  } catch (e) { /* ignore */ }
 }
 
 let stylePreviews = {};

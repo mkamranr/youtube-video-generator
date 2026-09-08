@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, channels, users, voices
+from services import auth, channels, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -87,8 +87,11 @@ class Submit(BaseModel):
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
 
 
-def _queued_detail(job_id: str) -> str:
+def _queued_detail(job) -> str:
     """Live, meaningful detail for jobs waiting in the queue."""
+    if job.gpu_wait and not schedule.is_open():
+        return schedule.describe_wait()
+    job_id = job.id
     running = manager.current
     try:
         pos = manager.queue.index(job_id) + 1
@@ -110,7 +113,7 @@ def _job_json(job):
     d["files"] = [f.name for f in sorted(job.dir.glob("*"))
                   if f.is_file() and f.name not in ("job.json", "bundle.zip")]
     if job.status == "queued":
-        d["detail"] = _queued_detail(job.id)
+        d["detail"] = _queued_detail(job)
     return d
 
 
@@ -551,6 +554,12 @@ def get_settings():
             "sources": config.SOURCES}
 
 
+@app.get("/api/schedule")
+def get_schedule():
+    """GPU schedule window state (server local time) for the banner and the Settings card."""
+    return schedule.status()
+
+
 @app.put("/api/settings")
 def put_settings(body: dict):
     try:
@@ -864,7 +873,7 @@ def health():
 # ---- art style previews ----------------------------------------------------
 PREVIEW_SUBJECT = ("A cheerful young fox explorer waving happily in a sunny meadow, holding a small "
                    "red balloon. No text, subtitles, logos or watermarks of any kind.")
-_preview_state = {"generating": False, "current": "", "errors": 0}
+_preview_state = {"generating": False, "current": "", "errors": 0, "waiting": False}
 _preview_lock = threading.Lock()
 
 
@@ -887,7 +896,8 @@ def style_previews():
         previews[name] = f"/style_previews/{f.name}" if f.exists() and f.stat().st_size > 1000 else None
     return {"previews": previews, "generating": _preview_state["generating"],
             "done": sum(1 for v in previews.values() if v), "total": len(previews),
-            "current": _preview_state["current"], "errors": _preview_state["errors"]}
+            "current": _preview_state["current"], "errors": _preview_state["errors"],
+            "waiting": _preview_state["waiting"]}
 
 
 @app.post("/api/style-previews")
@@ -917,6 +927,10 @@ def _generate_previews():
             _preview_state["current"] = name
             raw = d / f"_{slug}_raw.mp4"
             try:
+                if not schedule.is_open():   # admin renders obey the GPU window too
+                    _preview_state["waiting"] = True
+                    schedule.wait_until_open()
+                    _preview_state["waiting"] = False
                 wf = client.build_thumbnail(template, f"{desc}\n\n{PREVIEW_SUBJECT}",
                                             f"videogen/_style_previews/{slug}")
                 client.run(wf, raw, cleanup=config.COMFY_CLEANUP)
@@ -931,6 +945,7 @@ def _generate_previews():
     finally:
         _preview_state["generating"] = False
         _preview_state["current"] = ""
+        _preview_state["waiting"] = False
 
 
 # ---- pages ----------------------------------------------------------------

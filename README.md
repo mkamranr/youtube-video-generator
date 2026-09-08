@@ -123,7 +123,7 @@ Open **http://localhost:8080** — the first visit shows the one-time **Create t
    - **Topic/description/transcript jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
    - **Transcript / lyrics jobs** keep your text as the script: the LLM only fixes typos and grammar and strips timestamps, cue tags like `[Music]`, speaker labels and section tags like `[Verse]`/`[Chorus]` — it never expands, shortens or reorders your words, and the *Video length* target is not applied (the audio is as long as your text). The pasted text is shown in the job page's **Transcript** card. Pair it with **Generate Voiceover** for a read-aloud script, or **Generate Song** to have your lyrics sung.
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
-3. **Publish** — when done, push the video straight to your channel with **Upload to YouTube** (private by default, with SEO title/description, thumbnail and made-for-kids flag applied — see docs/YOUTUBE.md for the one-time setup), or download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file.
+3. **Publish** — when done, push the video straight to your channel with **Upload to YouTube** (private by default, with SEO title/description, thumbnail and made-for-kids flag applied — see docs/YOUTUBE.md for the one-time setup), or download the video and thumbnail (named after the video's title), or grab the **bundle**: one ZIP with the video, thumbnail, audio track, and the SEO title/description in a text file. Finished jobs also show a **Bundle** button directly on the jobs list and the archive, so you can download without opening the job.
 
 ### Revising a finished video
 
@@ -139,6 +139,7 @@ Note: a regenerated clip keeps its opening continuity (seeded from the previous 
 - **Resume** a failed job (connection timeout, service down, crash) with one click once the services are back: it re-enters the queue and continues from the exact step it failed at - the plan, music, narration and every finished clip are reused.
 - **Archive** finished jobs to keep the main list clean (Archived Jobs page; unarchive anytime).
 - **Delete** removes a job and all its local files permanently.
+- **GPU schedule** (Settings → GPU schedule, off by default): restrict ComfyUI renders to a daily window such as 22:00–06:00. Jobs still fetch transcripts, write scripts and narrate at any time; when they reach their first render outside the window they park in the queue with the detail *waiting for the GPU window (opens at …)* and continue where they stopped once it opens. A render already running when the window closes finishes first. The jobs page shows a banner with the window state.
 
 ## First run
 
@@ -174,6 +175,9 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `MIN_TRANSCRIPT_WPM` | `20` | Refuse transcripts too sparse for the video length |
 | `SCRIPT_REVIEW` | `on` | LLM double-checks every generated scene and drafted script and fixes inconsistencies |
 | `COMFY_CLEANUP` | `on` | Scrub rendered files/uploads/history from ComfyUI once downloaded |
+| `GPU_SCHEDULE_ENABLED` | `off` | Only submit ComfyUI renders (clips, music, thumbnails, story board images, style previews) inside the window below; script writing and narration run any time |
+| `GPU_WINDOW_START` | `22:00` | Window start, server local time (HH:MM) |
+| `GPU_WINDOW_END` | `06:00` | Window end (HH:MM); before the start = overnight window, equal to the start = always open |
 
 Code-only constants (`config.py`): workflow file paths and node ids, `WHISPER_MODEL` (`base`), `MAX_TRANSCRIPT_CHARS` (60000), `COMFY_TIMEOUT` (1 h per render).
 

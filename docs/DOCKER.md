@@ -44,6 +44,7 @@ Every setting from the Configuration table in the README can be supplied as an e
 | `VIDEOGEN_TARGET_VIDEO_SECONDS` | `90` (`0` = no target) |
 | `VIDEOGEN_COMFY_CLEANUP` | `true` / `false` |
 | `VIDEOGEN_SECRET_KEY` | any long random string — signs the login session cookies (optional; without it a random key is generated once into `/app/users/session_secret`) |
+| `TZ` | `Asia/Dubai` — the container's local clock, which the GPU schedule window (Settings → GPU schedule) is compared against; default `UTC` |
 | …and every other `EDITABLE_SETTINGS` key | |
 
 Booleans accept `1/true/yes/on` (case-insensitive); numbers are parsed and range-validated — invalid values are ignored with the previous value kept.

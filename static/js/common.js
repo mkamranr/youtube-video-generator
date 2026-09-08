@@ -130,6 +130,14 @@ function pillHTML(j) {
   return `<span class="pill ${cls} ${active ? "running" : ""}">${esc(text.toLowerCase())}</span>`;
 }
 
+// Download the finished job's ZIP bundle (video, thumbnail, audio, SEO text) from a job card.
+// The route answers with an attachment, so the browser saves it without leaving the page.
+function bundleDownload(ev, id) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  location.href = `/jobs/${id}/download/bundle`;
+}
+
 function timeAgo(ts) {
   const s = Math.max(0, (Date.now() / 1000) - ts);
   if (s < 60) return "just now";

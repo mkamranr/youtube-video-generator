@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import channels, comfy, llm, lyrics, storyboard, transcript, tts, video
+from services import channels, comfy, llm, lyrics, schedule, storyboard, transcript, tts, video
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
@@ -45,6 +45,7 @@ class Job:
     error: str = ""
     cancel_requested: bool = False
     pause_requested: bool = False
+    gpu_wait: bool = False          # parked in the queue until the GPU schedule window opens
     archived: bool = False
     regen_queue: list = field(default_factory=list)   # clip numbers pending regeneration
     assemble_requested: bool = False
@@ -98,11 +99,24 @@ class JobPaused(BaseException):
     pass
 
 
+class JobWaitingWindow(BaseException):
+    """Raised right before a ComfyUI submission when the GPU schedule window is closed.
+    BaseException so the non-fatal `except Exception` wrappers cannot swallow it."""
+    pass
+
+
 def _check_cancel(job: Job):
     if job.cancel_requested:
         raise JobCancelled()
     if job.pause_requested:
         raise JobPaused()
+
+
+def _gpu_gate(job: Job):
+    """Checkpoint placed immediately before every ComfyUI submission of the worker path."""
+    _check_cancel(job)
+    if not schedule.is_open():
+        raise JobWaitingWindow()
 
 
 def _cleanup_warn(job: Job):
@@ -141,6 +155,7 @@ def _progress(job: Job, status: str):
 
 
 def run_job(job: Job):
+    job.gpu_wait = False
     try:
         if job.regen_queue or job.assemble_requested:
             _run_maintenance(job)
@@ -150,6 +165,10 @@ def run_job(job: Job):
         job.pause_requested = False
         job.add_log("paused - a priority clip regeneration runs first")
         job.set("queued", "paused for a priority clip regeneration")
+    except JobWaitingWindow:
+        job.gpu_wait = True
+        job.add_log("GPU window closed - parked until it opens")
+        job.set("queued", schedule.describe_wait())
     except JobCancelled:
         job.add_log("cancelled by user")
         job.set("failed", "cancelled by user", error="cancelled by user")
@@ -177,6 +196,7 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
         job.set("clips", f"{label}: {msg}")
 
     for attempt in range(config.CLIP_RETRIES + 1):
+        _gpu_gate(job)
         try:
             wf = client.build(template, prompt, f"videogen/{job.id}/clip_{i:02d}",
                               first_frame=first_frame, aspect_ratio=job.aspect_ratio,
@@ -210,9 +230,11 @@ def _storyboard_assets(job: Job, plan: dict, n: int):
     Non-fatal: on failure the job continues without the overlay for this assembly."""
     job.set("storyboard", "planning the story board")
     try:
-        _check_cancel(job)
+        _gpu_gate(job)
         storyboard.ensure_assets(job, plan, n, on_progress=_progress(job, "storyboard"),
-                                 add_log=job.add_log, should_stop=lambda: job.cancel_requested)
+                                 add_log=job.add_log,
+                                 should_stop=lambda: job.cancel_requested or not schedule.is_open())
+        _gpu_gate(job)   # window closed between images: park; the missing images render on resume
         _save_plan(job, plan)
         job.add_log("story board ready")
     except JobCancelled:
@@ -395,6 +417,7 @@ def _run(job: Job):
             music_file = d / "music.mp3"
             job.add_log("resume: reusing music track")
         else:
+            _gpu_gate(job)
             job.set("music", "generating music with ComfyUI")
             mclient = comfy.ComfyClient()
             mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
@@ -479,6 +502,7 @@ def _run(job: Job):
                 plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
                                                 channel=job.channel))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
             tclient = comfy.ComfyClient()
             twf = tclient.build_thumbnail(tclient.load_workflow(config.T2V_WORKFLOW),
@@ -508,6 +532,7 @@ def _run(job: Job):
             music_plan["lyrics"] = "[Instrumental]"  # background bed: never sing over the narration
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            _gpu_gate(job)
             job.set("music", "generating music with ComfyUI")
             mclient = comfy.ComfyClient()
             mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
@@ -729,8 +754,14 @@ class JobManager:
         while True:
             jid = None
             with self.lock:
-                if self.queue:
-                    jid = self.queue.pop(0)
+                # first runnable job in order; jobs parked for the GPU window stay put while it is closed
+                closed = not schedule.is_open()
+                for idx, cand in enumerate(self.queue):
+                    j = self.jobs.get(cand)
+                    if j is not None and j.gpu_wait and closed:
+                        continue
+                    jid = self.queue.pop(idx)
+                    break
             if jid is None:
                 time.sleep(1)
                 continue
@@ -744,6 +775,10 @@ class JobManager:
                 run_job(job)
             finally:
                 self.current = None
+                if job.gpu_wait:        # parked: back to the queue, other jobs get their LLM/TTS work done
+                    with self.lock:
+                        if jid not in self.queue:
+                            self.queue.append(jid)
                 threading.Thread(target=self._sweep_comfy, daemon=True).start()
 
     def cancel(self, job_id: str):
@@ -944,6 +979,7 @@ class JobManager:
             plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
                                             plan.get("style", "")))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")
             client = comfy.ComfyClient()
             twf = client.build_thumbnail(client.load_workflow(config.T2V_WORKFLOW),

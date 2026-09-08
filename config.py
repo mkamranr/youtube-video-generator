@@ -138,6 +138,9 @@ NARRATION_WORDS = 170           # target narration length (~65-75 s of speech)
 CLIP_AUDIO_VOLUME = 0.3         # model-generated ambience level under the narration
 CLIP_AUDIO_WITH_MUSIC = False   # narration+music: also keep the clips' own sound (off = voice + music only)
 CLIP_RETRIES = 1
+GPU_SCHEDULE_ENABLED = False    # ComfyUI renders only between GPU_WINDOW_START and GPU_WINDOW_END (server local time)
+GPU_WINDOW_START = "22:00"      # HH:MM; end before start = overnight window
+GPU_WINDOW_END = "06:00"
 AUDIO_MODES = ["music", "narration", "narration+music"]
 AUDIO_MODE = "music"            # default preselection for the New Video dialog audio choice
 MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode, auto-ducked)
@@ -196,6 +199,16 @@ EDITABLE_SETTINGS = {
                        "8-step turbo sampling: ~3x faster, lower quality"),
     "CLIP_RETRIES": (int, lambda v: 0 <= v <= 5, "Clip retries",
                      "Retries per failed clip before failing the job"),
+    "GPU_SCHEDULE_ENABLED": (bool, lambda v: True, "GPU schedule",
+                             "Only submit ComfyUI renders (clips, music, thumbnails, story board images) between "
+                             "GPU_WINDOW_START and GPU_WINDOW_END; script writing and narration run any time"),
+    "GPU_WINDOW_START": (str, lambda v: bool(re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v)),
+                         "GPU window start (HH:MM)",
+                         "Server local time the render window opens, e.g. 22:00"),
+    "GPU_WINDOW_END": (str, lambda v: bool(re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v)),
+                       "GPU window end (HH:MM)",
+                       "Server local time the render window closes, e.g. 06:00 (before the start = overnight; "
+                       "equal to the start = always open)"),
     "MUSIC_VOLUME": (float, lambda v: 0 <= v <= 1, "Music volume",
                      "Music level under the narration (narration+music mode, 0-1). The bed is ducked further "
                      "while the voice speaks, looped if shorter than the video and faded out at the end"),

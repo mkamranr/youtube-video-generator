@@ -341,6 +341,29 @@
     </div>
 
     <div class="card">
+      <h2>GPU schedule</h2>
+      <div class="hint" style="margin-bottom:12px">Limit ComfyUI renders (clips, music, thumbnails, story board images, style previews) to a daily time window. Script writing and narration keep running at any time, so jobs are ready to render the moment the window opens. A render already in progress finishes; the job then waits for the next window. <span id="scheduleNow"></span></div>
+      <div class="form-grid">
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="GPU_SCHEDULE_ENABLED"><span class="track"></span>
+            Only render inside the window</label>
+          <div class="hint">Off = jobs render at any time</div>
+        </div>
+        <div class="field">
+          <label for="GPU_WINDOW_START">Window start</label>
+          <input type="time" id="GPU_WINDOW_START" step="60">
+          <div class="hint">Server local time</div>
+        </div>
+        <div class="field">
+          <label for="GPU_WINDOW_END">Window end</label>
+          <input type="time" id="GPU_WINDOW_END" step="60">
+          <div class="hint">An end before the start is an overnight window (22:00 → 06:00); equal to the start = always open</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Narration (Fish Speech)</h2>
       <div class="form-grid">
         <div class="field"><label for="FISH_URL">Fish TTS URL</label><input type="text" id="FISH_URL"><div class="hint">Gradio URL of Fish Speech</div></div>
@@ -376,7 +399,17 @@ document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
                 "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_MEGAPIXELS", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY",
                 "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT", "PUBLIC_BASE_URL",
-                "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS"];
+                "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS",
+                "GPU_SCHEDULE_ENABLED", "GPU_WINDOW_START", "GPU_WINDOW_END"];
+
+async function scheduleStatus() {
+  try {
+    const s = await api("/api/schedule");
+    $("#scheduleNow").textContent = !s.enabled ? `Server time ${s.now}.`
+      : s.open ? `Server time ${s.now} · window open, closes at ${s.next_close}.`
+      : `Server time ${s.now} · window closed, opens at ${s.next_open}.`;
+  } catch (e) { /* ignore */ }
+}
 
 async function load() {
   const d = await api("/api/settings");
@@ -417,6 +450,7 @@ $("#form").addEventListener("submit", async ev => {
     await api("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     toast("Settings saved");
     checkHealth();
+    scheduleStatus();
   } catch (e) { toast(e.message, true); }
   finally { $("#save").disabled = false; }
 });
@@ -425,7 +459,8 @@ async function previewStatus(loop) {
   try {
     const d = await api("/api/style-previews");
     $("#previewStatus").textContent = d.generating
-      ? `generating… ${d.done}/${d.total}${d.current ? " (" + d.current + ")" : ""}`
+      ? (d.waiting ? `waiting for the GPU window… ${d.done}/${d.total}`
+                   : `generating… ${d.done}/${d.total}${d.current ? " (" + d.current + ")" : ""}`)
       : `${d.done}/${d.total} generated`;
     if (d.generating && loop) setTimeout(() => previewStatus(true), 5000);
   } catch (e) { /* ignore */ }
@@ -797,6 +832,8 @@ async function deleteVoice(id) {
 
 load().catch(e => toast(e.message, true));
 checkHealth();
+scheduleStatus();
+setInterval(scheduleStatus, 30000);
 previewStatus(true);
 refreshChannels();
 refreshUsers();

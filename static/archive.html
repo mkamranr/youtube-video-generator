@@ -69,6 +69,7 @@ function jobCard(j) {
     </div>
     <div class="jc-side">
       <div style="display:flex;gap:8px;align-items:center">
+        ${j.status === "done" && j.final ? `<button class="btn sm" onclick="bundleDownload(event,'${j.id}')" title="Download the video, thumbnail, audio and SEO text as one ZIP">Bundle</button>` : ""}
         <button class="btn secondary sm" onclick="unarchiveJob(event,'${j.id}')">Unarchive</button>
         <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>
         ${pillHTML(j)}

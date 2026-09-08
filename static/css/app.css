@@ -363,6 +363,11 @@ input[type=password]:focus, input[type=email]:focus { outline: none; border-colo
 .jc-thumb.ph svg { width: 22px; height: 22px; opacity: .6; }
 
 /* ---- status filter chips ---- */
+.notice { border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; margin: 0 0 14px;
+  color: var(--muted); font-size: 13px; background: var(--surface-2); }
+.notice strong { color: var(--fg); font-weight: 600; }
+.notice.closed { border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.notice.closed strong { color: var(--warn); }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
 .chip {
   display: inline-flex; align-items: center; gap: 7px; cursor: pointer;

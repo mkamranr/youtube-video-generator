@@ -4,8 +4,9 @@ WORKDIR /app
 
 # Install dependencies first (better layer caching), then pre-fetch the pinned
 # ffmpeg/ffprobe binaries so the container needs no download at runtime.
-# DejaVu fonts render the story board cards (Pillow falls back to a plain built-in face without them)
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+# DejaVu fonts render the story board cards (Pillow falls back to a plain built-in face without them);
+# tzdata lets TZ=Region/City set the local clock the GPU schedule window is compared against
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core tzdata \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

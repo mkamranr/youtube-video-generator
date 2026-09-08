@@ -46,7 +46,7 @@ Or create a job from a prompt instead of URLs (one job per request):
 Prompt jobs draft their script immediately in a background thread (never in the GPU queue) and rest at `awaiting_approval` until approved. `channel_id` selects the channel the video is generated for (see `GET /api/channels`; omitted = the first channel) — its name, purpose, audience and video type steer every LLM prompt, and the job snapshots them so later channel edits don't affect it. `aspect_ratio`, `art_style` and `video_length` (`Auto`, `30-45 seconds`, `45-60 seconds`, `1-2 minutes`, `2-3 minutes` — a soft target guiding script and audio length) are optional; unset fields fall back to the channel's defaults, then the global ones. `megapixels` (optional, one of `GET /options`' `megapixels_options`: 0.2–1.0 in 0.1 steps) sets the clip resolution for this video; omitted = the `DEFAULT_MEGAPIXELS` setting (there is no channel level). For a `real` or `tech` video-type channel `art_style` is ignored (a built-in realistic live-action look is used). `storyboard` (bool, optional) switches the on-screen story board overlay (fact cards + related images) for this video; omitted = the channel's default (on for `tech` channels). `audio_mode` (`music` = Generate Song, `narration` / `narration+music` = Generate Voiceover) picks the audio pipeline per job — voiceover jobs get a gentle low-volume **instrumental** background bed, never sung lyrics — and `voice_id` optionally selects a reference voice from `GET /api/voices` for the voiceover (`""` = the built-in voice kept the same for the whole video, `"random"` = the built-in voice with a new random speaker per narration chunk; ignored when `audio_mode` is `music`). Returns a list of job objects.
 
 ### `GET /jobs?archived=false`
-List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running).
+List jobs, newest first. `archived=true` lists archived jobs instead. Queued jobs carry a live human-readable `detail` (queue position / what is currently running; or *waiting for the GPU window (…)* when the job is parked by the GPU schedule — `gpu_wait: true`).
 
 ### `GET /jobs/{id}`
 One job object:
@@ -176,6 +176,9 @@ Partial update; values are validated (range/enum) and persisted to `settings.jso
 
 ### `GET /api/health`
 Pings ComfyUI, vLLM and Fish Speech concurrently: `{"comfyui": {"ok": true, "ms": 10, "error": null}, ...}`.
+
+### `GET /api/schedule`
+GPU schedule window state (settings `GPU_SCHEDULE_ENABLED`, `GPU_WINDOW_START`, `GPU_WINDOW_END`; server local time): `{"enabled": true, "start": "22:00", "end": "06:00", "open": false, "now": "14:32", "next_open": "22:00", "next_close": null, "opens_in_min": 448, "closes_in_min": 0}`. While closed, ComfyUI renders are not submitted: queued jobs run their transcript/LLM/TTS steps and then park until the window opens; LLM drafting is never affected.
 
 ## Pages (HTML)
 

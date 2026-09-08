@@ -14,6 +14,9 @@ services:
       VIDEOGEN_VLLM_URL: "http://${GPU_HOST:-host.docker.internal}:8000/v1"
       VIDEOGEN_VLLM_MODEL: "${VLLM_MODEL:-agents-a1}"
       VIDEOGEN_FISH_URL: "http://${GPU_HOST:-host.docker.internal}:7860/"
+      # Local clock for the GPU schedule window (Settings > GPU schedule) and log timestamps,
+      # e.g. Asia/Dubai. Containers default to UTC.
+      TZ: "${TZ:-UTC}"
       # Any setting can be overridden the same way, e.g.:
       # VIDEOGEN_TARGET_VIDEO_SECONDS: "0"
       # VIDEOGEN_YT_PRIVACY: "unlisted"
