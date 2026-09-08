@@ -31,6 +31,8 @@ def _channel(ch: dict | None) -> dict:
     ch = dict(ch or {})
     ch.setdefault("name", config.CHANNEL_NAME)
     ch.setdefault("purpose", "")
+    ch.setdefault("rules", "")
+    ch.setdefault("cast", [])
     if ch.get("audience") not in AUDIENCE_RULES:
         ch["audience"] = "kids"
     if ch.get("video_type") not in config.VIDEO_TYPES:
@@ -50,11 +52,20 @@ TECH_RULES = ("This is a TECH channel: be concrete and technically accurate - na
               "code, data centres, chips, robots, dashboards and clean abstract data visualisations. ")
 
 
-def _system(channel: dict | None = None) -> str:
+def _system(channel: dict | None = None, used: list | None = None, rules: bool = True) -> str:
+    """The per-job system prompt.
+
+    used:  None while the script is being written (the cast sheet lists the whole roster and asks
+           the writer to pick); afterwards the video's cast_used names, so every later call only
+           carries the looks of the characters that are actually in this video.
+    rules: include the channel's fixed style & rules text (off for calls that only need names,
+           such as SEO and music)."""
     ch = _channel(channel)
     kind = VIDEO_KIND.get(ch["video_type"], VIDEO_KIND["real"])
     purpose = (f'Channel purpose: "{ch["purpose"]}" - keep every video aligned with this purpose '
                "and tone. ") if ch["purpose"].strip() else ""
+    rules_block = (f"CHANNEL STYLE & RULES (fixed reference for every story and scene):\n"
+                   f"{ch['rules'].strip()}\n") if rules and ch["rules"].strip() else ""
     return (f"You are a creative director turning source content into a short, original "
             f"AI-generated {kind} video. "
             + AUDIENCE_RULES[ch["audience"]]
@@ -65,18 +76,40 @@ def _system(channel: dict | None = None) -> str:
             f'use "{ch["name"]}" instead wherever a name is called for, and mention the '
             "channel naturally only where it fits (intros, outros, sign-offs), without forcing it "
             "into every line. "
-            + cast.sheet_text(ch)
+            + rules_block
+            + cast.sheet_text(ch, used=used)
             + "Always answer with a single JSON object and nothing else.")
 
 
-def _cast_script_rule(channel: dict | None) -> str:
-    """Extra script-writing rule when the channel has main characters."""
-    mains = cast.main_characters(channel)
-    if not mains:
+def _cast_selection_rule(channel: dict | None, request_text: str = "", verbatim: bool = False) -> str:
+    """Script-writing instruction for choosing this video's characters from the channel roster.
+    Names the user wrote in the request (topic/description) are mandatory. verbatim=True is the
+    pasted-transcript case: the words are fixed, the choice only decides who plays in the visuals."""
+    if not cast.all_characters(channel):
         return ""
-    names = ", ".join(c["name"] for c in mains)
-    return (f"\nThe channel's MAIN character(s) {names} must be the protagonists of this video: they "
-            "carry the story and are referred to by name in the narration. ")
+    forced = cast.names(cast.used_characters(channel, request_text))
+    if verbatim:
+        rule = ("\nCAST SELECTION: the script above is fixed, but decide which of the channel's recurring "
+                "characters (if any) play in the visuals of this video - only the ones this story needs; "
+                "every other cast member stays out.")
+    else:
+        rule = ("\nCAST SELECTION: choose from the channel roster only the characters this story needs "
+                "(usually 1-3; MAIN characters are the usual protagonists, supporting characters when the "
+                "story calls for them) and refer to them by name in the narration; every other cast "
+                "member stays out entirely.")
+    if forced:
+        rule += (f" The request names {', '.join(forced)}: these exactly must be used, in the roles the "
+                 "request gives them (e.g. main / supporting).")
+    return rule + ' Also return "characters": the list of cast names used in this video (may be empty). '
+
+
+def _chosen(channel: dict | None, value) -> list:
+    """The cast names the LLM reported under "characters", validated against the roster."""
+    if isinstance(value, str):
+        value = re.split(r"[,;/]| and ", value)
+    if not isinstance(value, list):
+        return []
+    return cast.names(cast.select_characters(channel, [str(v) for v in value]))
 
 STYLE_EXAMPLE = ("Realistic live-action cinematic look, practical film photography style, anamorphic lens, "
                  "shallow depth of field, film grain, restrained grading for a premium feel, natural movement.")
@@ -151,7 +184,7 @@ def write_narration(transcript: str, words: int | None = None, art_style: str = 
     user = f"""Transcript of the source video:
 \"\"\"{transcript}\"\"\"
 
-Create a new short video inspired by this content.{_cast_script_rule(channel)} Return JSON with keys:
+Create a new short video inspired by this content.{_cast_selection_rule(channel)} Return JSON with keys:
 - "title": short title.
 - "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice. Stay close to {words} words.
 - "style": {style_rule}
@@ -159,6 +192,7 @@ Create a new short video inspired by this content.{_cast_script_rule(channel)} R
     plan = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
     for key in ("title", "narration", "style"):
         plan.setdefault(key, "")
+    plan["cast_chosen"] = _chosen(channel, plan.pop("characters", None))
     if not plan["narration"].strip():
         raise RuntimeError("vLLM returned an empty narration")
     if config.SCRIPT_REVIEW:
@@ -198,8 +232,8 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
     else:
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
-    if source_kind != "transcript":   # a pasted transcript is kept verbatim; the cast still shapes visuals
-        task += _cast_script_rule(channel)
+    # a pasted transcript is kept verbatim; the selection then only decides who plays in the visuals
+    task += _cast_selection_rule(channel, text, verbatim=source_kind == "transcript")
     revision = ""
     if feedback:
         revision = '\n\nThe user reviewed a previous draft and asked for these changes: "' + feedback + '"'
@@ -215,6 +249,7 @@ Return JSON with keys:
     plan = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
     for key in ("title", "narration", "style"):
         plan.setdefault(key, "")
+    plan["cast_chosen"] = _chosen(channel, plan.pop("characters", None))
     if not plan["narration"].strip():
         raise RuntimeError("vLLM returned an empty script")
     if config.SCRIPT_REVIEW:
@@ -240,22 +275,27 @@ def split_narration(narration: str, n: int) -> list:
 def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  kind: str = "voiceover narration", segments: list | None = None,
                  on_review_issue=None, channel: dict | None = None,
-                 opening: dict | None = None) -> list:
+                 opening: dict | None = None, used: list | None = None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
     segments: optional pre-computed per-clip text (e.g. whisper-timed lyrics); empty
     entries mean nothing is heard during that clip (instrumental/silence).
-    opening: the cast character whose portrait is clip 1's first frame, if any."""
+    opening: the cast character whose portrait is clip 1's first frame, if any.
+    used: the names of this video's cast (plan["cast_used"]); None = legacy plan, all cast."""
     if segments is None:
         segments = split_narration(narration, n)
     segments = (list(segments) + [""] * n)[:n]
     cast_rule = ""
     if cast.all_characters(channel):
-        mains = ", ".join(c["name"] for c in cast.main_characters(channel))
-        cast_rule = ("\nCAST: whenever a cast character is on screen, name them and describe them exactly as "
-                     "in the cast sheet (species/age, colours, clothes, marks)."
-                     + (f" The main character(s) {mains} should be on screen in most clips." if mains else ""))
+        in_video = cast.names(cast.all_characters(channel)) if used is None else list(used)
+        if in_video:
+            cast_rule = (f"\nCAST: only {', '.join(in_video)} appear in this video. Whenever one of them is on "
+                         "screen, name them and describe them exactly as in the cast sheet (species/age, "
+                         "colours, clothes, marks). Do not add any other cast member.")
+        else:
+            cast_rule = ("\nCAST: none of the channel's recurring characters appear in this video - do not "
+                         "add them.")
     first = "This is the FIRST clip of the video: establish the world."
     if opening:
         first = (f"This is the FIRST clip of the video. Its first frame is a fixed reference image of "
@@ -295,7 +335,8 @@ The soundtrack is a {kind}.
 {heard}
 {SCENE_RULES.format(secs=config.CLIP_SECONDS)}{cast_rule}
 Return JSON: {{"scene": "the scene prompt string"}}"""
-        out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+        out = _chat([{"role": "system", "content": _system(channel, used=used)},
+                     {"role": "user", "content": user}])
         scene = out.get("scene") or next(iter(_as_strings(out.get("scenes", []))), "")
         if isinstance(scene, dict):
             scene = scene.get("prompt", json.dumps(scene))
@@ -307,7 +348,7 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
                 on_progress(f"reviewing scene {i + 1}/{n}")
             scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
                                          prev_scene=scenes[-1] if scenes else "",
-                                         channel=channel)
+                                         channel=channel, used=used)
             if issues and on_review_issue:
                 on_review_issue(i + 1, issues)
         scenes.append(scene)
@@ -323,7 +364,7 @@ SAFETY_CHECKS = {
 
 def review_scene(scene: str, segment: str, style: str, i: int, n: int,
                  kind: str = "voiceover narration", prev_scene: str = "",
-                 channel: dict | None = None) -> tuple:
+                 channel: dict | None = None, used: list | None = None) -> tuple:
     """Second-pass review of one scene prompt against the audio it must match.
 
     Returns (corrected_scene, issues). Catches inconsistencies like a letter or object
@@ -350,7 +391,11 @@ Reframing may only happen through continuous camera motion within the clip."""
     safety = SAFETY_CHECKS[_channel(channel)["audience"]]
     if cast.all_characters(channel):
         safety += (" Cast characters keep their canonical name and look from the cast sheet; no unnamed "
-                   "substitute animals or kids where a cast character fits.")
+                   "substitute animals or kids where a cast character fits")
+        if used is not None:
+            safety += (f"; no cast members other than {', '.join(used)}" if used
+                       else "; none of the channel's cast members appear in this video")
+        safety += "."
     user = f"""You are reviewing a scene prompt for clip {i} of {n} of a video before it is rendered.
 Global visual style: {style}
 
@@ -369,7 +414,7 @@ Check strictly:
 If everything is correct, return the scene UNCHANGED. If there are issues, FIX them with the smallest
 possible edits, keeping everything else identical.
 Return JSON: {{"issues": ["short description of each issue found, empty list if none"], "scene": "the final scene prompt"}}"""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}],
+    out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}],
                 max_tokens=4000)
     fixed = str(out.get("scene") or "").strip()
     issues = [str(x) for x in (out.get("issues") or []) if str(x).strip()]
@@ -392,7 +437,8 @@ Script:
 
 Check strictly: factual slips, internal inconsistencies (e.g. a letter or item paired with the wrong
 word), ordering mistakes, {safety}, awkward phrasing that would sound wrong
-read aloud. If everything is correct, return the script UNCHANGED; otherwise fix it with minimal edits.
+read aloud{", stray cast names (only the characters that belong to this story appear)" if cast.all_characters(channel) else ""}.
+If everything is correct, return the script UNCHANGED; otherwise fix it with minimal edits.
 Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": "the final script"}}"""
     out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}],
                 max_tokens=4000)
@@ -405,7 +451,7 @@ Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": 
 
 def write_storyboard(title: str, narration: str, segments: list, n: int,
                      channel: dict | None = None, max_images: int | None = None,
-                     clip_seconds: float | None = None) -> list:
+                     clip_seconds: float | None = None, used: list | None = None) -> list:
     """Plan the on-screen story board cards: short facts/takeaways shown as styled text over
     the video, each tied to a range of clips, some with a related still image.
 
@@ -444,14 +490,15 @@ Return JSON: {{"cards": [{{"start_clip": 1, "end_clip": 1, "kicker": "...", "hea
 - "body": the supporting sentence (may be "" when the headline says it all).
 {img_rule}
 Never mention real people's names or brands."""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     cards = out.get("cards")
     if not isinstance(cards, list) or not cards:
         raise RuntimeError("vLLM returned no story board cards")
     return cards
 
 
-def write_seo(title: str, narration: str, transcript: str, channel: dict | None = None) -> dict:
+def write_seo(title: str, narration: str, transcript: str, channel: dict | None = None,
+              used: list | None = None) -> dict:
     """YouTube-ready SEO title and description for the generated video."""
     name = _channel(channel)["name"]
     user = f"""We produced a short AI-generated video titled "{title}".
@@ -466,7 +513,8 @@ Write YouTube upload metadata optimized for SEO and reach. Return JSON with keys
 - "seo_keywords": 5-8 search phrases people would type to find this video (the main topic first, then related and long-tail phrases).
 - "seo_description": a description of 2-3 short paragraphs (120-200 words total). The first sentence hooks and contains the main keyword. Work every keyword from "seo_keywords" into the text naturally, in the words a viewer would search for - repeat the main keyword 2-3 times, and never list keywords bare. End with a call-to-action inviting viewers to subscribe to "{name}", then a final line of 4-6 hashtags made from those keywords. Hashtags are all lowercase with no spaces, e.g. #spacefacts #kidslearning.
 Never mention that the video is AI-generated unless the content is about AI. Never mention real people's names or brands."""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+                 {"role": "user", "content": user}])
     return {"seo_title": str(out.get("seo_title", "")).strip()[:100],
             "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
 
@@ -479,14 +527,15 @@ def _lowercase_hashtags(text: str) -> str:
     return _HASHTAG.sub(lambda m: "#" + m.group(1).lower(), text)
 
 
-def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None) -> dict:
+def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None,
+                    used: list | None = None) -> dict:
     """A single-image prompt for an eye-catching YouTube thumbnail."""
     emotion = ("big expressive joyful emotion" if _channel(channel)["audience"] == "kids"
                else "strong expressive emotion")
-    mains = cast.main_characters(channel)
+    featured = cast.names(cast.main_characters(channel)) if used is None else list(used)
     subject = "the main character(s) and the key objects of the story"
-    if mains:
-        subject = (f"the channel's main character(s) {', '.join(c['name'] for c in mains)} - named and "
+    if featured:
+        subject = (f"the video's cast character(s) {', '.join(featured)} - named and "
                    "described exactly as in the cast sheet - with the key objects of the story")
     user = f"""We produced a short video titled "{title}".
 Its story: \"\"\"{narration[:1500]}\"\"\"
@@ -502,7 +551,7 @@ must INSTANTLY understand what the video is about. Return JSON with key:
   Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
 Never mention real people's names or brands."""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     tp = str(out.get("thumbnail_prompt", "")).strip()
     if not tp:
         raise RuntimeError("vLLM returned no thumbnail prompt")
@@ -520,7 +569,7 @@ def write_music(title: str, narration: str, transcript: str,
                 standalone: bool = False, seconds: float | None = None,
                 max_seconds: float | None = None,
                 seconds_range: tuple | None = None,
-                channel: dict | None = None) -> dict:
+                channel: dict | None = None, used: list | None = None) -> dict:
     """Caption + lyrics for the MiniMax Music3 model, derived from the video content.
 
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
@@ -587,7 +636,8 @@ Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
 - "lyrics": {lyrics_rule}
 Never mention real people's names or brands."""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+                 {"role": "user", "content": user}])
     if not out.get("caption"):
         raise RuntimeError("vLLM returned no music caption")
     out.setdefault("lyrics", "")

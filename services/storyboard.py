@@ -316,7 +316,7 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
             on_progress("planning the story board cards with vLLM")
         raw = llm.write_storyboard(plan.get("title", ""), plan.get("narration", ""),
                                    plan.get("segments") or [], n, channel=job.channel,
-                                   max_images=config.STORYBOARD_MAX_IMAGES)
+                                   max_images=config.STORYBOARD_MAX_IMAGES, used=plan.get("cast_used"))
         cards = normalize_cards(raw, n)
         plan["storyboard"] = cards
         if add_log:
@@ -338,7 +338,8 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
             on_progress(f"rendering story board image {i}/{len(cards)}")
         raw = d / f"sbimg_{i:02d}_raw.mp4"
         try:
-            prompt = (f"{plan.get('style', '')}\n\n{cast.with_prefix(job.channel, c['image_prompt'])}\n\n"
+            prompt = (f"{plan.get('style', '')}\n\n"
+                      f"{cast.with_prefix(job.channel, c['image_prompt'], only=plan.get('cast_used'))}\n\n"
                       "A single clean still image. No text, captions, letters, logos or watermarks.")
             wf = client.build_thumbnail(template, prompt, f"videogen/{job.id}/sbimg_{i:02d}",
                                         aspect_ratio=img_aspect)

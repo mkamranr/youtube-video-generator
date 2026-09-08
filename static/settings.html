@@ -70,6 +70,9 @@
         <label for="chPurpose">Purpose</label>
         <textarea id="chPurpose" placeholder="What this channel is about — its niche, tone and goals. Guides every generated script, e.g. 'Animated learning videos that teach preschoolers letters, numbers and nature.'"></textarea>
         <div class="hint" style="margin-top:4px">The audience preset sets the content-safety rules (kids = strictly gentle; family = no gore/explicit content; general = platform guidelines only). Real and Tech channels use a built-in realistic live-action look instead of an art style; Tech channels also get concrete, technically accurate scripts and the on-screen story board by default.</div>
+        <label for="chRules" style="margin-top:12px">Style &amp; rules</label>
+        <textarea id="chRules" rows="6" placeholder="Fixed visual style and story rules the LLM gets with every script and scene prompt, e.g. 'High-quality 3D animated cartoon style, soft rounded child-friendly proportions... Never redesign an established character...'. Import a character bible below to fill this in."></textarea>
+        <div class="hint" style="margin-top:4px">Optional. Sent as a fixed reference with every story and scene of this channel (max <span id="chRulesMax">6000</span> characters). When you import a character bible, its style, rules and checklist sections land here and its character sections become the cast below.</div>
         <label class="switch" style="margin-top:12px"><input type="checkbox" id="chKids"><span class="track"></span>
           Made for kids</label>
         <div class="hint">Uploads from this channel are self-declared as made for kids on YouTube (COPPA). Independent of the audience preset.</div>
@@ -108,11 +111,29 @@
         </div>
         <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Cast <span class="hint" style="font-weight:400">— recurring characters that appear across this channel's videos</span></label>
-          <div class="hint" style="margin:4px 0 10px">Give each character a name and a precise look (species or age, colours, size, clothes, accessories, distinguishing marks). The look is repeated to the script writer and to the video model for every scene the character is in. Main characters star in every video; supporting ones appear when the story calls for them. Approve a reference portrait per character: it is used as the first frame of clip 1 so every video opens on the real character.</div>
+          <div class="hint" style="margin:4px 0 10px">Give each character a name and a precise look (species or age, colours, size, clothes, accessories, distinguishing marks). Not every character is in every video: the LLM picks the 1-3 the story needs — name them in your topic to decide yourself, e.g. "Use Finn as the main character and Pip as the supporting character". Main = usual protagonists, supporting = when the story calls for them. The look is repeated to the script writer and to the video model for every scene the character is in. Approve a reference portrait per character: the first character of the story that has one becomes the first frame of clip 1.</div>
           <label class="switch"><input type="checkbox" id="chCastOpening" checked><span class="track"></span>
-            Open every video on the main character (portrait = first frame of clip 1)</label>
+            Open each video on its first story character that has an approved portrait (first frame of clip 1)</label>
           <div id="chCastList" style="margin-top:10px"></div>
-          <button class="btn secondary sm" id="chCastAdd" type="button" style="margin-top:8px">Add character</button>
+          <div class="row" style="margin-top:8px">
+            <button class="btn secondary sm" id="chCastAdd" type="button">Add character</button>
+            <button class="btn secondary sm" id="chBibleToggle" type="button">Import character bible…</button>
+          </div>
+          <div id="chBiblePanel" class="bible-panel" hidden>
+            <label for="chBibleText" style="font-weight:600">Character bible (markdown)</label>
+            <div class="hint" style="margin:2px 0 6px">Paste the whole document: <code>## </code> sections for style, rules and checklists, and one <code>### Name</code> block per character with <code>- **Kind:**</code>, <code>- **Role:**</code>, <code>- **Precise look:**</code>, <code>- **Clothes:**</code>, <code>- **Accessories:**</code>, <code>- **Distinguishing marks:**</code>, <code>- **Personality:**</code> bullets. A "scene prompt format" section is ignored (this app has its own).</div>
+            <textarea id="chBibleText" rows="10" placeholder="# My Channel — Character Bible&#10;&#10;## 1. Global visual style&#10;- ...&#10;&#10;## 3. Established character cast&#10;### Finn&#10;- **Kind:** 5-year-old anthropomorphic red fox&#10;- **Role:** Main&#10;- **Precise look:** ...&#10;- **Clothes:** ...&#10;- **Distinguishing marks:** ...&#10;- **Personality:** ..."></textarea>
+            <div class="row" style="margin-top:8px;align-items:center">
+              <button class="btn sm" id="chBibleParse" type="button">Parse</button>
+              <button class="btn sm" id="chBibleApply" type="button" disabled>Apply to this channel</button>
+              <button class="btn secondary sm" id="chBibleCancel" type="button">Close</button>
+            </div>
+            <div class="row" style="margin-top:8px;gap:18px">
+              <label class="switch"><input type="checkbox" id="chBibleReplaceRules" checked><span class="track"></span> Replace Style &amp; rules</label>
+              <label class="switch"><input type="checkbox" id="chBibleUpdateExisting" checked><span class="track"></span> Update look, kind and role of existing characters with the same name (portraits are kept)</label>
+            </div>
+            <div class="hint" id="chBiblePreview" style="margin-top:8px"></div>
+          </div>
         </div>
         <div class="row" style="margin-top:12px;align-items:center">
           <span class="hint" id="chSecretState"></span>
@@ -499,7 +520,7 @@ async function refreshChannels() {
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
         <b style="min-width:140px">${esc(c.name)}</b>
         ${(c.cast || []).filter(x => x.has_portrait).map(x => `<img class="cast-mini" src="/api/channels/${esc(c.id)}/cast/${esc(x.id)}/portrait?v=${Date.now()}" alt="" title="${esc(x.name)}">`).join("")}
-        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${(c.cast || []).length ? " " + chBadge(`cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${(c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
         <div class="spacer"></div>
         ${(c.has_secret || chData.secret) ? (c.yt_connected
@@ -537,6 +558,9 @@ async function chOpen(c) {
   const d = (c && c.defaults) || {};
   $("#chName").value = c ? c.name : "";
   $("#chPurpose").value = c ? c.purpose : "";
+  $("#chRules").value = c ? (c.rules || "") : "";
+  $("#chRulesMax").textContent = chData.max_rules_chars || 6000;
+  chBibleReset();
   $("#chAudience").value = c ? c.audience : "kids";
   $("#chVideoType").value = c ? c.video_type : "animated";
   $("#chKids").checked = c ? !!c.made_for_kids : $("#chAudience").value === "kids";
@@ -594,7 +618,7 @@ function chCastRender() {
           <input type="text" class="cast-name" placeholder="Name, e.g. Ellie" value="${esc(c.name || "")}" style="max-width:170px">
           <input type="text" class="cast-kind" placeholder="Kind, e.g. baby elephant / 6-year-old girl" value="${esc(c.kind || "")}" style="max-width:260px">
           <select class="cast-role" style="max-width:190px">
-            <option value="main" ${c.role !== "supporting" ? "selected" : ""}>Main — in every video</option>
+            <option value="main" ${c.role !== "supporting" ? "selected" : ""}>Main — usual protagonist</option>
             <option value="supporting" ${c.role === "supporting" ? "selected" : ""}>Supporting</option>
           </select>
         </div>
@@ -615,11 +639,73 @@ function chCastRender() {
 
 $("#chCastAdd").onclick = () => {
   chCastSync();
-  if (chCast.length >= 8) { toast("At most 8 characters per channel", true); return; }
+  const max = chData.max_cast || 24;
+  if (chCast.length >= max) { toast(`At most ${max} characters per channel`, true); return; }
   chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main", look: "", personality: "", has_portrait: false });
   chCastRender();
   const rows = document.querySelectorAll("#chCastList .cast-row");
   rows[rows.length - 1].querySelector(".cast-name").focus();
+};
+
+// ---- character bible import (parsed server-side, merged here, saved with the channel) ----
+let chBibleParsed = null;
+
+function chBibleReset() {
+  chBibleParsed = null;
+  $("#chBiblePanel").hidden = true;
+  $("#chBibleText").value = "";
+  $("#chBiblePreview").innerHTML = "";
+  $("#chBibleApply").disabled = true;
+}
+
+$("#chBibleToggle").onclick = () => {
+  const p = $("#chBiblePanel");
+  p.hidden = !p.hidden;
+  if (!p.hidden) $("#chBibleText").focus();
+};
+$("#chBibleCancel").onclick = chBibleReset;
+
+$("#chBibleParse").onclick = async () => {
+  const md = $("#chBibleText").value;
+  if (!md.trim()) { toast("Paste the character bible first", true); return; }
+  try {
+    chBibleParsed = await api("/api/channels/parse-bible",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ markdown: md }) });
+  } catch (e) { toast(e.message, true); return; }
+  chCastSync();
+  const existing = new Set(chCast.map(c => (c.name || "").toLowerCase()));
+  const p = chBibleParsed, mains = p.cast.filter(c => c.role !== "supporting").length;
+  const names = p.cast.map(c => existing.has(c.name.toLowerCase())
+    ? `${esc(c.name)} <i>(existing — keeps its portrait)</i>` : esc(c.name)).join(", ");
+  $("#chBiblePreview").innerHTML =
+    `Parsed <b>${p.cast.length}</b> character${p.cast.length === 1 ? "" : "s"} (${mains} main, ${p.cast.length - mains} supporting): ${names || "none"}.<br>`
+    + `Style &amp; rules: ${p.rules ? `${p.rules.split("\n").length} lines from ${esc(p.sections.join(", "))}` : "none found"}.`
+    + (p.warnings.length ? `<br><span class="warn">${p.warnings.map(esc).join("<br>")}</span>` : "")
+    + `<br>Nothing is saved yet — Apply, review the characters, then save the channel.`;
+  $("#chBibleApply").disabled = !(p.cast.length || p.rules);
+};
+
+$("#chBibleApply").onclick = () => {
+  if (!chBibleParsed) return;
+  chCastSync();
+  const max = chData.max_cast || 24, update = $("#chBibleUpdateExisting").checked;
+  let added = 0, updated = 0, skipped = 0;
+  for (const pc of chBibleParsed.cast) {
+    const cur = chCast.find(c => (c.name || "").toLowerCase() === pc.name.toLowerCase());
+    if (cur) {
+      if (update) { Object.assign(cur, { kind: pc.kind, role: pc.role, look: pc.look, personality: pc.personality }); updated++; }
+    } else if (chCast.length >= max) {
+      skipped++;
+    } else {
+      chCast.push({ id: "", ...pc, has_portrait: false });
+      added++;
+    }
+  }
+  if (chBibleParsed.rules && ($("#chBibleReplaceRules").checked || !$("#chRules").value.trim()))
+    $("#chRules").value = chBibleParsed.rules;
+  chCastRender();
+  toast(`Bible applied: ${added} added, ${updated} updated${skipped ? `, ${skipped} skipped (max ${max} characters)` : ""} — review, then save the channel`);
+  chBibleReset();
 };
 
 function chCastRemove(i) {
@@ -635,6 +721,7 @@ function chBody() {
   return {
     name: $("#chName").value.trim(),
     purpose: $("#chPurpose").value.trim(),
+    rules: $("#chRules").value.trim(),
     audience: $("#chAudience").value,
     video_type: $("#chVideoType").value,
     made_for_kids: $("#chKids").checked,

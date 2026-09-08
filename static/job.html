@@ -82,6 +82,7 @@
     <input type="text" id="apTitle">
     <label for="apScript" style="margin-top:12px">Script</label>
     <textarea id="apScript" style="min-height:220px"></textarea>
+    <div class="hint" id="apCast" style="margin-top:6px" hidden></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="approveBtn">Approve &amp; generate video</button>
       <button class="btn secondary" id="redraftBtn">Request new draft</button>
@@ -260,6 +261,14 @@ async function loadDetails(j) {
     $("#apScript").value = d.plan.narration || "";
   }
   if (d.plan) {
+    if (Array.isArray(d.plan.cast_used)) {
+      castFromPlan = true;
+      $("#castLabel").textContent = d.plan.cast_used.length ? "cast: " + d.plan.cast_used.join(", ") : "cast: none";
+      $("#apCast").hidden = false;
+      $("#apCast").textContent = (d.plan.cast_used.length
+        ? "Characters in this draft: " + d.plan.cast_used.join(", ")
+        : "No recurring cast character is in this draft") + " — the cast is re-detected from the final text when you approve.";
+    }
     if (d.plan.seo_title || d.plan.seo_description) {
       $("#seoSec").hidden = false;
       $("#seoTitle").textContent = d.plan.seo_title || "";
@@ -282,6 +291,7 @@ async function loadDetails(j) {
 }
 
 let lastJob = null;
+let castFromPlan = false;   // once the plan names this video's cast, the roster fallback stops overwriting it
 
 function renderStoryboard(cards, j) {
   const show = Array.isArray(cards) && cards.length && (j.storyboard || (j.files || []).some(f => f.startsWith("card_")));
@@ -397,8 +407,11 @@ function update(j) {
       + (t.length > 70 ? t.slice(0, 70) + "…" : t);
   }
   $("#channelLabel").textContent = (j.channel && j.channel.name) || "";
-  $("#castLabel").textContent = (j.channel && j.channel.cast && j.channel.cast.length)
-    ? "cast: " + j.channel.cast.map(c => c.name + (c.role === "supporting" ? "" : " (main)")).join(", ") : "";
+  if (!castFromPlan) {   // before the script exists: the channel's roster the story will be cast from
+    const roster = (j.channel && j.channel.cast) || [];
+    $("#castLabel").textContent = roster.length
+      ? (roster.length > 6 ? `cast roster: ${roster.length} characters` : "cast roster: " + roster.map(c => c.name).join(", ")) : "";
+  }
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";

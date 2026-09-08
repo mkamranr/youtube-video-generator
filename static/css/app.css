@@ -378,6 +378,10 @@ input[type=password]:focus, input[type=email]:focus { outline: none; border-colo
   border: 2px solid var(--line); }
 .cast-cands img:hover { border-color: var(--accent, var(--fg)); }
 .cast-mini { width: 34px; height: 34px; object-fit: cover; border-radius: 50%; border: 1px solid var(--line); }
+.bible-panel { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; background: var(--surface-2); }
+.bible-panel textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.bible-panel code { font-size: 11px; }
+.bible-panel .warn { color: var(--danger, #c0392b); }
 
 /* ---- status filter chips ---- */
 .notice { border: 1px solid var(--line); border-radius: 10px; padding: 9px 14px; margin: 0 0 14px;

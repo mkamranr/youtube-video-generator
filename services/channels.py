@@ -2,8 +2,8 @@
 defaults, an optional logo and its own YouTube OAuth token.
 
 The channel decides how content is generated (tone/safety rules via the audience preset,
-animated / realistic / tech look via video_type, prompt framing via the purpose text, the
-story-board overlay default) and which
+animated / realistic / tech look via video_type, prompt framing via the purpose text and the
+fixed style & rules text, the recurring cast, the story-board overlay default) and which
 YouTube account the finished video is uploaded to. Index: channels/channels.json;
 per-channel files: channels/<id>_logo.png, channels/<id>_yt_token.json and the cast
 portraits channels/<id>_cast_<char>.png (see services/cast.py).
@@ -21,7 +21,8 @@ _lock = threading.Lock()
 
 MAX_NAME_CHARS = 80
 MAX_PURPOSE_CHARS = 2000
-MAX_CAST = 8                  # recurring characters per channel
+MAX_RULES_CHARS = 6000        # channel style & rules text (e.g. the non-character sections of a character bible)
+MAX_CAST = 24                 # recurring characters per channel (the LLM picks the ones each story needs)
 MAX_CAST_NAME_CHARS = 40
 MAX_CAST_KIND_CHARS = 60
 CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: detail helps consistency
@@ -40,6 +41,7 @@ def _read_index() -> dict:
                     c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
                     c.setdefault("cast", [])
                     c.setdefault("cast_opening", True)
+                    c.setdefault("rules", "")
             return data
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
@@ -95,7 +97,7 @@ def _remove_character_files(cid: str, char_id: str):
 def snapshot(rec: dict) -> dict:
     """The subset of a channel frozen onto each job, so prompts stay stable even if the
     channel is edited or deleted while the job is queued."""
-    return {"name": rec["name"], "purpose": rec["purpose"],
+    return {"name": rec["name"], "purpose": rec["purpose"], "rules": str(rec.get("rules") or ""),
             "audience": rec["audience"], "video_type": rec["video_type"],
             "made_for_kids": rec.get("made_for_kids", rec["audience"] == "kids"),
             "cast": [dict(c) for c in rec.get("cast") or []],
@@ -139,17 +141,17 @@ def _validate_cast(items, base_cast: list) -> list:
 
 def _validate(data: dict, base: dict | None = None) -> dict:
     """Merge data over base (or built-in defaults) and validate every field."""
-    rec = {"name": "", "purpose": "", "audience": "general", "video_type": "animated",
+    rec = {"name": "", "purpose": "", "rules": "", "audience": "general", "video_type": "animated",
            "made_for_kids": False, "cast": [], "cast_opening": True,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None}}
     if base:
-        for k in ("name", "purpose", "audience", "video_type", "made_for_kids", "cast", "cast_opening"):
+        for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast", "cast_opening"):
             if k in base:
                 rec[k] = base[k]
         rec["defaults"].update(base.get("defaults") or {})
-    for k in ("name", "purpose", "audience", "video_type"):
+    for k in ("name", "purpose", "rules", "audience", "video_type"):
         if k in data:
             rec[k] = str(data[k] or "").strip()
     if "made_for_kids" in data:
@@ -169,6 +171,8 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         raise ValueError(f"name must be 1-{MAX_NAME_CHARS} characters")
     if len(rec["purpose"]) > MAX_PURPOSE_CHARS:
         raise ValueError(f"purpose must be at most {MAX_PURPOSE_CHARS} characters")
+    if len(rec["rules"]) > MAX_RULES_CHARS:
+        raise ValueError(f"rules must be at most {MAX_RULES_CHARS} characters")
     if rec["audience"] not in config.AUDIENCES:
         raise ValueError(f"audience must be one of {config.AUDIENCES}")
     if rec["video_type"] not in config.VIDEO_TYPES:

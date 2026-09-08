@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, cast, channels, schedule, users, voices
+from services import auth, bible, cast, channels, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -580,7 +580,30 @@ def list_channels_api():
             "audiences": config.AUDIENCES, "video_types": config.VIDEO_TYPES,
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
             "art_styles": list(config.ART_STYLES), "aspect_ratios": config.ASPECT_RATIOS,
-            "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES}
+            "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES,
+            "max_cast": channels.MAX_CAST, "max_rules_chars": channels.MAX_RULES_CHARS}
+
+
+class BibleBody(BaseModel):
+    markdown: str
+
+
+@app.post("/api/channels/parse-bible")
+def parse_bible_api(body: BibleBody):
+    """Preview a pasted character bible (markdown) as channel data: {rules, cast, sections,
+    warnings}. Nothing is stored - the Settings page merges the result into the channel being
+    edited and the user saves through PUT /api/channels/{id}."""
+    if len(body.markdown) > 200_000:
+        raise HTTPException(400, "bible too large (max 200 KB)")
+    out = bible.parse_bible(body.markdown, channels.MAX_CAST_KIND_CHARS, channels.MAX_CAST_NAME_CHARS)
+    if not out["cast"] and not out["rules"]:
+        raise HTTPException(400, "no character sections (### Name with - **Look:** bullets) or rule sections found")
+    if len(out["rules"]) > channels.MAX_RULES_CHARS:
+        out["rules"] = out["rules"][: channels.MAX_RULES_CHARS].rstrip()
+        out["warnings"].append(f"style & rules text trimmed to {channels.MAX_RULES_CHARS} characters")
+    if len(out["cast"]) > channels.MAX_CAST:
+        out["warnings"].append(f"{len(out['cast'])} characters found; a channel holds at most {channels.MAX_CAST}")
+    return out
 
 
 @app.post("/api/channels")

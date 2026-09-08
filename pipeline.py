@@ -32,7 +32,7 @@ class Job:
     source: str = "youtube"         # youtube | topic | description | transcript
     topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
-    channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, audience, video_type}
+    channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     script_approved: bool = False
     status: str = "queued"          # queued|transcript|planning|tts|scenes|music|storyboard|clips|assembling|done|failed
@@ -183,7 +183,7 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     d = job.dir
     scene = plan['scenes'][i - 1]
     # cast characters named in the scene get their canonical look prepended (deterministic branding)
-    prompt = f"{plan['style']}\n\n{cast.with_prefix(job.channel, scene)}".strip()
+    prompt = f"{plan['style']}\n\n{cast.with_prefix(job.channel, scene, only=plan.get('cast_used'))}".strip()
     first_frame = None
     opening = plan.get("opening") if i == 1 else None
     if i > 1:
@@ -232,6 +232,22 @@ def _load_plan(job: Job) -> dict:
 
 def _save_plan(job: Job, plan: dict):
     (job.dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+
+
+def _set_cast_used(job: Job, plan: dict) -> list:
+    """plan["cast_used"]: the channel characters that are in this video, in first-mention order.
+
+    Every roster name found in the final title/narration counts. The names the script writer
+    reported choosing ("cast_chosen") are added when the text itself names nobody - a pasted
+    transcript never mentions who plays in the visuals, and a script may say "the little fox"
+    without naming Finn - otherwise the text (which the user may have edited) is the authority."""
+    used = cast.names(cast.used_characters(job.channel, plan.get("title", ""), plan.get("narration", "")))
+    if not used or job.source == "transcript":
+        for n in plan.get("cast_chosen") or []:
+            if n not in used:
+                used.append(n)
+    plan["cast_used"] = used
+    return used
 
 
 def _storyboard_assets(job: Job, plan: dict, n: int):
@@ -389,11 +405,13 @@ def _run(job: Job):
                                    art_style=config.ART_STYLES.get(job.art_style, ""),
                                    channel=job.channel)
     plan["audio_mode"] = mode
+    if "cast_used" not in plan and cast.all_characters(job.channel):   # URL jobs and pre-selection plans
+        job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
     if not plan.get("seo_title"):
         job.set("planning", "writing SEO title and description")
         try:
             plan.update(llm.write_seo(plan.get("title", ""), plan["narration"], text,
-                                      channel=job.channel))
+                                      channel=job.channel, used=plan.get("cast_used")))
             job.add_log(f"seo title: {plan.get('seo_title', '')}")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"seo metadata failed ({e}); continuing without it")
@@ -419,7 +437,7 @@ def _run(job: Job):
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
                                          standalone=True, seconds=l_target,
                                          max_seconds=l_max, seconds_range=l_range,
-                                         channel=job.channel)
+                                         channel=job.channel, used=plan.get("cast_used"))
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         if (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
@@ -482,9 +500,9 @@ def _run(job: Job):
 
     # 4. scenes: one per audio segment so each clip matches what is heard
     _check_cancel(job)
-    # cast: the main character's approved portrait becomes clip 1's first frame (resumable)
+    # cast: the first story character with an approved portrait opens clip 1 (resumable)
     if not (d / "cast_opening.jpg").exists():
-        oc = cast.opening_character(job.channel, job.channel_id)
+        oc = cast.opening_character(job.channel, job.channel_id, used=plan.get("cast_used"))
         if oc is not None:
             try:
                 ow, oh = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
@@ -504,7 +522,7 @@ def _run(job: Job):
             job.add_log(f"review fixed scene {idx}: " + "; ".join(issues)[:160])
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
                                           on_progress=scene_progress, on_review_issue=review_issue,
-                                          channel=job.channel,
+                                          channel=job.channel, used=plan.get("cast_used"),
                                           opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
@@ -521,13 +539,13 @@ def _run(job: Job):
             job.set("thumbnail", "designing the thumbnail with vLLM")
             if not plan.get("thumbnail_prompt"):
                 plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
-                                                channel=job.channel))
+                                                channel=job.channel, used=plan.get("cast_used")))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
             tclient = comfy.ComfyClient()
             twf = tclient.build_thumbnail(tclient.load_workflow(config.T2V_WORKFLOW),
-                                          f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'])}",
+                                          f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'], only=plan.get('cast_used'))}",
                                           f"videogen/{job.id}/thumb",
                                           aspect_ratio=job.aspect_ratio)
             traw = tclient.run(twf, d / "thumb_raw.mp4", on_progress=_progress(job, "thumbnail"),
@@ -549,7 +567,7 @@ def _run(job: Job):
         try:
             job.set("music", "writing music caption and lyrics with vLLM")
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
-                                         channel=job.channel)
+                                         channel=job.channel, used=plan.get("cast_used"))
             music_plan["lyrics"] = "[Instrumental]"  # background bed: never sing over the narration
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -895,6 +913,13 @@ class JobManager:
                 words=_length_params(job)[0], feedback=feedback, previous=previous,
                 channel=job.channel)
             plan["audio_mode"] = job.audio_mode
+            if cast.all_characters(job.channel):
+                used = _set_cast_used(job, plan)
+                job.add_log("cast in this story: " + (", ".join(used) or "none"))
+                missing = [n for n in cast.names(cast.used_characters(job.channel, job.topic)) if n not in used]
+                if missing:
+                    job.add_log(f"note: the request named {', '.join(missing)} but the draft does not - "
+                                "edit the script or request a new draft")
             job.dir.mkdir(parents=True, exist_ok=True)
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("awaiting_approval", "script ready - review and approve",
@@ -918,6 +943,8 @@ class JobManager:
                 plan["title"] = title.strip()
             if narration and narration.strip():
                 plan["narration"] = narration.strip()
+            if cast.all_characters(job.channel):   # the user may have written characters in or out
+                job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("queued", "script approved - waiting for video generation",
                     title=plan.get("title", ""), script_approved=True)
@@ -1000,13 +1027,14 @@ class JobManager:
             plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
             job.set("thumbnail", "designing a new thumbnail with vLLM")
             plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
-                                            plan.get("style", ""), channel=job.channel))
+                                            plan.get("style", ""), channel=job.channel,
+                                            used=plan.get("cast_used")))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")
             client = comfy.ComfyClient()
             twf = client.build_thumbnail(client.load_workflow(config.T2V_WORKFLOW),
-                                         f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'])}",
+                                         f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'], only=plan.get('cast_used'))}",
                                          f"videogen/{job.id}/thumb",
                                          aspect_ratio=job.aspect_ratio)
             traw = client.run(twf, d / "thumb_raw.mp4",
