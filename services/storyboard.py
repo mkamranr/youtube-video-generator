@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 import config
-from services import llm, video
+from services import cast, llm, video
 
 CARD_FADE = 0.5      # seconds of alpha fade in/out per card
 CARD_INSET = 0.35    # seconds a card stays clear of the clip cut on each side
@@ -338,7 +338,7 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
             on_progress(f"rendering story board image {i}/{len(cards)}")
         raw = d / f"sbimg_{i:02d}_raw.mp4"
         try:
-            prompt = (f"{plan.get('style', '')}\n\n{c['image_prompt']}\n\n"
+            prompt = (f"{plan.get('style', '')}\n\n{cast.with_prefix(job.channel, c['image_prompt'])}\n\n"
                       "A single clean still image. No text, captions, letters, logos or watermarks.")
             wf = client.build_thumbnail(template, prompt, f"videogen/{job.id}/sbimg_{i:02d}",
                                         aspect_ratio=img_aspect)

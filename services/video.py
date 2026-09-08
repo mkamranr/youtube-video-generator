@@ -61,6 +61,21 @@ def last_frame(video: Path, out_jpg: Path) -> Path:
     return out_jpg
 
 
+def fit_image(src: Path, out_jpg: Path, width: int, height: int) -> Path:
+    """Cover-scale and centre-crop a still image to width x height, saved as JPG
+    (used to fit a cast portrait to the job's aspect before seeding clip 1)."""
+    from PIL import Image
+    out_jpg = Path(out_jpg)
+    out_jpg.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.open(src).convert("RGB")
+    scale = max(width / img.width, height / img.height)
+    img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))),
+                     Image.LANCZOS)
+    left, top = (img.width - width) // 2, (img.height - height) // 2
+    img.crop((left, top, left + width, top + height)).save(out_jpg, "JPEG", quality=94)
+    return out_jpg
+
+
 def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 720,
                    logo: Path | None = None) -> Path:
     """First frame of the video, cover-cropped to width x height; optionally overlays the

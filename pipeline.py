@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import channels, comfy, llm, lyrics, schedule, storyboard, transcript, tts, video
+from services import cast, channels, comfy, llm, lyrics, schedule, storyboard, transcript, tts, video
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
@@ -181,8 +181,11 @@ def run_job(job: Job):
 def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, label: str):
     """Render clip i from its scene prompt; i > 1 is seeded with clip i-1's last frame."""
     d = job.dir
-    prompt = f"{plan['style']}\n\n{plan['scenes'][i - 1]}".strip()
+    scene = plan['scenes'][i - 1]
+    # cast characters named in the scene get their canonical look prepended (deterministic branding)
+    prompt = f"{plan['style']}\n\n{cast.with_prefix(job.channel, scene)}".strip()
     first_frame = None
+    opening = plan.get("opening") if i == 1 else None
     if i > 1:
         frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
         first_frame = client.upload_image(frame, f"videogen_{job.id}_frame_{i - 1:02d}.jpg")
@@ -190,6 +193,12 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
         prompt += ("\n\nThe video starts exactly at the provided first frame, mid-action: continue that "
                    "ongoing motion smoothly in one unbroken shot - no cut, no scene change, no camera "
                    "jump at the start.")
+    elif opening and (d / "cast_opening.jpg").exists():
+        # clip 1 opens on the channel's main character: its approved portrait is the first frame
+        first_frame = client.upload_image(d / "cast_opening.jpg", f"videogen_{job.id}_cast.jpg")
+        prompt += (f"\n\nThe video starts exactly at the provided first frame, which shows {opening['name']} "
+                   f"({opening.get('look', '')}). Bring that image to life from the very first moment and keep "
+                   f"{opening['name']}'s exact appearance throughout - no cut or scene change at the start.")
     template = t2v if first_frame is None else i2v
 
     def progress(msg):
@@ -473,6 +482,17 @@ def _run(job: Job):
 
     # 4. scenes: one per audio segment so each clip matches what is heard
     _check_cancel(job)
+    # cast: the main character's approved portrait becomes clip 1's first frame (resumable)
+    if not (d / "cast_opening.jpg").exists():
+        oc = cast.opening_character(job.channel, job.channel_id)
+        if oc is not None:
+            try:
+                ow, oh = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
+                video.fit_image(channels.portrait_path(job.channel_id, oc["id"]), d / "cast_opening.jpg", ow, oh)
+                plan["opening"] = {"name": oc["name"], "look": oc.get("look", "")}
+                job.add_log(f"opening frame: {oc['name']}'s portrait")
+            except Exception as e:  # noqa: BLE001 - fall back to text-to-video for clip 1
+                job.add_log(f"cast portrait unusable ({e}); clip 1 starts from text")
     if len(plan.get("scenes") or []) == n:
         job.add_log("resume: reusing scene prompts")
     else:
@@ -484,7 +504,8 @@ def _run(job: Job):
             job.add_log(f"review fixed scene {idx}: " + "; ".join(issues)[:160])
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
                                           on_progress=scene_progress, on_review_issue=review_issue,
-                                          channel=job.channel)
+                                          channel=job.channel,
+                                          opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -506,7 +527,7 @@ def _run(job: Job):
             job.set("thumbnail", "rendering the thumbnail frame")
             tclient = comfy.ComfyClient()
             twf = tclient.build_thumbnail(tclient.load_workflow(config.T2V_WORKFLOW),
-                                          f"{plan['style']}\n\n{plan['thumbnail_prompt']}",
+                                          f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'])}",
                                           f"videogen/{job.id}/thumb",
                                           aspect_ratio=job.aspect_ratio)
             traw = tclient.run(twf, d / "thumb_raw.mp4", on_progress=_progress(job, "thumbnail"),
@@ -574,7 +595,9 @@ def _run(job: Job):
         prev_clip = dest
         job.clips.append(dest.name)
         job.set(clips_done=i)
-        job.add_log(f"clip {i}/{n} done ({'text-to-video' if i == 1 else 'first-frame'})")
+        how = ("first-frame (cast portrait)" if i == 1 and plan.get("opening") and (d / "cast_opening.jpg").exists()
+               else "text-to-video" if i == 1 else "first-frame")
+        job.add_log(f"clip {i}/{n} done ({how})")
 
     _check_cancel(job)
     # 8. assemble
@@ -977,13 +1000,13 @@ class JobManager:
             plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
             job.set("thumbnail", "designing a new thumbnail with vLLM")
             plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
-                                            plan.get("style", "")))
+                                            plan.get("style", ""), channel=job.channel))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")
             client = comfy.ComfyClient()
             twf = client.build_thumbnail(client.load_workflow(config.T2V_WORKFLOW),
-                                         f"{plan['style']}\n\n{plan['thumbnail_prompt']}",
+                                         f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'])}",
                                          f"videogen/{job.id}/thumb",
                                          aspect_ratio=job.aspect_ratio)
             traw = client.run(twf, d / "thumb_raw.mp4",

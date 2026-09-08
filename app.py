@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, channels, schedule, users, voices
+from services import auth, cast, channels, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -522,7 +522,9 @@ def _channel_json(c: dict) -> dict:
     from services import youtube
     return {**c, "has_logo": channels.logo_path(c["id"]).exists(),
             "has_secret": channels.secret_path(c["id"]).exists(),
-            "yt_connected": youtube.is_connected(channels.token_path(c["id"]))}
+            "yt_connected": youtube.is_connected(channels.token_path(c["id"])),
+            "cast": [{**x, "has_portrait": channels.portrait_path(c["id"], x["id"]).exists()}
+                     for x in (c.get("cast") or []) if x.get("id")]}
 
 
 def _channel_secret(cid: str):
@@ -648,6 +650,95 @@ def get_channel_logo(cid: str):
     if not p.exists():
         raise HTTPException(404, "no logo uploaded for this channel")
     return FileResponse(p, media_type="image/png")
+
+
+# ---- channel cast portraits -------------------------------------------------
+def _cast_member(cid: str, char_id: str) -> dict:
+    ch = channels.get_channel(cid)
+    if not ch:
+        raise HTTPException(404, "unknown channel")
+    c = next((x for x in (ch.get("cast") or []) if x.get("id") == char_id), None)
+    if c is None:
+        raise HTTPException(404, "unknown cast character")
+    return c
+
+
+class CastGenerate(BaseModel):
+    count: int = 3
+
+
+class CastApprove(BaseModel):
+    k: int
+
+
+@app.get("/api/channels/{cid}/cast/{char_id}/portrait")
+def get_cast_portrait(cid: str, char_id: str):
+    p = channels.portrait_path(cid, char_id)
+    if not p.exists():
+        raise HTTPException(404, "no portrait for this character")
+    return FileResponse(p, media_type="image/png")
+
+
+@app.post("/api/channels/{cid}/cast/{char_id}/portrait")
+async def upload_cast_portrait(cid: str, char_id: str, file: UploadFile):
+    """Upload a reference portrait (any image; stored as PNG, downscaled to <=1280 px wide)."""
+    _cast_member(cid, char_id)
+    from PIL import Image
+    import io as _io
+    data = await file.read()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(400, "image too large (max 8 MB)")
+    try:
+        img = Image.open(_io.BytesIO(data))
+        img.load()
+        img = img.convert("RGB")
+    except Exception:
+        raise HTTPException(400, "not a valid image file")
+    if img.width > 1280:
+        img = img.resize((1280, max(1, int(img.height * 1280 / img.width))), Image.LANCZOS)
+    config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+    img.save(channels.portrait_path(cid, char_id), "PNG")
+    return {"ok": True, "size": [img.width, img.height]}
+
+
+@app.delete("/api/channels/{cid}/cast/{char_id}/portrait")
+def delete_cast_portrait(cid: str, char_id: str):
+    channels.portrait_path(cid, char_id).unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.post("/api/channels/{cid}/cast/{char_id}/portrait/generate")
+def generate_cast_portrait(cid: str, char_id: str, body: CastGenerate | None = None):
+    """Render portrait candidates with ComfyUI in the channel's art style (background thread)."""
+    _cast_member(cid, char_id)
+    if not cast.start_candidates(cid, char_id, (body or CastGenerate()).count):
+        raise HTTPException(409, "portrait generation is already running for this character")
+    return {"started": True}
+
+
+@app.get("/api/channels/{cid}/cast/{char_id}/portrait/candidates")
+def cast_portrait_candidates(cid: str, char_id: str):
+    st = cast.candidates_state(cid, char_id)
+    st["candidates"] = [f"/api/channels/{cid}/cast/{char_id}/portrait/candidate/{k}" for k in st["candidates"]]
+    return st
+
+
+@app.get("/api/channels/{cid}/cast/{char_id}/portrait/candidate/{k}")
+def cast_portrait_candidate(cid: str, char_id: str, k: int):
+    p = channels.candidate_path(cid, char_id, k)
+    if not p.exists():
+        raise HTTPException(404, "candidate not found")
+    return FileResponse(p, media_type="image/jpeg")
+
+
+@app.post("/api/channels/{cid}/cast/{char_id}/portrait/approve")
+def approve_cast_portrait(cid: str, char_id: str, body: CastApprove):
+    _cast_member(cid, char_id)
+    try:
+        cast.approve_candidate(cid, char_id, body.k)
+    except FileNotFoundError:
+        raise HTTPException(404, "candidate not found")
+    return {"ok": True}
 
 
 # ---- reference voices ------------------------------------------------------

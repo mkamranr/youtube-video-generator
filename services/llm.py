@@ -11,6 +11,7 @@ import sys
 from openai import OpenAI
 
 import config
+from services import cast
 
 AUDIENCE_RULES = {
     "kids": ("All content must be family-friendly, gentle and safe for young kids: no violence, "
@@ -64,7 +65,18 @@ def _system(channel: dict | None = None) -> str:
             f'use "{ch["name"]}" instead wherever a name is called for, and mention the '
             "channel naturally only where it fits (intros, outros, sign-offs), without forcing it "
             "into every line. "
-            "Always answer with a single JSON object and nothing else.")
+            + cast.sheet_text(ch)
+            + "Always answer with a single JSON object and nothing else.")
+
+
+def _cast_script_rule(channel: dict | None) -> str:
+    """Extra script-writing rule when the channel has main characters."""
+    mains = cast.main_characters(channel)
+    if not mains:
+        return ""
+    names = ", ".join(c["name"] for c in mains)
+    return (f"\nThe channel's MAIN character(s) {names} must be the protagonists of this video: they "
+            "carry the story and are referred to by name in the narration. ")
 
 STYLE_EXAMPLE = ("Realistic live-action cinematic look, practical film photography style, anamorphic lens, "
                  "shallow depth of field, film grain, restrained grading for a premium feel, natural movement.")
@@ -139,7 +151,7 @@ def write_narration(transcript: str, words: int | None = None, art_style: str = 
     user = f"""Transcript of the source video:
 \"\"\"{transcript}\"\"\"
 
-Create a new short video inspired by this content. Return JSON with keys:
+Create a new short video inspired by this content.{_cast_script_rule(channel)} Return JSON with keys:
 - "title": short title.
 - "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice. Stay close to {words} words.
 - "style": {style_rule}
@@ -186,6 +198,8 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
     else:
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
+    if source_kind != "transcript":   # a pasted transcript is kept verbatim; the cast still shapes visuals
+        task += _cast_script_rule(channel)
     revision = ""
     if feedback:
         revision = '\n\nThe user reviewed a previous draft and asked for these changes: "' + feedback + '"'
@@ -225,15 +239,29 @@ def split_narration(narration: str, n: int) -> list:
 
 def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  kind: str = "voiceover narration", segments: list | None = None,
-                 on_review_issue=None, channel: dict | None = None) -> list:
+                 on_review_issue=None, channel: dict | None = None,
+                 opening: dict | None = None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
     segments: optional pre-computed per-clip text (e.g. whisper-timed lyrics); empty
-    entries mean nothing is heard during that clip (instrumental/silence)."""
+    entries mean nothing is heard during that clip (instrumental/silence).
+    opening: the cast character whose portrait is clip 1's first frame, if any."""
     if segments is None:
         segments = split_narration(narration, n)
     segments = (list(segments) + [""] * n)[:n]
+    cast_rule = ""
+    if cast.all_characters(channel):
+        mains = ", ".join(c["name"] for c in cast.main_characters(channel))
+        cast_rule = ("\nCAST: whenever a cast character is on screen, name them and describe them exactly as "
+                     "in the cast sheet (species/age, colours, clothes, marks)."
+                     + (f" The main character(s) {mains} should be on screen in most clips." if mains else ""))
+    first = "This is the FIRST clip of the video: establish the world."
+    if opening:
+        first = (f"This is the FIRST clip of the video. Its first frame is a fixed reference image of "
+                 f"{opening['name']} alone, standing centered and facing the viewer in a simple soft "
+                 f"setting ({opening.get('look', '').strip()}). Start EXACTLY from that image: {opening['name']} "
+                 "comes alive, and the story begins around them - do not open with a different shot.")
     scenes = []
     for i, seg in enumerate(segments):
         if on_progress:
@@ -242,7 +270,7 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                 "MANDATORY: this clip's [0s] beat continues EXACTLY from that scene's ending frame - same "
                 "camera angle, same characters in the same positions, same setting and lighting. Do not cut "
                 "to a new shot or angle at the start; evolve the action from that frozen moment.") if scenes \
-            else "This is the FIRST clip of the video: establish the world."
+            else first
         nxt = (f'For flow only, the next segment will be: "{segments[i + 1]}"') if i + 1 < n \
             else "This is the FINAL clip: give it a conclusive ending."
         if seg.strip():
@@ -265,7 +293,7 @@ The soundtrack is a {kind}.
 {prev}
 {nxt}
 {heard}
-{SCENE_RULES.format(secs=config.CLIP_SECONDS)}
+{SCENE_RULES.format(secs=config.CLIP_SECONDS)}{cast_rule}
 Return JSON: {{"scene": "the scene prompt string"}}"""
         out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
         scene = out.get("scene") or next(iter(_as_strings(out.get("scenes", []))), "")
@@ -320,6 +348,9 @@ This scene's [0s] beat must directly continue that scene's ending (same camera a
 the same positions, same setting); it must NOT open with a cut, a new shot, a different angle or location.
 Reframing may only happen through continuous camera motion within the clip."""
     safety = SAFETY_CHECKS[_channel(channel)["audience"]]
+    if cast.all_characters(channel):
+        safety += (" Cast characters keep their canonical name and look from the cast sheet; no unnamed "
+                   "substitute animals or kids where a cast character fits.")
     user = f"""You are reviewing a scene prompt for clip {i} of {n} of a video before it is rendered.
 Global visual style: {style}
 
@@ -386,7 +417,8 @@ def write_storyboard(title: str, narration: str, segments: list, n: int,
                          for i, seg in enumerate(segs))
     img_rule = (f'- "image_prompt": for AT MOST {max_images} cards (the ones where a picture adds the '
                 f'most), a prompt for ONE photorealistic still image that illustrates the card\'s fact '
-                f'(an object, device, place, abstract scene - never a person\'s face). The image generator '
+                f'(an object, device, place, abstract scene or one of the channel\'s cast characters - never '
+                f'a real person\'s face). The image generator '
                 f'CANNOT render writing: the prompt must not ask for any words, labels, captions, UI text, '
                 f'code on screens or lettering of any kind. Empty string "" for the other cards.'
                 if max_images > 0 else '- "image_prompt": always an empty string "".')
@@ -451,6 +483,11 @@ def write_thumbnail(title: str, narration: str, style: str, channel: dict | None
     """A single-image prompt for an eye-catching YouTube thumbnail."""
     emotion = ("big expressive joyful emotion" if _channel(channel)["audience"] == "kids"
                else "strong expressive emotion")
+    mains = cast.main_characters(channel)
+    subject = "the main character(s) and the key objects of the story"
+    if mains:
+        subject = (f"the channel's main character(s) {', '.join(c['name'] for c in mains)} - named and "
+                   "described exactly as in the cast sheet - with the key objects of the story")
     user = f"""We produced a short video titled "{title}".
 Its story: \"\"\"{narration[:1500]}\"\"\"
 Its visual style: {style}
@@ -458,7 +495,7 @@ Its visual style: {style}
 Design ONE eye-catching YouTube thumbnail image for it. A viewer glancing for half a second
 must INSTANTLY understand what the video is about. Return JSON with key:
 - "thumbnail_prompt": a prompt for an image generator describing a single dramatic scene that
-  SHOWS THE VIDEO'S SUBJECT: the main character(s) and the key objects of the story, front and
+  SHOWS THE VIDEO'S SUBJECT: {subject}, front and
   center, caught mid-action with {emotion}. Bold composition, exaggerated
   scale, vivid saturated colors, strong contrast and lighting, simple readable background.
   Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).

@@ -59,6 +59,7 @@
   <div class="job-meta">
     <span class="jid" id="jobIdLabel"></span>
     <span id="channelLabel"></span>
+    <span id="castLabel"></span>
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
     <span id="sbLabel"></span>
@@ -396,6 +397,8 @@ function update(j) {
       + (t.length > 70 ? t.slice(0, 70) + "…" : t);
   }
   $("#channelLabel").textContent = (j.channel && j.channel.name) || "";
+  $("#castLabel").textContent = (j.channel && j.channel.cast && j.channel.cast.length)
+    ? "cast: " + j.channel.cast.map(c => c.name + (c.role === "supporting" ? "" : " (main)")).join(", ") : "";
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";

@@ -106,6 +106,14 @@
           <input type="file" id="chLogoFile" accept="image/*" style="max-width:280px">
           <span class="hint">Logo: overlaid on the top-right of every thumbnail (PNG with transparency recommended)</span>
         </div>
+        <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Cast <span class="hint" style="font-weight:400">— recurring characters that appear across this channel's videos</span></label>
+          <div class="hint" style="margin:4px 0 10px">Give each character a name and a precise look (species or age, colours, size, clothes, accessories, distinguishing marks). The look is repeated to the script writer and to the video model for every scene the character is in. Main characters star in every video; supporting ones appear when the story calls for them. Approve a reference portrait per character: it is used as the first frame of clip 1 so every video opens on the real character.</div>
+          <label class="switch"><input type="checkbox" id="chCastOpening" checked><span class="track"></span>
+            Open every video on the main character (portrait = first frame of clip 1)</label>
+          <div id="chCastList" style="margin-top:10px"></div>
+          <button class="btn secondary sm" id="chCastAdd" type="button" style="margin-top:8px">Add character</button>
+        </div>
         <div class="row" style="margin-top:12px;align-items:center">
           <span class="hint" id="chSecretState"></span>
           <input type="file" id="chSecretFile" accept=".json,application/json" style="max-width:280px">
@@ -490,7 +498,8 @@ async function refreshChannels() {
       <div class="row" style="margin-bottom:8px;align-items:center">
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
         <b style="min-width:140px">${esc(c.name)}</b>
-        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        ${(c.cast || []).filter(x => x.has_portrait).map(x => `<img class="cast-mini" src="/api/channels/${esc(c.id)}/cast/${esc(x.id)}/portrait?v=${Date.now()}" alt="" title="${esc(x.name)}">`).join("")}
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${(c.cast || []).length ? " " + chBadge(`cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
         <div class="spacer"></div>
         ${(c.has_secret || chData.secret) ? (c.yt_connected
@@ -544,6 +553,9 @@ async function chOpen(c) {
   $("#chSecretState").textContent = hasSecret ? "own OAuth client uploaded" : "using the shared OAuth client";
   $("#chSecretRemove").hidden = !hasSecret;
   $("#chSecretFile").value = "";
+  chCast = (c && c.cast ? c.cast : []).map(x => ({ ...x, v: Date.now() }));
+  $("#chCastOpening").checked = c ? c.cast_opening !== false : true;
+  chCastRender();
   chLoadVoices(d.voice_id || "");
   chApplyType(); chApplyAudio();
   $("#chModal").classList.add("open");
@@ -553,13 +565,81 @@ function chCloseModal() { $("#chModal").classList.remove("open"); }
 
 function chEdit(id) { const c = chData.channels.find(x => x.id === id); if (c) chOpen(c); }
 
-$("#chSave").onclick = async () => {
-  const body = {
+// ---- cast (recurring characters) ----
+let chCast = [];   // working copy while the modal is open: [{id, name, kind, role, look, personality, has_portrait, v}]
+const castPolls = {};
+
+function chCastSync() {   // read the edited rows back into chCast (re-rendering would lose typed text)
+  document.querySelectorAll("#chCastList .cast-row").forEach(row => {
+    const c = chCast[+row.dataset.i];
+    if (!c) return;
+    c.name = row.querySelector(".cast-name").value.trim();
+    c.kind = row.querySelector(".cast-kind").value.trim();
+    c.role = row.querySelector(".cast-role").value;
+    c.look = row.querySelector(".cast-look").value.trim();
+    c.personality = row.querySelector(".cast-personality").value.trim();
+  });
+}
+
+function chCastRender() {
+  const box = $("#chCastList");
+  if (!chCast.length) { box.innerHTML = `<div class="hint">No characters yet — add one to brand this channel.</div>`; return; }
+  box.innerHTML = chCast.map((c, i) => `
+    <div class="cast-row" data-i="${i}">
+      <div class="cast-thumb${c.id && c.has_portrait ? "" : " ph"}">${c.id && c.has_portrait
+        ? `<img src="/api/channels/${esc(chEditing)}/cast/${esc(c.id)}/portrait?v=${c.v || 0}" alt="">`
+        : `<span>no<br>portrait</span>`}</div>
+      <div class="grow">
+        <div class="row">
+          <input type="text" class="cast-name" placeholder="Name, e.g. Ellie" value="${esc(c.name || "")}" style="max-width:170px">
+          <input type="text" class="cast-kind" placeholder="Kind, e.g. baby elephant / 6-year-old girl" value="${esc(c.kind || "")}" style="max-width:260px">
+          <select class="cast-role" style="max-width:190px">
+            <option value="main" ${c.role !== "supporting" ? "selected" : ""}>Main — in every video</option>
+            <option value="supporting" ${c.role === "supporting" ? "selected" : ""}>Supporting</option>
+          </select>
+        </div>
+        <textarea class="cast-look" rows="2" placeholder="Look — be specific, this exact text goes to the video model: e.g. a small round baby elephant with soft light-grey skin, big floppy ears with pink insides, a short curly trunk, bright green eyes, wearing a tiny red scarf">${esc(c.look || "")}</textarea>
+        <input type="text" class="cast-personality" placeholder="Personality (optional), e.g. curious, giggly, always asks 'why?'" value="${esc(c.personality || "")}">
+        <div class="row cast-actions">
+          <button class="btn secondary sm" type="button" onclick="chCastGenerate(${i})">Generate portrait</button>
+          <label class="btn secondary sm" style="cursor:pointer">Upload portrait<input type="file" accept="image/*" hidden onchange="chCastUpload(${i}, this)"></label>
+          ${c.id && c.has_portrait ? `<button class="btn secondary sm" type="button" onclick="chCastRemovePortrait(${i})">Remove portrait</button>` : ""}
+          <span class="hint cast-status" id="castStatus${i}"></span>
+          <div class="spacer"></div>
+          <button class="btn danger sm" type="button" onclick="chCastRemove(${i})">Remove character</button>
+        </div>
+        <div class="cast-cands" id="castCands${i}" hidden></div>
+      </div>
+    </div>`).join("");
+}
+
+$("#chCastAdd").onclick = () => {
+  chCastSync();
+  if (chCast.length >= 8) { toast("At most 8 characters per channel", true); return; }
+  chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main", look: "", personality: "", has_portrait: false });
+  chCastRender();
+  const rows = document.querySelectorAll("#chCastList .cast-row");
+  rows[rows.length - 1].querySelector(".cast-name").focus();
+};
+
+function chCastRemove(i) {
+  chCastSync();
+  const c = chCast[i];
+  if (c.id && c.has_portrait && !confirm(`Remove ${c.name || "this character"} and its portrait?`)) return;
+  chCast.splice(i, 1);
+  chCastRender();
+}
+
+function chBody() {
+  chCastSync();
+  return {
     name: $("#chName").value.trim(),
     purpose: $("#chPurpose").value.trim(),
     audience: $("#chAudience").value,
     video_type: $("#chVideoType").value,
     made_for_kids: $("#chKids").checked,
+    cast_opening: $("#chCastOpening").checked,
+    cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role, look: c.look, personality: c.personality })),
     defaults: {
       art_style: CH_REAL_TYPES.includes($("#chVideoType").value) ? "" : $("#chStyle").value,
       storyboard: $("#chStoryboard").checked,
@@ -569,10 +649,87 @@ $("#chSave").onclick = async () => {
       video_length: $("#chVlen").value,
     },
   };
+}
+
+// Save the channel record (create or update) without closing the modal; adopts server ids for new characters.
+async function chPersist() {
+  const c = await api(chEditing ? `/api/channels/${chEditing}` : "/api/channels",
+    { method: chEditing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(chBody()) });
+  chEditing = c.id;
+  $("#chModalTitle").textContent = "Edit channel";
+  chCast = (c.cast || []).map((x, i) => ({ ...x, v: (chCast[i] && chCast[i].v) || Date.now() }));
+  return c;
+}
+
+async function chCastGenerate(i) {
+  try {
+    await chPersist();          // the portrait is rendered from the SAVED description
+    chCastRender();
+    const c = chCast[i];
+    await api(`/api/channels/${chEditing}/cast/${c.id}/portrait/generate`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ count: 3 }) });
+    chCastPoll(i);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function chCastPoll(i) {
+  const c = chCast[i];
+  if (!c || !c.id) return;
+  clearTimeout(castPolls[i]);
+  try {
+    const s = await api(`/api/channels/${chEditing}/cast/${c.id}/portrait/candidates`);
+    const st = $(`#castStatus${i}`), box = $(`#castCands${i}`);
+    if (!st || !box) return;
+    st.textContent = s.generating ? (s.waiting ? "waiting for the GPU window…" : `rendering ${s.done + 1}/${s.total}…`)
+                   : s.candidates.length ? "pick the portrait to keep:" : (s.errors ? "generation failed" : "");
+    box.hidden = !s.candidates.length;
+    box.innerHTML = s.candidates.map(u => `<img src="${u}?v=${Date.now()}" alt="" title="Use this portrait" onclick="chCastApprove(${i}, '${u}')">`).join("");
+    if (s.generating) castPolls[i] = setTimeout(() => chCastPoll(i), 4000);
+  } catch (e) { /* ignore */ }
+}
+
+async function chCastApprove(i, url) {
+  const k = +url.split("/").pop();
+  const c = chCast[i];
+  try {
+    await api(`/api/channels/${chEditing}/cast/${c.id}/portrait/approve`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ k }) });
+    chCastSync(); c.has_portrait = true; c.v = Date.now();
+    chCastRender();
+    toast(`Portrait saved for ${c.name}`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function chCastUpload(i, input) {
+  const f = input.files[0];
+  if (!f) return;
+  try {
+    await chPersist();
+    const c = chCast[i];
+    const fd = new FormData();
+    fd.append("file", f);
+    const r = await fetch(`/api/channels/${chEditing}/cast/${c.id}/portrait`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "portrait upload failed");
+    c.has_portrait = true; c.v = Date.now();
+    chCastRender();
+    toast(`Portrait uploaded for ${c.name}`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function chCastRemovePortrait(i) {
+  chCastSync();
+  const c = chCast[i];
+  try {
+    await api(`/api/channels/${chEditing}/cast/${c.id}/portrait`, { method: "DELETE" });
+    c.has_portrait = false;
+    chCastRender();
+  } catch (e) { toast(e.message, true); }
+}
+
+$("#chSave").onclick = async () => {
   $("#chSave").disabled = true;
   try {
-    const c = await api(chEditing ? `/api/channels/${chEditing}` : "/api/channels",
-      { method: chEditing ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const c = await chPersist();
     const f = $("#chLogoFile").files[0];
     if (f) {
       const fd = new FormData();
@@ -587,7 +744,7 @@ $("#chSave").onclick = async () => {
       const r2 = await fetch(`/api/channels/${c.id}/secret`, { method: "POST", body: fd2 });
       if (!r2.ok) throw new Error((await r2.json()).detail || "OAuth client upload failed");
     }
-    toast(chEditing ? "Channel updated" : "Channel added");
+    toast("Channel saved");
     chCloseModal();
     refreshChannels();
   } catch (e) { toast(e.message, true); }
@@ -596,7 +753,7 @@ $("#chSave").onclick = async () => {
 
 async function chDelete(id) {
   const c = chData.channels.find(x => x.id === id);
-  if (!confirm(`Delete channel "${c ? c.name : id}"? Its logo and YouTube connection are removed. Existing videos keep their generated content, but queued ones can no longer be uploaded through this channel.`)) return;
+  if (!confirm(`Delete channel "${c ? c.name : id}"? Its logo, cast portraits and YouTube connection are removed. Existing videos keep their generated content, but queued ones can no longer be uploaded through this channel.`)) return;
   try { await api(`/api/channels/${id}`, { method: "DELETE" }); toast("Channel deleted"); refreshChannels(); }
   catch (e) { toast(e.message, true); }
 }
