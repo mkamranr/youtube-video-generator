@@ -21,7 +21,7 @@ Everything the app owns lives in its folder:
 | `channels/` | channel index, logos, per-channel YouTube tokens and OAuth clients | yes |
 | `users/` | login accounts (scrypt hashes) and the session-cookie signing key | yes |
 | `reference_audio/` | reference voices for voice cloning | yes |
-| `settings.json` | Settings-page changes | yes |
+| `settings.json` | Settings-page changes (GPU schedule window, clip length, URLs). Repo root by default; `VIDEOGEN_SETTINGS_FILE` relocates it — Docker keeps it in `data/settings/` | yes |
 | `client_secret.json` | shared Google OAuth client (YouTube upload) | yes |
 | `server.log` | server output when started via the watchdog / service | rotate |
 
@@ -44,7 +44,7 @@ None of these are committed to git.
 Precedence, highest first:
 
 1. `VIDEOGEN_<SETTING>` environment variables (e.g. `VIDEOGEN_COMFY_URL`) — the deployment's source of truth, re-applied at every start.
-2. `settings.json` — written by the Settings page.
+2. `settings.json` — written by the Settings page (path from `VIDEOGEN_SETTINGS_FILE`, default repo root).
 3. Defaults in `config.py`.
 
 Every row of the Configuration table in the README can be set this way. Two extra variables are deployment-only and never appear in the UI:
@@ -197,7 +197,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-Persisted through bind mounts under `./data/`: `output/`, `channels/`, `users/` (accounts + signing key), `reference_audio/` (uploaded voices) and optionally `settings.json`; the whisper model lives in a named volume. **Mount `users/`** — without it every container recreation returns to the first-run setup screen and signs everyone out. Set `VIDEOGEN_SECRET_KEY` in the `environment:` block for a stable key across rebuilds.
+Persisted through bind mounts under `./data/`: `output/`, `channels/`, `users/` (accounts + signing key), `reference_audio/` (uploaded voices) and `settings/` (the Settings page's `settings.json`, incl. the GPU schedule window — `VIDEOGEN_SETTINGS_FILE` points the app there); the whisper model lives in a named volume. **Mount `users/`** — without it every container recreation returns to the first-run setup screen and signs everyone out. Set `VIDEOGEN_SECRET_KEY` in the `environment:` block for a stable key across rebuilds.
 
 On Linux hosts `host.docker.internal` needs `extra_hosts: ["host.docker.internal:host-gateway"]` under the service, or use the host's LAN IP.
 

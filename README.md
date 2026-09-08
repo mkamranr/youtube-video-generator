@@ -148,7 +148,7 @@ Open the app in a browser: it shows the **Create the admin account** screen unti
 
 ## Configuration
 
-All settings are editable at runtime on the **Settings** page (persisted to `settings.json`, applied to new jobs immediately). Defaults live in `config.py`.
+All settings are editable at runtime on the **Settings** page (persisted to `settings.json` in the project root, or wherever `VIDEOGEN_SETTINGS_FILE` points — the Docker setup keeps it in the bind-mounted `data/settings/` so it survives rebuilds; applied to new jobs immediately). Defaults live in `config.py`.
 
 | Setting | Default | Meaning |
 |---|---|---|

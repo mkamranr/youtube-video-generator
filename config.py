@@ -2,6 +2,8 @@
 
 Values in EDITABLE_SETTINGS can be changed at runtime from the Settings page; they are
 stored in settings.json and applied on top of the defaults below at import and on save.
+The file lives in the project root by default; VIDEOGEN_SETTINGS_FILE moves it (the Docker
+setup points it into a bind-mounted directory so Settings survive image rebuilds).
 """
 import json
 import os
@@ -12,7 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent
 WORKFLOWS_DIR = BASE_DIR / "workflows"
 OUTPUT_DIR = BASE_DIR / "output"
 STATIC_DIR = BASE_DIR / "static"
-SETTINGS_FILE = BASE_DIR / "settings.json"
+LEGACY_SETTINGS_FILE = BASE_DIR / "settings.json"
+SETTINGS_FILE = Path(os.environ.get("VIDEOGEN_SETTINGS_FILE") or LEGACY_SETTINGS_FILE)
 LOGO_FILE = BASE_DIR / "channel_logo.png"   # uploaded via Settings; overlaid on thumbnails
 VOICES_DIR = BASE_DIR / "reference_audio"   # reference voices for Fish Speech cloning (Settings)
 VOICES_INDEX = VOICES_DIR / "voices.json"
@@ -244,10 +247,13 @@ def current_settings() -> dict:
 
 
 def load_overrides():
-    if not SETTINGS_FILE.exists():
+    # a relocated settings file that does not exist yet falls back to the repo-root one
+    # (one-time carry-over; the next save writes to SETTINGS_FILE)
+    path = SETTINGS_FILE if SETTINGS_FILE.exists() else LEGACY_SETTINGS_FILE
+    if not path.is_file():
         return
     try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return
     for k, v in data.items():
@@ -278,12 +284,14 @@ def save_settings(data: dict) -> dict:
             raise ValueError(f"{k}: value {v!r} out of range")
         clean[k] = v
     existing = {}
-    if SETTINGS_FILE.exists():
+    src = SETTINGS_FILE if SETTINGS_FILE.exists() else LEGACY_SETTINGS_FILE
+    if src.is_file():
         try:
-            existing = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            existing = json.loads(src.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             existing = {}
     existing.update(clean)
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     load_overrides()
     return current_settings()

@@ -97,4 +97,4 @@ users/
   users.json          login accounts (scrypt hashes)     session_secret   cookie signing key
 ```
 
-`settings.json` (repo root, untracked) holds runtime setting overrides applied on top of `config.py` defaults at import and on every save.
+`settings.json` (repo root, untracked; `VIDEOGEN_SETTINGS_FILE` relocates it — the Docker compose file puts it in the bind-mounted `/app/settings/`) holds runtime setting overrides applied on top of `config.py` defaults at import and on every save. If the relocated file does not exist yet, the repo-root one is read as a one-time carry-over.

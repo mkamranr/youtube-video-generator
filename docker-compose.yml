@@ -14,12 +14,18 @@ services:
       VIDEOGEN_VLLM_URL: "http://${GPU_HOST:-host.docker.internal}:8000/v1"
       VIDEOGEN_VLLM_MODEL: "${VLLM_MODEL:-agents-a1}"
       VIDEOGEN_FISH_URL: "http://${GPU_HOST:-host.docker.internal}:7860/"
-      # Local clock for the GPU schedule window (Settings > GPU schedule) and log timestamps,
-      # e.g. Asia/Dubai. Containers default to UTC.
-      TZ: "${TZ:-UTC}"
+      # Settings-page values (GPU schedule window, clip length, ...) are saved here;
+      # the directory is bind-mounted below so they survive image rebuilds.
+      VIDEOGEN_SETTINGS_FILE: /app/settings/settings.json
       # Any setting can be overridden the same way, e.g.:
       # VIDEOGEN_TARGET_VIDEO_SECONDS: "0"
       # VIDEOGEN_YT_PRIVACY: "unlisted"
+      # Note: a VIDEOGEN_<SETTING> variable is re-applied on EVERY start and wins over the
+      # value saved from the Settings page - do not set VIDEOGEN_GPU_* here if you want to
+      # manage the GPU schedule from the Settings page.
+      # Local clock for the GPU schedule window (Settings > GPU schedule) and log timestamps,
+      # e.g. Asia/Dubai. Containers default to UTC.
+      TZ: "${TZ:-UTC}"
     volumes:
       # Generated videos, thumbnails and job state (enables resume across restarts)
       - ./data/output:/app/output
@@ -32,9 +38,9 @@ services:
       # Reference voices for voice cloning (Settings page) - without this mount
       # every rebuild or recreate resets the voice library to empty
       - ./data/reference_audio:/app/reference_audio
-      # Optional: persist Settings-page changes across container recreation.
-      # Create an empty file first: echo {} > data/settings.json
-      # - ./data/settings.json:/app/settings.json
+      # Settings-page changes (GPU schedule window, clip length, URLs ...) - a directory
+      # mount, so nothing has to be created by hand; see VIDEOGEN_SETTINGS_FILE above
+      - ./data/settings:/app/settings
     restart: unless-stopped
 
 volumes:
