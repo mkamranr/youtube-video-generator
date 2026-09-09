@@ -19,6 +19,7 @@
       <p class="page-sub" style="margin:0">Files stay in <code>output/&lt;job_id&gt;/</code>; unarchive to bring a job back, or delete to remove it for good.</p>
     </div>
     <div class="spacer"></div>
+    <select id="ownerFilter" hidden style="max-width:180px"><option value="">All owners</option></select>
     <select id="channelFilter" style="max-width:200px"><option value="">All channels</option></select>
     <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search archived jobs..."></div>
   </div>
@@ -61,6 +62,7 @@ function jobCard(j) {
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
         ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
+        ${j.owner_name ? `<span>${ownerBadge(j.owner_name)}</span>` : ""}
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
@@ -80,24 +82,41 @@ function jobCard(j) {
 }
 
 let lastJobs = [];
+let admin = false;   // admins see every user's archived jobs, tagged with the owner
 
 function applyFilter(jobs) {
-  const cf = $("#channelFilter").value;
+  const cf = $("#channelFilter").value, of = $("#ownerFilter").value;
   const q = ($("#jobSearch").value || "").trim().toLowerCase();
   let out = jobs;
   if (cf) out = out.filter(j => j.channel_id === cf);
+  if (of) out = out.filter(j => j.owner === of);
   if (q) out = out.filter(j =>
     [j.title, j.url, j.topic, j.id, j.status, j.art_style,
-     j.channel && j.channel.name].join(" ").toLowerCase().includes(q));
+     j.channel && j.channel.name, j.owner_name].join(" ").toLowerCase().includes(q));
   return out;
 }
 
 async function loadChannelFilter() {
   try {
     const o = await api("/options");
+    admin = isAdmin(o.me || currentUser);
+    const label = c => admin && c.owner_name ? `${c.name} — ${c.owner_name}` : c.name;
     $("#channelFilter").innerHTML = `<option value="">All channels</option>` +
-      (o.channels || []).map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+      (o.channels || []).map(c => `<option value="${esc(c.id)}">${esc(label(c))}</option>`).join("");
+    rebuildOwnerFilter();
   } catch (e) { /* filter stays on All channels */ }
+}
+
+function rebuildOwnerFilter() {
+  const sel = $("#ownerFilter");
+  if (!admin) { sel.hidden = true; return; }
+  const owners = new Map();
+  lastJobs.forEach(j => { if (j.owner) owners.set(j.owner, j.owner_name || j.owner); });
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">All owners</option>` + [...owners].sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("");
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  sel.hidden = false;
 }
 
 const PAGE_SIZE = 10;
@@ -139,6 +158,7 @@ function render(jobs) {
 async function refresh() {
   try {
     lastJobs = await api("/jobs?archived=true");
+    rebuildOwnerFilter();
     render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
 }
@@ -146,6 +166,7 @@ async function refresh() {
 $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
 $("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
 $("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
+$("#ownerFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
 loadChannelFilter();
 refresh();
 </script>

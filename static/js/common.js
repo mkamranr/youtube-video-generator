@@ -79,6 +79,7 @@ async function api(path, opts) {
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try { msg = (await r.json()).detail || msg; } catch (e) { /* ignore */ }
+    if (r.status === 403 && /^HTTP 403$|admin/i.test(msg)) msg = "Admin access required";
     // session expired / not signed in: send the browser to the login page (or the
     // first-run setup) - except for the auth calls themselves, which report the error
     if (r.status === 401 && !path.startsWith("/api/auth/") && !["/login", "/setup"].includes(location.pathname)) {
@@ -110,6 +111,13 @@ const userReady = (async () => {
   }
   return currentUser;
 })();
+
+/* ---- roles / ownership ---- */
+// Meaningful after `await userReady`, or with the `me` object that /options and /api/channels return.
+function isAdmin(me) { const u = me || currentUser; return !!u && u.role === "admin"; }
+// Owner tag next to channels/jobs of other users. The server only sends `owner_name` to admins,
+// so this renders nothing for regular users.
+function ownerBadge(name) { return name ? `<span class="owner" title="Owner">${esc(name)}</span>` : ""; }
 
 function pct(j) {
   if (j.status === "done") return 100;

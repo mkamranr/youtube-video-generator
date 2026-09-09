@@ -263,7 +263,7 @@ Run uvicorn with `--proxy-headers --forwarded-allow-ips=127.0.0.1` (already in t
 
 1. Open the app. With no account on file every page redirects to **Create the admin account**. Choose a username (3–40 characters, letters/digits/`.`/`-`/`_`) and a password (8+ characters). This screen never appears again.
 2. Sign in. **Settings → Users** lets admins add users, reset passwords, grant/revoke admin rights and delete accounts; there is always at least one admin. Everyone can change their own password under **Settings → Your account**.
-3. All signed-in users see and manage all jobs, channels and settings; only user management is admin-only.
+3. Users see and manage only their own channels and jobs (a new user starts with no channel and creates one under **Settings → Channels** before making videos). Admins see everyone's channels and jobs, tagged with the owner, and alone manage the service settings, GPU schedule, reference voices, style previews and users. Channels and jobs created before this rule existed belong to the oldest admin; a deleted user's channels and jobs move to the admin who deleted them.
 4. Scripts and automation: `POST /api/auth/login` once and reuse the cookie (`curl -c cookies.txt … ; curl -b cookies.txt …`); details in docs/API.md.
 
 Locked out? Stop the server, delete `users/users.json` (keep `session_secret` if you like), start again: the setup screen returns and you create a new admin. Existing jobs are untouched.

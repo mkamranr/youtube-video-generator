@@ -16,11 +16,16 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, bible, cast, channels, schedule, users, voices
+from services import auth, bible, cast, channels, ownership, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
 manager = JobManager()
+# channels/jobs written before ownership existed go to the oldest admin (no-op until one exists,
+# then repeated right after the first admin is created in /api/auth/setup)
+_migrated = ownership.migrate_unowned(manager.jobs.values())
+if _migrated["channels"] or _migrated["jobs"]:
+    print(f"ownership: assigned {_migrated['channels']} channel(s) and {_migrated['jobs']} job(s) to the first admin")
 
 
 @app.middleware("http")
@@ -77,7 +82,7 @@ class Submit(BaseModel):
     topic: str = ""
     description: str = ""
     transcript: str = ""     # a pasted transcript or song lyrics used as the script itself
-    channel_id: str = ""       # "" -> the first channel (backcompat for scripted API use)
+    channel_id: str = ""       # required: a channel the caller owns (admins: any channel)
     aspect_ratio: str = ""
     megapixels: float | None = None   # clip resolution (0.2-1.0); None -> Settings default
     art_style: str = ""
@@ -107,31 +112,56 @@ def _queued_detail(job) -> str:
     return "waiting to start"
 
 
-def _job_json(job):
+def _owner_names() -> dict:
+    """user id -> username, for the owner labels admins see on channels and jobs."""
+    return {u["id"]: u["username"] for u in users.list_users()}
+
+
+def _job_json(job, names: dict | None = None):
     d = asdict(job)
     d["log"] = d["log"][-40:]
     d["files"] = [f.name for f in sorted(job.dir.glob("*"))
                   if f.is_file() and f.name not in ("job.json", "bundle.zip")]
     if job.status == "queued":
         d["detail"] = _queued_detail(job)
+    d["owner_name"] = (_owner_names() if names is None else names).get(job.owner, "")
     return d
+
+
+# ---- ownership checks: users reach only their own records, admins everything. Foreign records
+# answer 404 (not 403) so ids cannot be probed.
+def _owned_job(job_id: str, user: dict):
+    job = manager.jobs.get(job_id)
+    if not job or not auth.can_access(user, job.owner):
+        raise HTTPException(404, "job not found")
+    return job
+
+
+def _owned_channel(cid: str, user: dict) -> dict:
+    ch = channels.get_channel(cid)
+    if not ch or not auth.can_access(user, ch.get("owner", "")):
+        raise HTTPException(404, "unknown channel")
+    return ch
+
+
+def _visible_channels(user: dict) -> list:
+    return channels.list_channels(owner=None if auth.is_admin(user) else user["id"])
 
 
 # ---- jobs -----------------------------------------------------------------
 @app.post("/jobs")
-def create_jobs(body: Submit):
+def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
     urls = [u.strip() for u in body.urls if u.strip()]
     prompt_kind = ("topic" if body.topic.strip() else "description" if body.description.strip()
                    else "transcript" if body.transcript.strip() else "")
     if not urls and not prompt_kind:
         raise HTTPException(400, "provide urls, a topic, a description, or a transcript")
-    if body.channel_id:
-        ch = channels.get_channel(body.channel_id)
-        if not ch:
-            raise HTTPException(400, "unknown channel")
-    else:  # backcompat: scripted API calls without a channel use the first one
-        chans = channels.list_channels()
-        ch = chans[0] if chans else None
+    if not body.channel_id:
+        raise HTTPException(400, "no channel selected - create a channel first (Settings > Channels)")
+    ch = channels.get_channel(body.channel_id)
+    if not ch or not auth.can_access(user, ch.get("owner", "")):
+        raise HTTPException(400, "unknown channel")
+    owner = ch.get("owner") or user["id"]   # the video belongs to the channel's owner
     vid = body.voice_id.strip()
     if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
         raise HTTPException(400, "unknown reference voice")
@@ -143,26 +173,25 @@ def create_jobs(body: Submit):
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,
                                                     storyboard_flag=body.storyboard,
-                                                    megapixels=body.megapixels))]
+                                                    megapixels=body.megapixels, owner=owner))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
-                                         megapixels=body.megapixels)) for u in urls]
+                                         megapixels=body.megapixels, owner=owner)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
 @app.get("/jobs")
-def list_jobs(archived: bool = False):
-    return [_job_json(j) for j in manager.list() if bool(j.archived) == archived]
+def list_jobs(archived: bool = False, user: dict = Depends(auth.require_user)):
+    names = _owner_names()
+    jobs = manager.list(owner=None if auth.is_admin(user) else user["id"])
+    return [_job_json(j, names) for j in jobs if bool(j.archived) == archived]
 
 
 @app.get("/jobs/{job_id}")
-def get_job(job_id: str):
-    job = manager.jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
-    return _job_json(job)
+def get_job(job_id: str, user: dict = Depends(auth.require_user)):
+    return _job_json(_owned_job(job_id, user))
 
 
 class RegenBody(BaseModel):
@@ -183,7 +212,8 @@ class RedraftBody(BaseModel):
 
 
 @app.post("/jobs/{job_id}/approve")
-def approve_script(job_id: str, body: ApproveBody):
+def approve_script(job_id: str, body: ApproveBody, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.approve_script(job_id, body.title, body.narration))
     except KeyError:
@@ -193,7 +223,8 @@ def approve_script(job_id: str, body: ApproveBody):
 
 
 @app.post("/jobs/{job_id}/redraft")
-def redraft_script(job_id: str, body: RedraftBody):
+def redraft_script(job_id: str, body: RedraftBody, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.redraft_script(job_id, body.feedback))
     except KeyError:
@@ -203,7 +234,8 @@ def redraft_script(job_id: str, body: RedraftBody):
 
 
 @app.put("/jobs/{job_id}/scenes")
-def update_scenes(job_id: str, body: SceneUpdates):
+def update_scenes(job_id: str, body: SceneUpdates, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.update_scenes(job_id, body.updates))
     except KeyError:
@@ -213,7 +245,8 @@ def update_scenes(job_id: str, body: SceneUpdates):
 
 
 @app.post("/jobs/{job_id}/regen")
-def regen_clips(job_id: str, body: RegenBody):
+def regen_clips(job_id: str, body: RegenBody, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.request_regen(job_id, body.clips))
     except KeyError:
@@ -228,8 +261,9 @@ class StoryboardBody(BaseModel):
 
 
 @app.put("/jobs/{job_id}/storyboard")
-def set_storyboard(job_id: str, body: StoryboardBody):
+def set_storyboard(job_id: str, body: StoryboardBody, user: dict = Depends(auth.require_user)):
     """Enable/disable the story board overlay on a finished job; applied by the next reassembly."""
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.set_storyboard(job_id, body.enabled, body.regenerate))
     except KeyError:
@@ -239,7 +273,8 @@ def set_storyboard(job_id: str, body: StoryboardBody):
 
 
 @app.post("/jobs/{job_id}/assemble")
-def assemble_job(job_id: str):
+def assemble_job(job_id: str, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.request_assemble(job_id))
     except KeyError:
@@ -249,16 +284,17 @@ def assemble_job(job_id: str):
 
 
 @app.post("/jobs/{job_id}/archive")
-def archive_job(job_id: str):
-    return _toggle_archive(job_id, True)
+def archive_job(job_id: str, user: dict = Depends(auth.require_user)):
+    return _toggle_archive(job_id, True, user)
 
 
 @app.post("/jobs/{job_id}/unarchive")
-def unarchive_job(job_id: str):
-    return _toggle_archive(job_id, False)
+def unarchive_job(job_id: str, user: dict = Depends(auth.require_user)):
+    return _toggle_archive(job_id, False, user)
 
 
-def _toggle_archive(job_id: str, flag: bool):
+def _toggle_archive(job_id: str, flag: bool, user: dict):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.set_archived(job_id, flag))
     except KeyError:
@@ -268,8 +304,9 @@ def _toggle_archive(job_id: str, flag: bool):
 
 
 @app.delete("/jobs/{job_id}")
-def delete_job(job_id: str):
+def delete_job(job_id: str, user: dict = Depends(auth.require_user)):
     """Remove the job and its whole output folder (clips, audio, final video, cards)."""
+    _owned_job(job_id, user)
     try:
         freed, warning = manager.delete(job_id)
     except KeyError:
@@ -280,8 +317,9 @@ def delete_job(job_id: str):
 
 
 @app.post("/jobs/{job_id}/resume")
-def resume_job(job_id: str):
+def resume_job(job_id: str, user: dict = Depends(auth.require_user)):
     """Requeue a failed job; it continues from the step it failed at (artifacts reused)."""
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.resume(job_id))
     except KeyError:
@@ -291,7 +329,8 @@ def resume_job(job_id: str):
 
 
 @app.post("/jobs/{job_id}/cancel")
-def cancel_job(job_id: str):
+def cancel_job(job_id: str, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         manager.cancel(job_id)
     except KeyError:
@@ -302,11 +341,9 @@ def cancel_job(job_id: str):
 
 
 @app.get("/jobs/{job_id}/details")
-def job_details(job_id: str):
+def job_details(job_id: str, user: dict = Depends(auth.require_user)):
     """Transcript text, LLM plan and full log for the detail page."""
-    job = manager.jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
+    job = _owned_job(job_id, user)
     d = {"transcript": None, "plan": None, "log": job.log}
     t = job.dir / "transcript.txt"
     if t.exists():
@@ -321,9 +358,9 @@ def job_details(job_id: str):
 
 
 @app.get("/jobs/{job_id}/files/{name}")
-def job_file(job_id: str, name: str):
-    job = manager.jobs.get(job_id)
-    if not job or "/" in name or "\\" in name or ".." in name:
+def job_file(job_id: str, name: str, user: dict = Depends(auth.require_user)):
+    job = _owned_job(job_id, user)
+    if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(404)
     path = job.dir / name
     if not path.exists():
@@ -339,11 +376,9 @@ def _safe_filename(title: str, fallback: str) -> str:
 
 
 @app.get("/jobs/{job_id}/download/{kind}")
-def download(job_id: str, kind: str):
+def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
     """Downloads named after the video title: video, thumbnail, or the full ZIP bundle."""
-    job = manager.jobs.get(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
+    job = _owned_job(job_id, user)
     d = job.dir
     title = _safe_filename(job.title, job.id)
     if kind == "video":
@@ -425,6 +460,7 @@ def auth_setup(body: Credentials, request: Request):
         rec = users.add_user(body.username, body.password, "admin")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    ownership.migrate_unowned(manager.jobs.values())   # the legacy seed channel / old jobs become theirs
     resp = JSONResponse({"user": rec})
     auth.set_cookie(resp, users.get_user(rec["id"]), request)
     return resp
@@ -508,21 +544,24 @@ def update_user(uid: str, body: UserUpdate, admin: dict = Depends(auth.require_a
 
 @app.delete("/api/users/{uid}")
 def delete_user_api(uid: str, admin: dict = Depends(auth.require_admin)):
+    """Remove an account; its channels and videos move to the admin performing the deletion."""
     try:
         users.delete_user(uid, acting_uid=admin["id"])
     except KeyError:
         raise HTTPException(404, "unknown user")
     except ValueError as e:
         raise HTTPException(409, str(e))
-    return {"ok": True}
+    moved = ownership.reassign(uid, admin["id"], manager.jobs.values())
+    return {"ok": True, "reassigned": moved}
 
 
 # ---- options / settings / health ------------------------------------------
-def _channel_json(c: dict) -> dict:
+def _channel_json(c: dict, names: dict | None = None) -> dict:
     from services import youtube
     return {**c, "has_logo": channels.logo_path(c["id"]).exists(),
             "has_secret": channels.secret_path(c["id"]).exists(),
             "yt_connected": youtube.is_connected(channels.token_path(c["id"])),
+            "owner_name": (_owner_names() if names is None else names).get(c.get("owner", ""), ""),
             "cast": [{**x, "has_portrait": channels.portrait_path(c["id"], x["id"]).exists()}
                      for x in (c.get("cast") or []) if x.get("id")]}
 
@@ -534,20 +573,25 @@ def _channel_secret(cid: str):
 
 
 @app.get("/options")
-def options():
-    chans = [_channel_json(c) for c in channels.list_channels()]
-    return {"aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
+def options(user: dict = Depends(auth.require_user)):
+    names = _owner_names()
+    chans = [_channel_json(c, names) for c in _visible_channels(user)]
+    own = [c for c in chans if c.get("owner") == user["id"]]
+    return {"me": users.public(user),
+            "aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "megapixels_options": config.MEGAPIXELS_OPTIONS, "default_megapixels": config.DEFAULT_MEGAPIXELS,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
             "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music",
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
-            "channels": chans, "default_channel_id": chans[0]["id"] if chans else ""}
+            "channels": chans,
+            # the caller's own first channel; "" when they have none yet (admins pick explicitly)
+            "default_channel_id": own[0]["id"] if own else ""}
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(admin: dict = Depends(auth.require_admin)):
     meta = {k: {"label": v[2], "help": v[3], "type": ("bool" if v[0] is bool else "number" if v[0] in (int, float) else "text")}
             for k, v in config.EDITABLE_SETTINGS.items()}
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
@@ -557,13 +601,13 @@ def get_settings():
 
 
 @app.get("/api/schedule")
-def get_schedule():
-    """GPU schedule window state (server local time) for the banner and the Settings card."""
+def get_schedule(user: dict = Depends(auth.require_user)):
+    """GPU schedule window state (server local time) for the Jobs-page banner and the Settings card."""
     return schedule.status()
 
 
 @app.put("/api/settings")
-def put_settings(body: dict):
+def put_settings(body: dict, admin: dict = Depends(auth.require_admin)):
     try:
         settings = config.save_settings(body)
     except ValueError as e:
@@ -573,9 +617,11 @@ def put_settings(body: dict):
 
 # ---- channels --------------------------------------------------------------
 @app.get("/api/channels")
-def list_channels_api():
+def list_channels_api(user: dict = Depends(auth.require_user)):
     from services import youtube
-    return {"channels": [_channel_json(c) for c in channels.list_channels()],
+    names = _owner_names()
+    return {"me": users.public(user),
+            "channels": [_channel_json(c, names) for c in _visible_channels(user)],
             "secret": youtube.has_secret(),
             "audiences": config.AUDIENCES, "video_types": config.VIDEO_TYPES,
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
@@ -589,7 +635,7 @@ class BibleBody(BaseModel):
 
 
 @app.post("/api/channels/parse-bible")
-def parse_bible_api(body: BibleBody):
+def parse_bible_api(body: BibleBody, user: dict = Depends(auth.require_user)):
     """Preview a pasted character bible (markdown) as channel data: {rules, cast, sections,
     warnings}. Nothing is stored - the Settings page merges the result into the channel being
     edited and the user saves through PUT /api/channels/{id}."""
@@ -607,15 +653,17 @@ def parse_bible_api(body: BibleBody):
 
 
 @app.post("/api/channels")
-def create_channel(body: dict):
+def create_channel(body: dict, user: dict = Depends(auth.require_user)):
+    """Create a channel owned by the caller (the owner cannot be set through the body)."""
     try:
-        return _channel_json(channels.add_channel(body or {}))
+        return _channel_json(channels.add_channel(body or {}, owner=user["id"]))
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
 @app.put("/api/channels/{cid}")
-def update_channel(cid: str, body: dict):
+def update_channel(cid: str, body: dict, user: dict = Depends(auth.require_user)):
+    _owned_channel(cid, user)
     try:
         return _channel_json(channels.update_channel(cid, body or {}))
     except KeyError:
@@ -625,7 +673,8 @@ def update_channel(cid: str, body: dict):
 
 
 @app.delete("/api/channels/{cid}")
-def delete_channel(cid: str):
+def delete_channel(cid: str, user: dict = Depends(auth.require_user)):
+    _owned_channel(cid, user)
     try:
         channels.delete_channel(cid)
     except KeyError:
@@ -636,10 +685,9 @@ def delete_channel(cid: str):
 
 
 @app.post("/api/channels/{cid}/logo")
-async def upload_channel_logo(cid: str, file: UploadFile):
+async def upload_channel_logo(cid: str, file: UploadFile, user: dict = Depends(auth.require_user)):
     """Store a channel's logo (converted to PNG with alpha); overlaid on its thumbnails."""
-    if not channels.get_channel(cid):
-        raise HTTPException(404, "unknown channel")
+    _owned_channel(cid, user)
     from PIL import Image
     import io as _io
     data = await file.read()
@@ -659,7 +707,8 @@ async def upload_channel_logo(cid: str, file: UploadFile):
 
 
 @app.delete("/api/channels/{cid}/logo")
-def delete_channel_logo(cid: str):
+def delete_channel_logo(cid: str, user: dict = Depends(auth.require_user)):
+    _owned_channel(cid, user)
     try:
         channels.logo_path(cid).unlink(missing_ok=True)
     except OSError as e:
@@ -668,7 +717,8 @@ def delete_channel_logo(cid: str):
 
 
 @app.get("/api/channels/{cid}/logo")
-def get_channel_logo(cid: str):
+def get_channel_logo(cid: str, user: dict = Depends(auth.require_user)):
+    _owned_channel(cid, user)
     p = channels.logo_path(cid)
     if not p.exists():
         raise HTTPException(404, "no logo uploaded for this channel")
@@ -676,10 +726,8 @@ def get_channel_logo(cid: str):
 
 
 # ---- channel cast portraits -------------------------------------------------
-def _cast_member(cid: str, char_id: str) -> dict:
-    ch = channels.get_channel(cid)
-    if not ch:
-        raise HTTPException(404, "unknown channel")
+def _cast_member(cid: str, char_id: str, user: dict) -> dict:
+    ch = _owned_channel(cid, user)
     c = next((x for x in (ch.get("cast") or []) if x.get("id") == char_id), None)
     if c is None:
         raise HTTPException(404, "unknown cast character")
@@ -695,7 +743,8 @@ class CastApprove(BaseModel):
 
 
 @app.get("/api/channels/{cid}/cast/{char_id}/portrait")
-def get_cast_portrait(cid: str, char_id: str):
+def get_cast_portrait(cid: str, char_id: str, user: dict = Depends(auth.require_user)):
+    _cast_member(cid, char_id, user)
     p = channels.portrait_path(cid, char_id)
     if not p.exists():
         raise HTTPException(404, "no portrait for this character")
@@ -703,9 +752,10 @@ def get_cast_portrait(cid: str, char_id: str):
 
 
 @app.post("/api/channels/{cid}/cast/{char_id}/portrait")
-async def upload_cast_portrait(cid: str, char_id: str, file: UploadFile):
+async def upload_cast_portrait(cid: str, char_id: str, file: UploadFile,
+                               user: dict = Depends(auth.require_user)):
     """Upload a reference portrait (any image; stored as PNG, downscaled to <=1280 px wide)."""
-    _cast_member(cid, char_id)
+    _cast_member(cid, char_id, user)
     from PIL import Image
     import io as _io
     data = await file.read()
@@ -725,29 +775,33 @@ async def upload_cast_portrait(cid: str, char_id: str, file: UploadFile):
 
 
 @app.delete("/api/channels/{cid}/cast/{char_id}/portrait")
-def delete_cast_portrait(cid: str, char_id: str):
+def delete_cast_portrait(cid: str, char_id: str, user: dict = Depends(auth.require_user)):
+    _cast_member(cid, char_id, user)
     channels.portrait_path(cid, char_id).unlink(missing_ok=True)
     return {"ok": True}
 
 
 @app.post("/api/channels/{cid}/cast/{char_id}/portrait/generate")
-def generate_cast_portrait(cid: str, char_id: str, body: CastGenerate | None = None):
+def generate_cast_portrait(cid: str, char_id: str, body: CastGenerate | None = None,
+                           user: dict = Depends(auth.require_user)):
     """Render portrait candidates with ComfyUI in the channel's art style (background thread)."""
-    _cast_member(cid, char_id)
+    _cast_member(cid, char_id, user)
     if not cast.start_candidates(cid, char_id, (body or CastGenerate()).count):
         raise HTTPException(409, "portrait generation is already running for this character")
     return {"started": True}
 
 
 @app.get("/api/channels/{cid}/cast/{char_id}/portrait/candidates")
-def cast_portrait_candidates(cid: str, char_id: str):
+def cast_portrait_candidates(cid: str, char_id: str, user: dict = Depends(auth.require_user)):
+    _cast_member(cid, char_id, user)
     st = cast.candidates_state(cid, char_id)
     st["candidates"] = [f"/api/channels/{cid}/cast/{char_id}/portrait/candidate/{k}" for k in st["candidates"]]
     return st
 
 
 @app.get("/api/channels/{cid}/cast/{char_id}/portrait/candidate/{k}")
-def cast_portrait_candidate(cid: str, char_id: str, k: int):
+def cast_portrait_candidate(cid: str, char_id: str, k: int, user: dict = Depends(auth.require_user)):
+    _cast_member(cid, char_id, user)
     p = channels.candidate_path(cid, char_id, k)
     if not p.exists():
         raise HTTPException(404, "candidate not found")
@@ -755,8 +809,8 @@ def cast_portrait_candidate(cid: str, char_id: str, k: int):
 
 
 @app.post("/api/channels/{cid}/cast/{char_id}/portrait/approve")
-def approve_cast_portrait(cid: str, char_id: str, body: CastApprove):
-    _cast_member(cid, char_id)
+def approve_cast_portrait(cid: str, char_id: str, body: CastApprove, user: dict = Depends(auth.require_user)):
+    _cast_member(cid, char_id, user)
     try:
         cast.approve_candidate(cid, char_id, body.k)
     except FileNotFoundError:
@@ -765,13 +819,15 @@ def approve_cast_portrait(cid: str, char_id: str, body: CastApprove):
 
 
 # ---- reference voices ------------------------------------------------------
+# A shared library: admins manage it, every user can list the voices and pick one per video.
 @app.get("/api/voices")
-def list_voices():
+def list_voices(user: dict = Depends(auth.require_user)):
     return {"voices": voices.list_voices()}
 
 
 @app.post("/api/voices")
-async def create_voice(file: UploadFile, name: str = Form(...), text: str = Form(...)):
+async def create_voice(file: UploadFile, name: str = Form(...), text: str = Form(...),
+                       admin: dict = Depends(auth.require_admin)):
     """Add a reference voice for Fish Speech cloning: audio sample + the text spoken in it."""
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
@@ -783,7 +839,7 @@ async def create_voice(file: UploadFile, name: str = Form(...), text: str = Form
 
 
 @app.delete("/api/voices/{voice_id}")
-def delete_voice(voice_id: str):
+def delete_voice(voice_id: str, admin: dict = Depends(auth.require_admin)):
     try:
         voices.delete_voice(voice_id)
     except KeyError:
@@ -792,7 +848,7 @@ def delete_voice(voice_id: str):
 
 
 @app.get("/api/voices/{voice_id}/audio")
-def voice_audio(voice_id: str):
+def voice_audio(voice_id: str, user: dict = Depends(auth.require_user)):
     path = voices.voice_audio_path(voice_id)
     if not path.exists():
         raise HTTPException(404, "unknown reference voice")
@@ -800,7 +856,8 @@ def voice_audio(voice_id: str):
 
 
 @app.post("/jobs/{job_id}/regen-thumbnail")
-def regen_thumbnail(job_id: str):
+def regen_thumbnail(job_id: str, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.regen_thumbnail(job_id))
     except KeyError:
@@ -850,10 +907,9 @@ class OAuthFinish(BaseModel):
 
 
 @app.get("/api/channels/{cid}/youtube/auth")
-def channel_youtube_auth(cid: str, request: Request):
+def channel_youtube_auth(cid: str, request: Request, user: dict = Depends(auth.require_user)):
     from services import youtube
-    if not channels.get_channel(cid):
-        raise HTTPException(404, "unknown channel")
+    _owned_channel(cid, user)
     secret = _channel_secret(cid)
     if not youtube.has_secret(secret):
         raise HTTPException(409, "no OAuth client secret - upload one for this channel "
@@ -867,12 +923,11 @@ def channel_youtube_auth(cid: str, request: Request):
 
 
 @app.post("/api/channels/{cid}/youtube/finish")
-def channel_youtube_finish(cid: str, body: OAuthFinish):
+def channel_youtube_finish(cid: str, body: OAuthFinish, user: dict = Depends(auth.require_user)):
     """Complete a consent flow whose loopback redirect could not reach the server: the user
     pastes the address Google sent the browser to (or the bare authorization code)."""
     from services import youtube
-    if not channels.get_channel(cid):
-        raise HTTPException(404, "unknown channel")
+    _owned_channel(cid, user)
     try:
         code, state = _parse_oauth_return(body.url)
     except ValueError as e:
@@ -903,10 +958,9 @@ async def _read_secret_upload(file: UploadFile) -> bytes:
 
 
 @app.post("/api/channels/{cid}/secret")
-async def upload_channel_secret(cid: str, file: UploadFile):
+async def upload_channel_secret(cid: str, file: UploadFile, user: dict = Depends(auth.require_user)):
     """Store a channel's own OAuth client file (overrides the shared one for this channel)."""
-    if not channels.get_channel(cid):
-        raise HTTPException(404, "unknown channel")
+    _owned_channel(cid, user)
     data = await _read_secret_upload(file)
     config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
     channels.secret_path(cid).write_bytes(data)
@@ -914,21 +968,22 @@ async def upload_channel_secret(cid: str, file: UploadFile):
 
 
 @app.delete("/api/channels/{cid}/secret")
-def delete_channel_secret(cid: str):
+def delete_channel_secret(cid: str, user: dict = Depends(auth.require_user)):
+    _owned_channel(cid, user)
     channels.secret_path(cid).unlink(missing_ok=True)
     return {"ok": True}
 
 
 @app.post("/api/youtube/secret")
-async def upload_shared_secret(file: UploadFile):
-    """Store the shared OAuth client file used by channels without their own."""
+async def upload_shared_secret(file: UploadFile, admin: dict = Depends(auth.require_admin)):
+    """Store the shared OAuth client file used by channels without their own (admin only)."""
     data = await _read_secret_upload(file)
     config.YT_CLIENT_SECRET_FILE.write_bytes(data)
     return {"ok": True}
 
 
 @app.delete("/api/youtube/secret")
-def delete_shared_secret():
+def delete_shared_secret(admin: dict = Depends(auth.require_admin)):
     config.YT_CLIENT_SECRET_FILE.unlink(missing_ok=True)
     return {"ok": True}
 
@@ -946,14 +1001,16 @@ def youtube_callback(code: str = "", state: str = "", error: str = ""):
 
 
 @app.delete("/api/channels/{cid}/youtube/auth")
-def channel_youtube_disconnect(cid: str):
+def channel_youtube_disconnect(cid: str, user: dict = Depends(auth.require_user)):
     from services import youtube
+    _owned_channel(cid, user)
     youtube.disconnect(channels.token_path(cid))
     return {"ok": True}
 
 
 @app.post("/jobs/{job_id}/youtube-upload")
-def youtube_upload(job_id: str):
+def youtube_upload(job_id: str, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
     try:
         return _job_json(manager.start_youtube_upload(job_id))
     except KeyError:
@@ -963,7 +1020,7 @@ def youtube_upload(job_id: str):
 
 
 @app.get("/api/health")
-def health():
+def health(admin: dict = Depends(auth.require_admin)):
     targets = {
         "comfyui": f"{config.COMFY_URL.rstrip('/')}/system_stats",
         "vllm": f"{config.VLLM_URL.rstrip('/')}/models",
@@ -1002,7 +1059,7 @@ def _preview_dir():
 
 
 @app.get("/api/style-previews")
-def style_previews():
+def style_previews(user: dict = Depends(auth.require_user)):
     d = _preview_dir()
     previews = {}
     for name in config.ART_STYLES:
@@ -1015,7 +1072,7 @@ def style_previews():
 
 
 @app.post("/api/style-previews")
-def generate_style_previews():
+def generate_style_previews(admin: dict = Depends(auth.require_admin)):
     with _preview_lock:
         if _preview_state["generating"]:
             raise HTTPException(409, "preview generation is already running")

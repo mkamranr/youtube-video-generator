@@ -319,6 +319,9 @@ input[type=password]:focus, input[type=email]:focus { outline: none; border-colo
 .nav .user { display: inline-flex; align-items: center; gap: 6px; margin-right: 6px; font-size: 13px; color: var(--muted); }
 .nav .user .who { display: inline-flex; align-items: center; gap: 6px; }
 .nav .user .role { border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+/* owner tag admins see on other users' channels and jobs */
+.owner { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 99px;
+         padding: 0 7px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
 .switch input:checked + .track::after { transform: translateX(18px); background: var(--accent-ink); }
 .health { display: flex; flex-direction: column; gap: 10px; }
 .health-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }

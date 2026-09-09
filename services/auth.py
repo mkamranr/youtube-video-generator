@@ -128,6 +128,20 @@ def require_admin(request: Request) -> dict:
     return user
 
 
+# ---- ownership ------------------------------------------------------------------------
+def is_admin(user: dict | None) -> bool:
+    return bool(user) and user.get("role") == "admin"
+
+
+def can_access(user: dict | None, owner: str) -> bool:
+    """Admins reach everything; users only records they own. A record without an owner
+    (the window between a legacy install's first start and its admin being created) is
+    admin-only."""
+    if not user:
+        return False
+    return is_admin(user) or (bool(owner) and owner == user.get("id"))
+
+
 # ---- login throttling -----------------------------------------------------------------
 def _key(request: Request, username: str) -> tuple:
     ip = request.client.host if request.client else "?"

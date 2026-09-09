@@ -106,6 +106,33 @@ class Opening(unittest.TestCase):
                 config.CHANNELS_DIR = old
 
 
+class Thumbnail(unittest.TestCase):
+    def test_looks_prefix_is_forced_and_ordered(self):
+        ch = _channel()
+        p = cast.looks_prefix(ch, ["Pip", "Finn", "Nobody"])
+        lines = p.split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("Pip: Precise look:"))
+        self.assertTrue(lines[1].startswith("Finn: Precise look:"))
+        self.assertEqual(cast.looks_prefix(ch, []), "")
+        self.assertEqual(cast.looks_prefix(ch, None), "")
+
+    def test_build_thumbnail_seeds_from_a_portrait(self):
+        from services.comfy import ComfyClient
+        nodes = (config.NODE_PROMPT, config.NODE_SEED, config.NODE_DURATION, config.NODE_SAVE,
+                 config.NODE_RESOLUTION, config.NODE_LOAD_IMAGE)
+        template = {n: {"inputs": {}} for n in nodes}
+        plain = ComfyClient.build_thumbnail(template, "p", "videogen/x/thumb", aspect_ratio=config.DEFAULT_ASPECT_RATIO)
+        self.assertEqual(plain[config.NODE_DURATION]["inputs"]["value"], 0.1)
+        self.assertNotIn("image", plain[config.NODE_LOAD_IMAGE]["inputs"])
+        self.assertEqual(plain[config.NODE_RESOLUTION]["inputs"]["megapixels"], 1.0)
+        seeded = ComfyClient.build_thumbnail(template, "p", "videogen/x/thumb", aspect_ratio=config.DEFAULT_ASPECT_RATIO,
+                                             first_frame="videogen_x_cast.jpg", seconds=config.THUMB_SEED_SECONDS)
+        self.assertEqual(seeded[config.NODE_DURATION]["inputs"]["value"], config.THUMB_SEED_SECONDS)
+        self.assertEqual(seeded[config.NODE_LOAD_IMAGE]["inputs"]["image"], "videogen_x_cast.jpg")
+        self.assertEqual(seeded[config.NODE_PROMPT]["inputs"]["prompt"], "p")
+
+
 class Validation(unittest.TestCase):
     def test_cast_cap_and_rules_cap(self):
         base = {"name": "X"}

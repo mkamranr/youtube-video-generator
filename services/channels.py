@@ -42,6 +42,7 @@ def _read_index() -> dict:
                     c.setdefault("cast", [])
                     c.setdefault("cast_opening", True)
                     c.setdefault("rules", "")
+                    c.setdefault("owner", "")   # user id; assigned by services.ownership when empty
             return data
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
@@ -53,8 +54,12 @@ def _write_index(data: dict):
     config.CHANNELS_INDEX.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def list_channels() -> list:
-    return _read_index()["channels"]
+def list_channels(owner: str | None = None) -> list:
+    """All channels, or only those owned by the given user id."""
+    chans = _read_index()["channels"]
+    if owner is None:
+        return chans
+    return [c for c in chans if c.get("owner") == owner]
 
 
 def get_channel(cid: str):
@@ -151,6 +156,8 @@ def _validate(data: dict, base: dict | None = None) -> dict:
             if k in base:
                 rec[k] = base[k]
         rec["defaults"].update(base.get("defaults") or {})
+    # the owner is server-assigned (add_channel / ownership migration) and never taken from a request
+    rec["owner"] = str((base or {}).get("owner") or "")
     for k in ("name", "purpose", "rules", "audience", "video_type"):
         if k in data:
             rec[k] = str(data[k] or "").strip()
@@ -195,15 +202,46 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     return rec
 
 
-def add_channel(data: dict) -> dict:
+def add_channel(data: dict, owner: str) -> dict:
+    """Create a channel owned by the given user id ("" only for the legacy first-start seed,
+    which the ownership migration assigns to the first admin)."""
     rec = _validate(data)
     rec["id"] = uuid.uuid4().hex[:8]
     rec["created"] = time.time()
+    rec["owner"] = str(owner or "")
     with _lock:
         idx = _read_index()
         idx["channels"].append(rec)
         _write_index(idx)
     return rec
+
+
+def assign_unowned(owner: str) -> int:
+    """Give every channel without an owner to `owner`; returns how many changed."""
+    n = 0
+    with _lock:
+        idx = _read_index()
+        for c in idx["channels"]:
+            if not c.get("owner"):
+                c["owner"] = owner
+                n += 1
+        if n:
+            _write_index(idx)
+    return n
+
+
+def reassign_owner(old: str, new: str) -> int:
+    """Move every channel of user `old` to user `new` (used when an account is deleted)."""
+    n = 0
+    with _lock:
+        idx = _read_index()
+        for c in idx["channels"]:
+            if c.get("owner") == old:
+                c["owner"] = new
+                n += 1
+        if n:
+            _write_index(idx)
+    return n
 
 
 def update_channel(cid: str, data: dict) -> dict:
@@ -231,8 +269,7 @@ def delete_channel(cid: str):
         keep = [c for c in idx["channels"] if c["id"] != cid]
         if len(keep) == len(idx["channels"]):
             raise KeyError(cid)
-        if not keep:
-            raise ValueError("cannot delete the last channel - add another one first")
+        # zero channels is a valid state: a new user starts with none and creates their own
         idx["channels"] = keep
         _write_index(idx)
     logo_path(cid).unlink(missing_ok=True)
@@ -246,9 +283,12 @@ def ensure_default_channel():
 
     Reads settings.json raw (the legacy CHANNEL_NAME / DEFAULT_* / AUDIO_MODE /
     YT_MADE_FOR_KIDS keys are no longer in EDITABLE_SETTINGS, so config skips them)
-    and copies the legacy logo and YouTube token so nothing is lost.
+    and copies the legacy logo and YouTube token so nothing is lost. Runs only while no
+    channel index exists at all: once channels were ever saved (even if all of them were
+    deleted later) nothing is seeded. The seeded channel has no owner yet - the ownership
+    migration hands it to the first admin.
     """
-    if list_channels():
+    if config.CHANNELS_INDEX.exists():
         return None
     raw = {}
     try:
@@ -273,7 +313,7 @@ def ensure_default_channel():
             "aspect_ratio": val("DEFAULT_ASPECT_RATIO", config.DEFAULT_ASPECT_RATIO, config.ASPECT_RATIOS),
             "video_length": val("DEFAULT_VIDEO_LENGTH", config.DEFAULT_VIDEO_LENGTH, config.VIDEO_LENGTHS),
         },
-    })
+    }, owner="")
     # copy (not move): the legacy files stay as fallbacks for pre-existing jobs
     if config.LOGO_FILE.exists():
         shutil.copyfile(config.LOGO_FILE, logo_path(rec["id"]))

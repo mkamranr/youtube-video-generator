@@ -32,6 +32,7 @@ class Job:
     source: str = "youtube"         # youtube | topic | description | transcript
     topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
+    owner: str = ""                 # user id of the job's owner (the channel's owner); "" only before the ownership migration
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     script_approved: bool = False
@@ -248,6 +249,43 @@ def _set_cast_used(job: Job, plan: dict) -> list:
                 used.append(n)
     plan["cast_used"] = used
     return used
+
+
+def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None) -> tuple:
+    """Render plan["thumbnail_prompt"] into dest (JPG at the job's thumbnail size, logo overlaid).
+
+    The canonical looks of every character in the video are always prepended, so the thumbnail
+    shows them even when the LLM's prompt only says "the little fox". When the story's opening
+    character has an approved portrait (cast_opening.jpg, prepared before the scenes), the render
+    is seeded from that portrait like clip 1: a short clip that moves from the reference pose into
+    the thumbnail composition, whose LAST frame becomes the thumbnail - face, colours and outfit
+    then match the reference. Without a portrait it is the 5-frame text-to-video render."""
+    d = job.dir
+    client = comfy.ComfyClient()
+    parts = [plan.get("style", ""), cast.looks_prefix(job.channel, plan.get("cast_used")),
+             plan["thumbnail_prompt"]]
+    prompt = "\n\n".join(p.strip() for p in parts if p and p.strip())
+    opening = plan.get("opening") or {}
+    portrait = d / "cast_opening.jpg"
+    first_frame, seconds, template = None, None, config.T2V_WORKFLOW
+    if opening.get("name") and portrait.exists():
+        first_frame = client.upload_image(portrait, f"videogen_{job.id}_cast.jpg")
+        seconds, template = config.THUMB_SEED_SECONDS, config.I2V_WORKFLOW
+        prompt += (f"\n\nThe shot starts from the provided reference image of {opening['name']}. "
+                   f"{opening['name']} moves into the thumbnail composition described above, keeping this "
+                   "exact appearance - same face, colours, clothes and marks. End on that composition, "
+                   "held still.")
+    wf = client.build_thumbnail(client.load_workflow(template), prompt, f"videogen/{job.id}/thumb",
+                                aspect_ratio=job.aspect_ratio, first_frame=first_frame, seconds=seconds)
+    raw = client.run(wf, d / "thumb_raw.mp4", on_progress=on_progress, should_stop=should_stop,
+                     cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
+    tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
+    video.make_thumbnail(raw, dest, tw, th, logo=_logo_for(job), last=first_frame is not None)
+    if first_frame is not None:
+        job.add_log(f"thumbnail seeded from {opening['name']}'s portrait")
+        if config.COMFY_CLEANUP:
+            client.scrub_file("input", "", first_frame)
+    return tw, th
 
 
 def _storyboard_assets(job: Job, plan: dict, n: int):
@@ -543,16 +581,8 @@ def _run(job: Job):
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
-            tclient = comfy.ComfyClient()
-            twf = tclient.build_thumbnail(tclient.load_workflow(config.T2V_WORKFLOW),
-                                          f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'], only=plan.get('cast_used'))}",
-                                          f"videogen/{job.id}/thumb",
-                                          aspect_ratio=job.aspect_ratio)
-            traw = tclient.run(twf, d / "thumb_raw.mp4", on_progress=_progress(job, "thumbnail"),
-                               should_stop=lambda: job.cancel_requested,
-                               cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
-            tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
-            video.make_thumbnail(traw, thumb, tw, th, logo=_logo_for(job))
+            tw, th = _render_thumbnail(job, plan, thumb, on_progress=_progress(job, "thumbnail"),
+                                       should_stop=lambda: job.cancel_requested)
             job.add_log(f"thumbnail ready ({tw}x{th})")
         except JobCancelled:
             raise
@@ -778,13 +808,15 @@ class JobManager:
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
-               channel: dict | None = None, storyboard_flag=None, megapixels=None) -> Job:
+               channel: dict | None = None, storyboard_flag=None, megapixels=None,
+               owner: str = "") -> Job:
         aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, megapixels=mp, audio_mode=audio_mode, voice_id=voice_id,
-                  art_style=art_style, video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
+                  art_style=art_style, video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
+                  owner=owner or (channel or {}).get("owner", ""))
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -871,7 +903,8 @@ class JobManager:
                       aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
-                      channel: dict | None = None, storyboard_flag=None, megapixels=None) -> Job:
+                      channel: dict | None = None, storyboard_flag=None, megapixels=None,
+                      owner: str = "") -> Job:
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description/transcript is too short")
@@ -884,7 +917,8 @@ class JobManager:
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio, megapixels=mp,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
-                  video_length=video_length, channel_id=cid, channel=snap, storyboard=sb)
+                  video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
+                  owner=owner or (channel or {}).get("owner", ""))
         job.save()
         if source_kind == "transcript":   # shown by the job page's Transcript card
             job.dir.mkdir(parents=True, exist_ok=True)
@@ -1032,16 +1066,7 @@ class JobManager:
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")
-            client = comfy.ComfyClient()
-            twf = client.build_thumbnail(client.load_workflow(config.T2V_WORKFLOW),
-                                         f"{plan['style']}\n\n{cast.with_prefix(job.channel, plan['thumbnail_prompt'], only=plan.get('cast_used'))}",
-                                         f"videogen/{job.id}/thumb",
-                                         aspect_ratio=job.aspect_ratio)
-            traw = client.run(twf, d / "thumb_raw.mp4",
-                              on_progress=_progress(job, "thumbnail"),
-                              cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
-            tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
-            video.make_thumbnail(traw, d / "thumbnail.jpg", tw, th, logo=_logo_for(job))
+            tw, th = _render_thumbnail(job, plan, d / "thumbnail.jpg", on_progress=_progress(job, "thumbnail"))
             job.set("done", "thumbnail regenerated")
             job.add_log(f"thumbnail regenerated ({tw}x{th})")
         except Exception as e:  # noqa: BLE001
@@ -1193,5 +1218,9 @@ class JobManager:
             self.jobs.pop(job_id)
         return remove_job_dir(job.dir)
 
-    def list(self):
-        return sorted(self.jobs.values(), key=lambda j: j.created, reverse=True)
+    def list(self, owner: str | None = None):
+        """All jobs newest first, or only those owned by the given user id."""
+        jobs = self.jobs.values()
+        if owner is not None:
+            jobs = [j for j in jobs if j.owner == owner]
+        return sorted(jobs, key=lambda j: j.created, reverse=True)

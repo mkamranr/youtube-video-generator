@@ -127,6 +127,13 @@ def render_prefix(channel: dict | None, text: str, only: list | None = None) -> 
     return "\n".join(f"{c['name']}: {c.get('look', '').strip()}" for c in chars if c.get("look", "").strip())
 
 
+def looks_prefix(channel: dict | None, names: list | None) -> str:
+    """`Name: look` lines for exactly the given cast names, whether or not the text names them
+    (the thumbnail must show the video's characters even if the LLM wrote "the little fox")."""
+    return "\n".join(f"{c['name']}: {c.get('look', '').strip()}"
+                     for c in select_characters(channel, names) if c.get("look", "").strip())
+
+
 def with_prefix(channel: dict | None, text: str, only: list | None = None) -> str:
     """text with the look prefix prepended when a cast character is named in it."""
     p = render_prefix(channel, text, only=only)

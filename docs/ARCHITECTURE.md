@@ -21,6 +21,8 @@ services/
                        candidate rendering/approval, and the "opening character" whose portrait seeds clip 1
   bible.py             Character-bible import: parses a markdown bible into cast entries + the channel's
                        style & rules text (pure text processing, previewed via POST /api/channels/parse-bible)
+  ownership.py         Who owns channels and jobs: startup migration of unowned records to the oldest
+                       admin, reassignment when an account is deleted
   voices.py            Reference-voice library (reference_audio/): normalized samples + transcripts
                        for Fish Speech voice cloning, JSON index, add/list/delete
   lyrics.py            faster-whisper word-timestamp transcription -> words heard per clip window
@@ -46,7 +48,7 @@ start_server.bat       Watchdog: relaunches uvicorn whenever it exits; logs to s
 
 ## Authentication
 
-A single `auth_gate` HTTP middleware in `app.py` runs outermost: it resolves the session cookie once per request (`auth.current_user`, cached on `request.state`) and lets through only signed-in users, the public paths (`/login`, `/setup`, `/api/auth/*`, `/api/ping`, `/api/youtube/callback`, `/css/*`, `/js/*`) — the `StaticFiles` mount and job file downloads are therefore covered too. While no account exists every protected request is sent to the one-time `/setup` page, which creates the first admin; afterwards `/setup` redirects to `/login`. Sessions are stateless: the cookie payload `{uid, exp, ps}` is HMAC-signed with a key from `VIDEOGEN_SECRET_KEY` or `users/session_secret` (generated once); `ps` fingerprints the password hash so a password change invalidates old sessions. Admin-only routes use `Depends(auth.require_admin)`. Jobs are shared: there is no per-user ownership.
+A single `auth_gate` HTTP middleware in `app.py` runs outermost: it resolves the session cookie once per request (`auth.current_user`, cached on `request.state`) and lets through only signed-in users, the public paths (`/login`, `/setup`, `/api/auth/*`, `/api/ping`, `/api/youtube/callback`, `/css/*`, `/js/*`) — the `StaticFiles` mount and job file downloads are therefore covered too. While no account exists every protected request is sent to the one-time `/setup` page, which creates the first admin; afterwards `/setup` redirects to `/login`. Sessions are stateless: the cookie payload `{uid, exp, ps}` is HMAC-signed with a key from `VIDEOGEN_SECRET_KEY` or `users/session_secret` (generated once); `ps` fingerprints the password hash so a password change invalidates old sessions. Every channel and job handler takes `Depends(auth.require_user)` and resolves its target through `_owned_channel` / `_owned_job` in `app.py`, which return `404` unless `auth.can_access(user, owner)` (admin, or the record's `owner` equals the user id); admin-only routes (settings, health, voice and shared-OAuth mutations, style-preview generation, users) use `Depends(auth.require_admin)`. Channels store `owner` (set by `channels.add_channel(data, owner)`, never taken from the request); jobs carry `Job.owner`, inherited from the channel at submit time. `services/ownership.py` repairs ownership: `migrate_unowned` hands records without an owner to the oldest admin (run at startup and after `/api/auth/setup`, idempotent), `reassign` moves a deleted user's channels and jobs to the acting admin. `GET /jobs`, `/options` and `/api/channels` are filtered to the caller for role `user`; admins get everything plus `owner`/`owner_name` labels and `me`.
 
 ## Job lifecycle
 

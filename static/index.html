@@ -19,6 +19,7 @@
       <p class="page-sub" style="margin:0">Videos for your YouTube channel — generated, reviewed, published.</p>
     </div>
     <div class="spacer"></div>
+    <select id="ownerFilter" hidden style="max-width:180px"><option value="">All owners</option></select>
     <select id="channelFilter" style="max-width:200px"><option value="">All channels</option></select>
     <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search jobs..."></div>
     <button class="btn" id="openCreate"></button>
@@ -39,6 +40,7 @@
             <div class="grow" style="min-width:180px">
               <label for="channel">Channel</label>
               <select id="channel"></select>
+              <div class="hint" id="noChannelHint" hidden>You have no channel yet — <a href="/settings#channelsCard">create one in Settings → Channels</a> first.</div>
             </div>
             <div class="grow" style="min-width:200px">
               <label for="source">Create from</label>
@@ -139,6 +141,7 @@ const SOURCE_PREFIX = { topic: "topic: ", description: "description: ", transcri
 function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; }
 
 let channelsList = [];
+let admin = false;                  // admins see every user's channels and jobs, tagged with the owner
 let realTypes = ["real", "tech"];   // channel video types without an art-style picker
 function currentChannel() { return channelsList.find(c => c.id === $("#channel").value); }
 function isRealistic(ch) { return !!ch && realTypes.includes(ch.video_type); }
@@ -187,6 +190,7 @@ function applySource() {
 async function submit() {
   const mode = $("#source").value;
   const raw = $("#urls").value.trim();
+  if (!$("#channel").value) { toast("Create a channel first (Settings → Channels)", true); return; }
   if (!raw) { toast("Enter something first", true); return; }
   const ch = currentChannel();
   const real = isRealistic(ch);
@@ -263,6 +267,7 @@ function jobCard(j) {
       <div class="jc-meta">
         <span class="jid">${j.id}</span>
         ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
+        ${j.owner_name ? `<span>${ownerBadge(j.owner_name)}</span>` : ""}
         <span>${audioLabel(j)}</span>
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
         ${j.storyboard ? `<span>Story board</span>` : ""}
@@ -310,14 +315,35 @@ function renderChips() {
 }
 
 function applyFilter(jobs) {
-  const cf = $("#channelFilter").value;
+  const cf = $("#channelFilter").value, of = $("#ownerFilter").value;
   const q = ($("#jobSearch").value || "").trim().toLowerCase();
   let out = jobs.filter(CHIP_DEFS.find(c => c[0] === statusFilter)[2]);
   if (cf) out = out.filter(j => j.channel_id === cf);
+  if (of) out = out.filter(j => j.owner === of);
   if (q) out = out.filter(j =>
     [j.title, j.url, j.topic, j.id, j.status, j.art_style,
-     j.channel && j.channel.name].join(" ").toLowerCase().includes(q));
+     j.channel && j.channel.name, j.owner_name].join(" ").toLowerCase().includes(q));
   return out;
+}
+
+// Admin-only owner filter, built from the owners seen in the jobs and channels. The select is only
+// rewritten when the owner set changes, so the 3 s polling never closes an open dropdown.
+let ownerKey = "";
+function rebuildOwnerFilter() {
+  const sel = $("#ownerFilter");
+  if (!admin) { sel.hidden = true; return; }
+  const owners = new Map();
+  channelsList.forEach(c => { if (c.owner) owners.set(c.owner, c.owner_name || c.owner); });
+  lastJobs.forEach(j => { if (j.owner) owners.set(j.owner, j.owner_name || j.owner); });
+  const rows = [...owners].sort((a, b) => a[1].localeCompare(b[1]));
+  const key = rows.map(r => r[0]).join(",");
+  if (key === ownerKey) return;
+  ownerKey = key;
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">All owners</option>` + rows.map(([id, name]) =>
+    `<option value="${esc(id)}">${esc(name)}</option>`).join("");
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  sel.hidden = false;
 }
 
 const PAGE_SIZE = 10;
@@ -352,7 +378,9 @@ function render(jobs) {
   } else {
     $("#jobs").innerHTML = lastJobs.length
       ? `<div class="empty">${icon("search")}No jobs match your filters.</div>`
-      : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
+      : optionsLoaded && !channelsList.length
+        ? `<div class="empty">${icon("video")}No channel yet — <a href="/settings#channelsCard">create your first channel</a> to start making videos.</div>`
+        : `<div class="empty">${icon("video")}No jobs yet — click <b>Create new video</b> to start.</div>`;
   }
   renderPager(jobs.length);
   renderChips();
@@ -363,6 +391,7 @@ async function refresh() {
     lastJobs = await api("/jobs");
     // newest first; job ids start with the creation timestamp, so they break ties
     lastJobs.sort((a, b) => (b.created - a.created) || String(b.id).localeCompare(String(a.id)));
+    rebuildOwnerFilter();
     render(applyFilter(lastJobs));
   } catch (e) { console.error(e); }
   refreshSchedule();
@@ -405,14 +434,23 @@ function updateStylePreview() {
   if (url) { img.src = url; img.hidden = false; } else { img.hidden = true; }
 }
 
+let optionsLoaded = false;
 async function loadOptions() {
   const o = await api("/options");
   channelsList = o.channels || [];
+  admin = isAdmin(o.me || currentUser);
   realTypes = o.realistic_video_types || realTypes;
-  $("#channel").innerHTML = channelsList.map(c =>
-    `<option value="${esc(c.id)}" ${c.id === o.default_channel_id ? "selected" : ""}>${esc(c.name)}</option>`).join("");
+  const chLabel = c => admin && c.owner_name ? `${c.name} — ${c.owner_name}` : c.name;
+  const none = !channelsList.length;
+  $("#channel").innerHTML = none ? `<option value="">No channel yet</option>` : channelsList.map(c =>
+    `<option value="${esc(c.id)}" ${c.id === o.default_channel_id ? "selected" : ""}>${esc(chLabel(c))}</option>`).join("");
+  $("#noChannelHint").hidden = !none;
+  $("#go").disabled = none;
+  $("#go").title = none ? "Create a channel first" : "";
   $("#channelFilter").innerHTML = `<option value="">All channels</option>` +
-    channelsList.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    channelsList.map(c => `<option value="${esc(c.id)}">${esc(chLabel(c))}</option>`).join("");
+  optionsLoaded = true;
+  rebuildOwnerFilter();
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
   $("#mp").innerHTML = (o.megapixels_options || []).map(v =>
     `<option value="${v}" ${v === o.default_megapixels ? "selected" : ""}>${v} MP</option>`).join("");
@@ -460,7 +498,8 @@ document.addEventListener("click", ev => { if (!ev.target.closest(".combo")) hid
 $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
 $("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
 $("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
-loadOptions().then(() => { if (location.hash === "#new") openCreate(); });
+$("#ownerFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
+loadOptions().then(() => { render(applyFilter(lastJobs)); if (location.hash === "#new") openCreate(); });
 refresh();
 setInterval(refresh, 3000);
 </script>

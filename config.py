@@ -12,7 +12,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 WORKFLOWS_DIR = BASE_DIR / "workflows"
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = Path(os.environ.get("VIDEOGEN_OUTPUT_DIR") or BASE_DIR / "output")
 STATIC_DIR = BASE_DIR / "static"
 LEGACY_SETTINGS_FILE = BASE_DIR / "settings.json"
 SETTINGS_FILE = Path(os.environ.get("VIDEOGEN_SETTINGS_FILE") or LEGACY_SETTINGS_FILE)
@@ -21,7 +21,7 @@ VOICES_DIR = BASE_DIR / "reference_audio"   # reference voices for Fish Speech c
 VOICES_INDEX = VOICES_DIR / "voices.json"
 YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client (Desktop type)
 YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # legacy global OAuth token (pre-channels)
-CHANNELS_DIR = BASE_DIR / "channels"        # per-channel store: index, logos, YouTube tokens
+CHANNELS_DIR = Path(os.environ.get("VIDEOGEN_CHANNELS_DIR") or BASE_DIR / "channels")  # index, logos, tokens, portraits
 CHANNELS_INDEX = CHANNELS_DIR / "channels.json"
 USERS_DIR = Path(os.environ.get("VIDEOGEN_USERS_DIR") or BASE_DIR / "users")  # login accounts
 USERS_INDEX = USERS_DIR / "users.json"
@@ -115,6 +115,7 @@ def video_length_range(name: str):
     return VIDEO_LENGTHS.get(name)
 
 # Thumbnail dimensions per aspect ratio (long side <= 1280)
+THUMB_SEED_SECONDS = 3.0   # thumbnail render length when it is seeded from a cast portrait (last frame is kept)
 THUMB_SIZES = {
     "16:9 (Widescreen)": (1280, 720),
     "9:16 (Portrait Widescreen)": (720, 1280),

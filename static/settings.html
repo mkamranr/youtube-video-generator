@@ -14,9 +14,9 @@
 <div id="nav"></div>
 <main>
   <h1 class="page-title">Settings</h1>
-  <p class="page-sub">Applied to new jobs immediately; stored in <code>settings.json</code> next to the app.</p>
+  <p class="page-sub" id="pageSub">Applied to new jobs immediately; stored in <code>settings.json</code> next to the app.</p>
 
-  <div class="card">
+  <div class="card" data-admin hidden>
     <h2>Service health</h2>
     <div class="health" id="health">
       <div class="health-row"><span class="dot"></span> checking…</div>
@@ -24,14 +24,18 @@
     <div style="margin-top:14px"><button class="btn secondary sm" id="recheck">Re-check</button></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="channelsCard">
     <h2>Channels</h2>
-    <div class="hint" style="margin-bottom:10px">Each channel has its own name, purpose, logo, video type and per-video defaults; every video is generated to match the channel picked in the New Video dialog. Uploads go to the YouTube account connected per channel (scope: youtube.upload only) — upload your OAuth <code>client_secret.json</code> (Desktop-type client) below to share it across channels, or give a channel its own in its edit dialog. Each channel chooses its own made-for-kids (COPPA) flag for uploads.</div>
-    <div class="row" style="margin-bottom:12px;align-items:center">
+    <div class="hint" style="margin-bottom:10px">Each channel has its own name, purpose, logo, video type and per-video defaults; every video is generated to match the channel picked in the New Video dialog. Uploads go to the YouTube account connected per channel (scope: youtube.upload only) — <span data-admin hidden>upload your OAuth <code>client_secret.json</code> (Desktop-type client) below to share it across channels, or give a channel its own in its edit dialog.</span><span data-user>upload the channel's own OAuth <code>client_secret.json</code> in its edit dialog, or use the shared one your admin uploaded.</span> Each channel chooses its own made-for-kids (COPPA) flag for uploads. <span data-admin hidden>You see every user's channels here, tagged with their owner.</span><span data-user>Only you see your channels; your videos are made for them.</span></div>
+    <div class="row" data-admin hidden style="margin-bottom:12px;align-items:center">
       <span class="hint" id="sharedSecretState">checking…</span>
       <input type="file" id="sharedSecretFile" accept=".json,application/json" style="max-width:280px">
       <button class="btn secondary sm" id="sharedSecretUpload" type="button">Upload shared OAuth client</button>
       <button class="btn danger sm" id="sharedSecretRemove" type="button" hidden>Remove</button>
+    </div>
+    <div class="row" data-admin hidden style="margin-bottom:10px;align-items:center">
+      <label for="chOwnerFilter" class="hint" style="margin:0">Show channels of</label>
+      <select id="chOwnerFilter" style="max-width:240px"><option value="">All owners</option></select>
     </div>
     <div id="channelList"><div class="hint">loading…</div></div>
     <div style="margin-top:12px"><button class="btn secondary sm" id="chAdd" type="button">Add channel</button></div>
@@ -149,13 +153,13 @@
     </div>
   </div>
 
-  <div class="card" id="usersCard" hidden>
+  <div class="card" id="usersCard" data-admin hidden>
     <div class="row" style="align-items:center;margin-bottom:8px">
       <h2 style="margin:0">Users</h2>
       <div class="spacer"></div>
       <button class="btn secondary sm" id="userAdd" type="button">Add user</button>
     </div>
-    <div class="hint" style="margin-bottom:10px">Everyone who can sign in sees and manages all videos, channels and settings. Only admins manage users. There must always be at least one admin.</div>
+    <div class="hint" style="margin-bottom:10px">Users see and manage only their own channels and videos. Admins see everyone's channels and videos (tagged with the owner), manage the service settings, reference voices, style previews and users. Deleting a user moves their channels and videos to you. There must always be at least one admin.</div>
     <div id="userList"><div class="hint">loading…</div></div>
   </div>
 
@@ -197,8 +201,8 @@
         <div id="uRoleField" style="margin-top:12px">
           <label for="uRole">Role</label>
           <select id="uRole">
-            <option value="user">User — videos, channels and settings</option>
-            <option value="admin">Admin — everything, plus user management</option>
+            <option value="user">User — their own channels and videos</option>
+            <option value="admin">Admin — everything: all users' channels and videos, settings, users</option>
           </select>
         </div>
         <div class="row" style="margin-top:18px">
@@ -229,9 +233,9 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" data-admin hidden>
     <h2>Reference voices</h2>
-    <div class="hint" style="margin-bottom:10px">Voice samples for Fish Speech voice cloning. Upload 5-30 s of clean speech and enter the exact text spoken in it; pick a voice in the New Video dialog when generating a voiceover.</div>
+    <div class="hint" style="margin-bottom:10px">Voice samples for Fish Speech voice cloning, shared by all users. Upload 5-30 s of clean speech and enter the exact text spoken in it; anyone can pick a voice in the New Video dialog when generating a voiceover.</div>
     <div id="voiceList"><div class="hint">loading…</div></div>
     <div class="row" style="margin-top:12px">
       <input type="text" id="voiceName" placeholder="Voice name" style="max-width:200px">
@@ -241,7 +245,7 @@
     <textarea id="voiceText" placeholder="Exact text spoken in the audio sample..." style="margin-top:10px"></textarea>
   </div>
 
-  <div class="card">
+  <div class="card" data-admin hidden>
     <h2>Art style previews</h2>
     <div class="hint" style="margin-bottom:10px">Renders one sample image per art style with your video model (~30 s each, runs in the background, skips already-generated ones). Shown on the submit form when picking a style.</div>
     <div class="row">
@@ -250,7 +254,7 @@
     </div>
   </div>
 
-  <form id="form">
+  <form id="form" data-admin hidden>
     <div class="card">
       <h2>Services</h2>
       <div class="form-grid">
@@ -431,6 +435,18 @@ const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOUR
                 "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS",
                 "GPU_SCHEDULE_ENABLED", "GPU_WINDOW_START", "GPU_WINDOW_END"];
 
+// ---- role: users get Channels + Your account; admins get every card ----
+let admin = false, me = null;
+function applyRole(u) {
+  me = u; admin = isAdmin(u);
+  document.querySelectorAll("[data-admin]").forEach(el => { el.hidden = !admin; });
+  document.querySelectorAll("[data-user]").forEach(el => { el.hidden = admin; });
+  $("#pageSub").innerHTML = admin
+    ? "Applied to new jobs immediately; stored in <code>settings.json</code> next to the app."
+    : "Your channels and your account. Every video is generated to match the channel picked in the New Video dialog.";
+  $("#meName").textContent = u ? u.username : "?";
+}
+
 async function scheduleStatus() {
   try {
     const s = await api("/api/schedule");
@@ -509,16 +525,30 @@ function chBadge(t) {
   return `<span class="hint" style="border:1px solid var(--line);border-radius:6px;padding:1px 7px">${esc(t)}</span>`;
 }
 
+function chRebuildOwnerFilter() {
+  const sel = $("#chOwnerFilter"), cur = sel.value;
+  const owners = new Map();
+  chData.channels.forEach(c => { if (c.owner) owners.set(c.owner, c.owner_name || c.owner); });
+  const rows = [...owners].sort((a, b) => (a[0] === (me && me.id) ? -1 : b[0] === (me && me.id) ? 1 : a[1].localeCompare(b[1])));
+  sel.innerHTML = `<option value="">All owners</option>` + rows.map(([id, name]) =>
+    `<option value="${esc(id)}">${esc(name)}${me && id === me.id ? " (you)" : ""}</option>`).join("");
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
 async function refreshChannels() {
   const box = $("#channelList");
   try {
     chData = await api("/api/channels");
+    if (chData.me && !me) applyRole(chData.me);
     $("#sharedSecretState").textContent = chData.secret ? "shared OAuth client uploaded" : "no shared OAuth client uploaded";
     $("#sharedSecretRemove").hidden = !chData.secret;
-    box.innerHTML = chData.channels.length ? chData.channels.map(c => `
+    if (admin) chRebuildOwnerFilter();
+    const of = admin ? $("#chOwnerFilter").value : "";
+    const list = chData.channels.filter(c => !of || c.owner === of);
+    box.innerHTML = list.length ? list.map(c => `
       <div class="row" style="margin-bottom:8px;align-items:center">
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
-        <b style="min-width:140px">${esc(c.name)}</b>
+        <b style="min-width:140px">${esc(c.name)}</b>${admin ? ownerBadge(c.owner_name) : ""}
         ${(c.cast || []).filter(x => x.has_portrait).map(x => `<img class="cast-mini" src="/api/channels/${esc(c.id)}/cast/${esc(x.id)}/portrait?v=${Date.now()}" alt="" title="${esc(x.name)}">`).join("")}
         ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${(c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
@@ -529,9 +559,10 @@ async function refreshChannels() {
         <button class="btn secondary sm" type="button" onclick="chEdit('${esc(c.id)}')">Edit</button>
         <button class="btn danger sm" type="button" onclick="chDelete('${esc(c.id)}')">Delete</button>
       </div>`).join("")
-      : `<div class="hint">No channels yet - add one below.</div>`;
+      : `<div class="hint">${of ? "No channels for this owner." : "Create your first channel to start making videos."}</div>`;
   } catch (e) { box.innerHTML = `<div class="hint">${esc(e.message)}</div>`; }
 }
+$("#chOwnerFilter").onchange = refreshChannels;
 
 const CH_REAL_TYPES = ["real", "tech"];
 function chApplyType() { $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value); }
@@ -574,7 +605,8 @@ async function chOpen(c) {
   $("#chLogoPreview").hidden = !hasLogo;
   if (hasLogo) $("#chLogoPreview").src = `/api/channels/${c.id}/logo?v=${Date.now()}`;
   const hasSecret = !!(c && c.has_secret);
-  $("#chSecretState").textContent = hasSecret ? "own OAuth client uploaded" : "using the shared OAuth client";
+  $("#chSecretState").textContent = hasSecret ? "own OAuth client uploaded"
+    : chData.secret ? "using the shared OAuth client" : "no OAuth client yet - upload the channel's own below";
   $("#chSecretRemove").hidden = !hasSecret;
   $("#chSecretFile").value = "";
   chCast = (c && c.cast ? c.cast : []).map(x => ({ ...x, v: Date.now() }));
@@ -948,9 +980,7 @@ let userEditing = null;   // user id being edited (password reset); null = addin
 
 async function refreshUsers() {
   const me = await userReady;
-  $("#meName").textContent = me ? me.username : "?";
-  if (!me || me.role !== "admin") { $("#usersCard").hidden = true; return; }
-  $("#usersCard").hidden = false;
+  if (!isAdmin(me)) return;   // the card itself is gated by applyRole()
   const box = $("#userList");
   try {
     const d = await api("/api/users");
@@ -1074,14 +1104,18 @@ async function deleteVoice(id) {
   catch (e) { toast(e.message, true); }
 }
 
-load().catch(e => toast(e.message, true));
-checkHealth();
-scheduleStatus();
-setInterval(scheduleStatus, 30000);
-previewStatus(true);
-refreshChannels();
-refreshUsers();
-refreshVoices();
+(async () => {
+  applyRole(await userReady);
+  refreshChannels();                          // everyone: their own channels (admins: all)
+  if (!admin) return;                         // users never call the admin-only endpoints
+  load().catch(e => toast(e.message, true));  // GET /api/settings
+  checkHealth();                              // GET /api/health
+  scheduleStatus();
+  setInterval(scheduleStatus, 30000);
+  previewStatus(true);
+  refreshUsers();
+  refreshVoices();
+})();
 </script>
 </body>
 </html>

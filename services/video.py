@@ -77,15 +77,18 @@ def fit_image(src: Path, out_jpg: Path, width: int, height: int) -> Path:
 
 
 def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 720,
-                   logo: Path | None = None) -> Path:
-    """First frame of the video, cover-cropped to width x height; optionally overlays the
-    channel logo in the top-right corner. Saved as JPG."""
+                   logo: Path | None = None, last: bool = False) -> Path:
+    """First (or, with last=True, last) frame of the video, cover-cropped to width x height;
+    optionally overlays the channel logo in the top-right corner. Saved as JPG."""
     out_jpg = Path(out_jpg)
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
-    _run([ffmpeg(), "-y", "-v", "error", "-i", str(video),
-          "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                 f"crop={width}:{height}",
-          "-frames:v", "1", "-q:v", "2", str(out_jpg)])
+    vf = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
+    if last:   # -sseof seeks relative to the end; -update 1 keeps only the last decoded frame
+        _run([ffmpeg(), "-y", "-v", "error", "-sseof", "-0.3", "-i", str(video),
+              "-vf", vf, "-update", "1", "-q:v", "2", str(out_jpg)])
+    else:
+        _run([ffmpeg(), "-y", "-v", "error", "-i", str(video),
+              "-vf", vf, "-frames:v", "1", "-q:v", "2", str(out_jpg)])
     if not out_jpg.exists():
         raise RuntimeError("could not extract thumbnail frame")
     if logo is not None and Path(logo).exists():

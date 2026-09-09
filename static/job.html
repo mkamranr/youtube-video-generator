@@ -50,6 +50,7 @@
 <div id="nav"></div>
 <main>
   <a class="back" href="/" id="backLink">All jobs</a>
+  <div class="empty" id="notFound" hidden></div>
   <div class="job-head">
     <h1 id="title">…</h1>
     <span id="pill"></span>
@@ -59,6 +60,7 @@
   <div class="job-meta">
     <span class="jid" id="jobIdLabel"></span>
     <span id="channelLabel"></span>
+    <span id="ownerLabel" hidden></span>
     <span id="castLabel"></span>
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
@@ -407,6 +409,8 @@ function update(j) {
       + (t.length > 70 ? t.slice(0, 70) + "…" : t);
   }
   $("#channelLabel").textContent = (j.channel && j.channel.name) || "";
+  $("#ownerLabel").hidden = !j.owner_name;   // only admins receive owner_name
+  $("#ownerLabel").innerHTML = ownerBadge(j.owner_name);
   if (!castFromPlan) {   // before the script exists: the channel's roster the story will be cast from
     const roster = (j.channel && j.channel.cast) || [];
     $("#castLabel").textContent = roster.length
@@ -525,9 +529,13 @@ function update(j) {
 async function refresh() {
   try { update(await api(`/jobs/${jobId}`)); }
   catch (e) {
-    $("#title").textContent = "Job not found";
-    $("#statusline").textContent = e.message;
+    // 404: deleted, or another user's job (foreign jobs answer 404 too); stop polling, show one panel
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    document.title = "VideoGen — Job not found";
+    document.querySelectorAll("main > *:not(#backLink):not(#notFound)").forEach(el => { el.hidden = true; });
+    const nf = $("#notFound");
+    nf.innerHTML = `${icon("search")}<b>Job not found</b><br><span class="hint">${esc(e.message)} — it may have been deleted or belong to another user.</span>`;
+    nf.hidden = false;
   }
 }
 
