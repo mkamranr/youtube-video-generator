@@ -4,7 +4,7 @@ services:
     image: videogen:latest
     container_name: videogen
     ports:
-      - "8080:8080"
+      - "8181:8080"
     environment:
       # GPU_HOST is the machine running ComfyUI, vLLM and Fish Speech. Set it in a
       # .env file next to this compose file (see .env.example; .env is gitignored):
