@@ -275,6 +275,7 @@ function jobCard(j) {
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
+        ${clipTimingText(j)}
         ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
            return n ? `<span style="color:var(--warn);font-weight:600">${n} clip${n>1?"s":""} need${n>1?"":"s"} regeneration</span>` : ""; })()}
         <span>${timeAgo(j.created)}</span>

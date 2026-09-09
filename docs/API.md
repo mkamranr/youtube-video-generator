@@ -69,9 +69,15 @@ One job object:
   "final": "final.mp4", "error": "",
   "stale_clips": [5], "regen_queue": [], "needs_assemble": false, "archived": false,
   "files": ["clip_01.mp4", "music.mp3", "thumbnail.jpg", "..."],
-  "log": ["..."], "created": 0, "updated": 0
+  "log": ["..."], "created": 0, "updated": 0,
+  "timings": {
+    "planning": { "start": 0, "end": 0, "seconds": 12.4, "running": false, "last_start": 0 },
+    "clips":    { "start": 0, "end": 0, "seconds": 1384.0, "running": false, "last_start": 0 }
+  }
 }
 ```
+
+`timings` records every pipeline stage the job has run (`drafting`, `transcript`, `planning`, `tts`, `music`, `scenes`, `thumbnail`, `storyboard`, `clips`, `assembling`), keyed by status name, all values epoch seconds: `start` is written once when the stage first did real work (for `clips`: the moment the first clip was submitted for rendering), `end` is the last time the stage stopped for any reason (next stage, GPU-window park, pause, failure — for `clips`, when the last clip finished), `seconds` accumulates only active time across those runs, and `running` is `true` while the stage is in progress. Clip regenerations and reassemblies of a finished job are timed under `regen_clips` / `regen_assembling` so the original render's times stay intact. Jobs created before this field existed have `{}`.
 
 `source` is `youtube` for URL jobs, else `topic` / `description` / `transcript`; `topic` holds the submitted prompt text for prompt jobs (empty for URL jobs). `script_approved` is `true` once a prompt job's draft has been approved.
 

@@ -19,6 +19,11 @@ from services import cast, channels, comfy, llm, lyrics, schedule, storyboard, t
 PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
 
 
+# statuses that are real pipeline work; `queued`, `awaiting_approval`, `done`, `failed` only close the open one
+STAGE_STATUSES = frozenset({"drafting", "transcript", "planning", "tts", "music", "scenes",
+                            "thumbnail", "storyboard", "clips", "assembling"})
+
+
 @dataclass
 class Job:
     id: str
@@ -59,12 +64,19 @@ class Job:
     log: list = field(default_factory=list)
     created: float = field(default_factory=time.time)
     updated: float = field(default_factory=time.time)
+    # per-stage timing, stage -> {start, end, seconds, running, last_start} (epoch floats).
+    # `start` is written once (first real work), `end` is the last time the stage stopped for any
+    # reason (next stage, GPU-window park, pause, failure), `seconds` accumulates only active time.
+    # Maintenance of a finished job is kept apart under `regen_clips` / `regen_assembling`.
+    timings: dict = field(default_factory=dict)
 
     @property
     def dir(self) -> Path:
         return config.OUTPUT_DIR / self.id
 
     def set(self, status=None, detail=None, **kw):
+        if status and status != self.status:
+            self._mark_stage(status)
         if status:
             self.status = status
         if detail is not None:
@@ -73,6 +85,27 @@ class Job:
             setattr(self, k, v)
         self.updated = time.time()
         self.save()
+
+    def close_running(self, at: float):
+        """Stop the stage that is currently timed (at most one), crediting active time up to `at`."""
+        for t in self.timings.values():
+            if t.get("running"):
+                t["running"] = False
+                t["end"] = at
+                t["seconds"] = round(t.get("seconds", 0.0) + max(0.0, at - t.get("last_start", at)), 1)
+
+    def _mark_stage(self, new: str):
+        """Status transition hook: close the running stage, open `new` if it is a work stage."""
+        now = time.time()
+        self.close_running(now)
+        if new not in STAGE_STATUSES:
+            return
+        key = new
+        if new in ("clips", "assembling") and (self.regen_queue or self.assemble_requested):
+            key = "regen_" + new    # clip regeneration / reassembly of a finished job: keep the original render intact
+        t = self.timings.setdefault(key, {"start": now, "seconds": 0.0})
+        t["running"] = True
+        t["last_start"] = now
 
     def add_log(self, msg: str):
         self.log.append(f"{time.strftime('%H:%M:%S')} {msg}")
@@ -177,6 +210,11 @@ def run_job(job: Job):
         job.add_log(f"FAILED: {e}")
         job.add_log(traceback.format_exc()[-1500:])
         job.set("failed", str(e), error=str(e))
+
+
+def _clip_on_disk(path: Path) -> bool:
+    """A finished clip that the resume path reuses instead of rendering."""
+    return path.exists() and path.stat().st_size > 10000
 
 
 def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, label: str):
@@ -624,6 +662,8 @@ def _run(job: Job):
 
     # 7. clips
     mp = job.megapixels if job.megapixels is not None else config.DEFAULT_MEGAPIXELS
+    if any(not _clip_on_disk(d / f"clip_{i:02d}.mp4") for i in range(1, n + 1)):
+        _gpu_gate(job)   # park in the previous status: the `clips` timing starts with the first real render
     job.set("clips", f"generating {n} clips ({job.aspect_ratio}, {mp:g} MP)", clips_total=n, clips_done=0)
     client = comfy.ComfyClient()
     t2v = client.load_workflow(config.T2V_WORKFLOW)
@@ -633,7 +673,7 @@ def _run(job: Job):
     for i, scene in enumerate(scenes, 1):
         _check_cancel(job)
         dest = d / f"clip_{i:02d}.mp4"
-        if dest.exists() and dest.stat().st_size > 10000:
+        if _clip_on_disk(dest):
             prev_clip = dest
             job.clips.append(dest.name)
             job.set(clips_done=i)
@@ -753,6 +793,7 @@ class JobManager:
                         j.set("failed", "cancelled by user", error="cancelled by user")
                         self.jobs[j.id] = j
                         continue
+                    j.close_running(j.updated)   # the downtime is not active stage time
                     j.set("queued", "resuming after server restart")
                     j.add_log("server restarted - job requeued, finished steps will be reused")
                     self.queue.append(j.id)

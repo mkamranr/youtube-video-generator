@@ -69,6 +69,7 @@
     <span id="aspect"></span>
     <span id="mp"></span>
     <span id="created"></span>
+    <span id="clipTiming" hidden></span>
   </div>
 
   <div class="card">
@@ -422,6 +423,9 @@ function update(j) {
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
   $("#created").textContent = "created " + timeAgo(j.created);
+  const ct = clipTimingText(j);
+  $("#clipTiming").innerHTML = ct;
+  $("#clipTiming").hidden = !ct;
   $("#progress").style.width = pct(j) + "%";
   const sl = $("#statusline");
   sl.textContent = j.error || j.detail || "";

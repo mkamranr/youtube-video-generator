@@ -65,7 +65,7 @@ Statuses: `queued → transcript → planning → [music | tts] → scenes → t
 
 ## Resume & idempotency
 
-Every pipeline step checks for its artifact before doing work: `transcript.txt`, `plan.json` (story, scenes, music plan, SEO, thumbnail prompt), `music.mp3`, `narration.wav`, `thumbnail.jpg`, each `clip_NN.mp4`. On server start, non-terminal jobs are re-queued and re-run `_run()`, which skips everything already done — a crash or restart costs at most the in-flight render. Job state persists in `output/<id>/job.json` after every mutation.
+Every pipeline step checks for its artifact before doing work: `transcript.txt`, `plan.json` (story, scenes, music plan, SEO, thumbnail prompt), `music.mp3`, `narration.wav`, `thumbnail.jpg`, each `clip_NN.mp4`. On server start, non-terminal jobs are re-queued and re-run `_run()`, which skips everything already done — a crash or restart costs at most the in-flight render. Job state persists in `output/<id>/job.json` after every mutation. `job.timings` records per-stage `start` / `end` / active `seconds` (hooked into every status transition in `Job.set`), so a stage parked by the GPU window, paused for a priority regen or cut by a restart keeps its first start and accumulates only the time it actually ran; the `clips` stage is entered only once the GPU gate passes, so its `start` is the first real render.
 
 ## Cancel, pause, priority
 

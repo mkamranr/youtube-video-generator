@@ -154,6 +154,42 @@ function timeAgo(ts) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+/* ---- stage timing (job.timings: stage -> {start, end, seconds, running}) ---- */
+// "14:03" for today, "9 Sep 14:03" otherwise (local time).
+function fmtClock(ts) {
+  const d = new Date(ts * 1000), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  return sameDay ? hm : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
+}
+
+// "45 s", "3 min", "1 h 24 min", "2 d 3 h"
+function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return `${sec} s`;
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
+  const dd = Math.floor(h / 24);
+  return h % 24 ? `${dd} d ${h % 24} h` : `${dd} d`;
+}
+
+// Clip generation start/end for the meta rows: "" for jobs without timing data (legacy),
+// "clips started 14:03" while rendering, "clips 14:03 – 15:27 (1 h 24 min)" once every clip is done.
+// The duration is active render time; the tooltip carries the wall-clock span (GPU-window parks included).
+function clipTimingText(j) {
+  const t = j.timings && j.timings.clips;
+  if (!t || !t.start) return "";
+  const finished = !t.running && t.end && j.clips_total && j.clips_done >= j.clips_total;
+  if (!finished) return `<span title="first clip started rendering ${esc(fmtClock(t.start))}">clips started ${esc(fmtClock(t.start))}</span>`;
+  const wall = t.end - t.start, active = t.seconds || wall;
+  const tip = wall - active > 60
+    ? `clips rendered ${fmtClock(t.start)} – ${fmtClock(t.end)}; ${fmtDuration(active)} of rendering, ${fmtDuration(wall - active)} paused`
+    : `clips rendered ${fmtClock(t.start)} – ${fmtClock(t.end)}`;
+  return `<span title="${esc(tip)}">clips ${esc(fmtClock(t.start))} – ${esc(fmtClock(t.end))} (${esc(fmtDuration(active))})</span>`;
+}
+
 /* ---- clipboard: the async API needs a secure context (https / localhost); fall back to
    the legacy execCommand path so plain-http deployments on a server can copy too ---- */
 async function copyText(text, okMsg) {
