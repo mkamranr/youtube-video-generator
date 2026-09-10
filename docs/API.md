@@ -91,7 +91,10 @@ Large payload for the job page: full `transcript` text, the parsed `plan` (narra
 Download any artifact from the job folder (clips, `final.mp4`, `thumbnail.jpg`, `music.mp3`, `narration.wav`, `plan.json`, `transcript.txt`, …).
 
 ### `GET /jobs/{id}/download/{kind}`
-Publish-ready downloads named after the video title. `kind`: `video` (`<Title>.mp4`), `thumbnail` (`<Title>.jpg`), or `bundle` — a ZIP (`<Title>.zip`) built on request containing the video, thumbnail, audio track(s), and `<Title>.txt` with the SEO title and description. `404` while the underlying artifact doesn't exist yet.
+Publish-ready downloads named after the video title. `kind`: `video` (`<Title>.mp4`), `video-<short>p` (an on-demand upscaled version, e.g. `video-1440p` → `<Title> - 2K 1440p.mp4`), `thumbnail` (`<Title>.jpg`), or `bundle` — a ZIP (`<Title>.zip`) built on request containing the native video, every upscaled version, thumbnail, audio track(s), and `<Title>.txt` with the SEO title and description. `404` while the underlying artifact doesn't exist yet.
+
+### `POST /jobs/{id}/upscale`
+Body `{"resolution": "2K (1440p)"}` — any `GET /options` `resolutions` entry except Native. Upscales the finished `final.mp4` with ffmpeg (lanczos, libx264 CRF 18) into `final_<short>p.mp4` next to the original and lists it in the job's `upscales` (`[{label, file, width, height, created}]`); `upscaling` holds the label while it renders (status stays `done`, `detail` shows the progress). Repeating a target replaces that file; different targets accumulate (1080p, 2K and 4K can coexist). Runs in a side thread, not the GPU queue. `409` when the job is not finished, archived, busy, already upscaling, or when the final video is already at or above the target. Reassembling the final video deletes the upscaled versions (they were made from the old file).
 
 ### `DELETE /jobs/{id}`
 Delete the job and its whole `output/<id>/` folder (clips, audio, story board cards, final video, bundle). Returns `{"deleted": id, "freed_mb": 52.3, "warning": null}`. `409` while the job is running, assembling, regenerating its thumbnail, drafting, or uploading to YouTube. If a file is still held open (a video being streamed to a browser on Windows), everything else is removed, `warning` says what is left, and the remainder is swept automatically at the next server start.

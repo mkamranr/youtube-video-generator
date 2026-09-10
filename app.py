@@ -122,7 +122,7 @@ def _job_json(job, names: dict | None = None):
     d = asdict(job)
     d["log"] = d["log"][-40:]
     d["files"] = [f.name for f in sorted(job.dir.glob("*"))
-                  if f.is_file() and f.name not in ("job.json", "bundle.zip")]
+                  if f.is_file() and f.name not in ("job.json", "bundle.zip") and not f.name.startswith(".")]
     if job.status == "queued":
         d["detail"] = _queued_detail(job)
     d["owner_name"] = (_owner_names() if names is None else names).get(job.owner, "")
@@ -286,6 +286,23 @@ def assemble_job(job_id: str, user: dict = Depends(auth.require_user)):
         raise HTTPException(409, str(e))
 
 
+class UpscaleBody(BaseModel):
+    resolution: str
+
+
+@app.post("/jobs/{job_id}/upscale")
+def upscale_job(job_id: str, body: UpscaleBody, user: dict = Depends(auth.require_user)):
+    """Upscale the finished final video to one of GET /options' resolutions (not Native); the
+    result is kept beside the original as final_<short>p.mp4 and listed in the job's `upscales`."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.request_upscale(job_id, body.resolution))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 @app.post("/jobs/{job_id}/archive")
 def archive_job(job_id: str, user: dict = Depends(auth.require_user)):
     return _toggle_archive(job_id, True, user)
@@ -371,6 +388,11 @@ def job_file(job_id: str, name: str, user: dict = Depends(auth.require_user)):
     return FileResponse(path)
 
 
+def _upscale_tag(u: dict) -> str:
+    """Download-name suffix of an upscaled version, e.g. '2K 1440p' from '2K (1440p)'."""
+    return re.sub(r"[()]", "", u.get("label", "")).strip() or f"{u.get('width')}x{u.get('height')}"
+
+
 def _safe_filename(title: str, fallback: str) -> str:
     """Filesystem-safe download name derived from the video title."""
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", title or "").strip()
@@ -380,7 +402,8 @@ def _safe_filename(title: str, fallback: str) -> str:
 
 @app.get("/jobs/{job_id}/download/{kind}")
 def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
-    """Downloads named after the video title: video, thumbnail, or the full ZIP bundle."""
+    """Downloads named after the video title: video, video-<short>p (an upscaled version),
+    thumbnail, or the full ZIP bundle (native video + every upscaled version)."""
     job = _owned_job(job_id, user)
     d = job.dir
     title = _safe_filename(job.title, job.id)
@@ -389,6 +412,11 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
         if not f.exists():
             raise HTTPException(404, "the final video has not been generated yet")
         return FileResponse(f, filename=f"{title}.mp4", media_type="video/mp4")
+    if kind.startswith("video-"):
+        up = next((u for u in job.upscales if u.get("file") == f"final_{kind[6:]}.mp4"), None)
+        if not up or not (d / up["file"]).exists():
+            raise HTTPException(404, "that upscaled version has not been generated")
+        return FileResponse(d / up["file"], filename=f"{title} - {_upscale_tag(up)}.mp4", media_type="video/mp4")
     if kind == "thumbnail":
         f = d / "thumbnail.jpg"
         if not f.exists():
@@ -406,6 +434,9 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
         zpath = d / "bundle.zip"
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_STORED) as z:
             z.write(final, f"{title}.mp4")
+            for up in job.upscales:   # every on-demand upscaled version, next to the native one
+                if (d / up["file"]).exists():
+                    z.write(d / up["file"], f"{title} - {_upscale_tag(up)}.mp4")
             if (d / "thumbnail.jpg").exists():
                 z.write(d / "thumbnail.jpg", f"{title}.jpg")
             if (d / "music.mp3").exists():

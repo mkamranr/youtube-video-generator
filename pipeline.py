@@ -31,6 +31,10 @@ class Job:
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
     megapixels: float | None = None  # clip resolution; None (legacy jobs) = the current Settings default
     resolution: str = ""            # final-video upscale target (config.OUTPUT_RESOLUTIONS); "" (legacy) = native
+    # on-demand upscales of the finished final.mp4 (job page): [{label, file, width, height, created}];
+    # `upscaling` holds the label of the one being rendered right now ("" = idle)
+    upscales: list = field(default_factory=list)
+    upscaling: str = ""
     audio_mode: str = ""
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     art_style: str = ""
@@ -345,6 +349,24 @@ def _storyboard_assets(job: Job, plan: dict, n: int):
         job.add_log(f"story board failed ({e}); continuing without the overlay")
 
 
+def upscale_filename(short_side: int) -> str:
+    """File name of an on-demand upscale of final.mp4, e.g. final_1440p.mp4."""
+    return f"final_{int(short_side)}p.mp4"
+
+
+def _drop_upscales(job: Job):
+    """Delete the on-demand upscales of the previous final video (called on reassembly)."""
+    if not job.upscales:
+        return
+    for u in job.upscales:
+        try:
+            (job.dir / u["file"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    job.upscales = []
+    job.add_log("previous upscaled versions removed - they were made from the old final video")
+
+
 def _upscale_joined(job: Job, joined: Path) -> Path:
     """Upscale the joined clips to the job's output resolution (ffmpeg lanczos) before the story
     board cards are drawn, so the cards render at the final frame size. Native / already large
@@ -411,6 +433,7 @@ def _do_assemble(job: Job):
     if (job.audio_mode or "") == "music":
         narration_file = None
     final = _assemble(job, plan, narration_file, music_file)
+    _drop_upscales(job)
     job.set(final=final.name, assemble_requested=False, needs_assemble=False)
     job.add_log("final video reassembled")
 
@@ -1148,6 +1171,8 @@ class JobManager:
             raise ValueError("only finished jobs can be modified")
         if job_id == self.current or job_id in self.queue:
             raise ValueError("job is already queued or running")
+        if job.upscaling:
+            raise ValueError("an upscale of the final video is in progress - wait for it to finish")
         return job
 
     def update_scenes(self, job_id: str, updates: dict):
@@ -1256,6 +1281,45 @@ class JobManager:
             job.add_log(f"REASSEMBLY FAILED: {e}")
             job.set("done", f"reassembly failed: {e}", assemble_requested=False)
 
+    def request_upscale(self, job_id: str, resolution: str) -> Job:
+        """Upscale the finished final.mp4 to `resolution` (an OUTPUT_RESOLUTIONS label other than
+        Native) into final_<short>p.mp4, kept next to the original. Local ffmpeg work: runs in a
+        side thread, not the GPU queue. Re-running the same target replaces that file; other
+        targets are kept, so one video can carry 1080p, 2K and 4K versions at once."""
+        short = config.OUTPUT_RESOLUTIONS.get(resolution or "", 0)
+        if not short:
+            raise ValueError(f"unsupported upscale target: {resolution}")
+        with self.lock:
+            job = self._maintenance_target(job_id)
+            final = job.dir / (job.final or "final.mp4")
+            if not job.final or not final.exists():
+                raise ValueError("the final video has not been generated yet")
+            w, h = video.frame_size(final)
+            size = video.target_size(w, h, short)
+            if size is None:
+                raise ValueError(f"the final video is {w}x{h}: already at or above {resolution}")
+            job.set(upscaling=resolution, detail=f"upscaling the final video to {size[0]}x{size[1]} ({resolution})")
+        threading.Thread(target=self._upscale_now, args=(job, resolution, short, size), daemon=True).start()
+        return job
+
+    def _upscale_now(self, job: Job, resolution: str, short: int, size: tuple):
+        d = job.dir
+        name = upscale_filename(short)
+        tmp = d / f".{name}.part.mp4"
+        try:
+            video.upscale(d / (job.final or "final.mp4"), tmp, *size)
+            tmp.replace(d / name)
+            entry = {"label": resolution, "file": name, "width": size[0], "height": size[1],
+                     "created": time.time()}
+            job.upscales = [u for u in job.upscales if u.get("label") != resolution] + [entry]
+            job.upscales.sort(key=lambda u: u.get("height", 0) * u.get("width", 0))
+            job.set(upscaling="", detail=f"upscaled version ready: {resolution}")
+            job.add_log(f"final video upscaled to {size[0]}x{size[1]} ({resolution}) -> {name}")
+        except Exception as e:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+            job.add_log(f"upscale to {resolution} failed: {e}")
+            job.set(upscaling="", detail=f"upscale to {resolution} failed: {e}")
+
     def set_archived(self, job_id: str, archived: bool):
         job = self.jobs.get(job_id)
         if not job:
@@ -1278,6 +1342,8 @@ class JobManager:
                 raise ValueError(f"job is busy ({job.status}) - wait until it finishes, then delete it")
             if job.yt_status == "uploading":
                 raise ValueError("job is uploading to YouTube - wait until the upload finishes")
+            if job.upscaling:
+                raise ValueError("job is upscaling its final video - wait until it finishes, then delete it")
             if job_id in self.queue:
                 self.queue.remove(job_id)
             self.jobs.pop(job_id)

@@ -4,6 +4,7 @@ Pure unit tests: the size maths, the per-video choice validation and the assembl
 (ffmpeg calls are mocked)."""
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -103,6 +104,87 @@ class Assemble(unittest.TestCase):
         self.job.resolution = "1080p (Full HD)"
         pipeline._assemble(self.job, {}, None, None)
         self.m["upscale"].assert_not_called()
+
+
+class _Sync:
+    """threading.Thread stand-in that runs the target on start() (keeps the tests deterministic)."""
+    def __init__(self, target=None, args=(), daemon=None):
+        self.target, self.args = target, args
+
+    def start(self):
+        self.target(*self.args)
+
+
+class OnDemandUpscale(unittest.TestCase):
+    """Upscaling a finished job's final video from the job page (JobManager.request_upscale)."""
+    def setUp(self):
+        config.OUTPUT_DIR = TMP / "output"
+        self.job = Job(id="20260101-000001-abc123", url="", status="done", final="final.mp4")
+        self.job.dir.mkdir(parents=True, exist_ok=True)
+        (self.job.dir / "final.mp4").write_bytes(b"x")
+        self.m = object.__new__(pipeline.JobManager)
+        self.m.lock = threading.RLock()
+        self.m.jobs, self.m.queue, self.m.current = {self.job.id: self.job}, [], None
+
+        def fake_upscale(src, out, w, h):
+            Path(out).write_bytes(f"{w}x{h}".encode())
+            return Path(out)
+        for target, kw in (("frame_size", {"return_value": (864, 480)}), ("upscale", {"side_effect": fake_upscale})):
+            p = mock.patch.object(pipeline.video, target, **kw)
+            setattr(self, target, p.start())
+            self.addCleanup(p.stop)
+        p = mock.patch.object(pipeline.threading, "Thread", _Sync)
+        p.start(); self.addCleanup(p.stop)
+
+    def test_creates_a_separate_file_and_keeps_the_original(self):
+        self.m.request_upscale(self.job.id, "2K (1440p)")
+        self.assertEqual(self.job.upscaling, "")
+        self.assertEqual([u["file"] for u in self.job.upscales], ["final_1440p.mp4"])
+        u = self.job.upscales[0]
+        self.assertEqual((u["label"], u["width"], u["height"]), ("2K (1440p)", 2592, 1440))
+        self.assertEqual((self.job.dir / "final_1440p.mp4").read_bytes(), b"2592x1440")
+        self.assertEqual((self.job.dir / "final.mp4").read_bytes(), b"x")
+        self.upscale.assert_called_once()
+        self.assertEqual(self.upscale.call_args.args[0], self.job.dir / "final.mp4")
+
+    def test_targets_accumulate_and_repeats_replace(self):
+        self.m.request_upscale(self.job.id, "2K (1440p)")
+        self.m.request_upscale(self.job.id, "4K (2160p)")
+        self.m.request_upscale(self.job.id, "2K (1440p)")
+        self.assertEqual([u["file"] for u in self.job.upscales], ["final_1440p.mp4", "final_2160p.mp4"])
+        self.assertEqual(self.upscale.call_count, 3)
+
+    def test_rejections(self):
+        with self.assertRaises(ValueError):
+            self.m.request_upscale(self.job.id, "Native (clip size)")
+        with self.assertRaises(ValueError):
+            self.m.request_upscale(self.job.id, "3K")
+        self.frame_size.return_value = (2592, 1440)
+        with self.assertRaises(ValueError):                       # already at that size
+            self.m.request_upscale(self.job.id, "2K (1440p)")
+        self.frame_size.return_value = (864, 480)
+        self.job.status = "clips"
+        with self.assertRaises(ValueError):                       # not finished
+            self.m.request_upscale(self.job.id, "2K (1440p)")
+        self.job.status = "done"
+        self.job.upscaling = "4K (2160p)"
+        with self.assertRaises(ValueError):                       # busy: maintenance is blocked too
+            self.m._maintenance_target(self.job.id)
+
+    def test_failure_clears_the_busy_flag(self):
+        self.upscale.side_effect = RuntimeError("ffmpeg failed")
+        self.m.request_upscale(self.job.id, "1080p (Full HD)")
+        self.assertEqual(self.job.upscaling, "")
+        self.assertEqual(self.job.upscales, [])
+        self.assertFalse((self.job.dir / "final_1080p.mp4").exists())
+        self.assertIn("failed", self.job.detail)
+
+    def test_reassembly_drops_the_old_versions(self):
+        self.m.request_upscale(self.job.id, "2K (1440p)")
+        pipeline._drop_upscales(self.job)
+        self.assertEqual(self.job.upscales, [])
+        self.assertFalse((self.job.dir / "final_1440p.mp4").exists())
+        self.assertTrue((self.job.dir / "final.mp4").exists())
 
 
 if __name__ == "__main__":

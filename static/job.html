@@ -108,6 +108,16 @@
       <button class="btn sm" id="ytBtn" hidden></button>
       <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
     </div>
+    <div id="upscaleBox" hidden style="margin-top:16px">
+      <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <label for="upRes" style="margin:0">Upscale this video</label>
+        <select id="upRes"></select>
+        <button class="btn sm" id="upBtn">Upscale</button>
+        <span class="hint" id="upStatus" style="margin:0"></span>
+      </div>
+      <div class="hint" style="margin:6px 0 0">Makes a larger copy of the final video with ffmpeg (lanczos); the original is kept. Each target is stored separately and included in the bundle. Adds pixels, not detail.</div>
+      <div id="upList"></div>
+    </div>
     <div class="row" id="sbRow" hidden style="margin-top:14px;align-items:center;gap:14px">
       <label class="switch"><input type="checkbox" id="sbToggle"><span class="track"></span> Story board overlay</label>
       <button class="btn secondary sm" id="sbRegen" hidden>Regenerate story board</button>
@@ -226,6 +236,8 @@ const selected = new Set();          // clip numbers picked for regeneration
 let detailsStamp = null;             // job.updated value details were last fetched at
 let finalShown = false, audioShown = false, musicShown = false, thumbShown = false;
 let finalVer = null;                 // cache-buster used for the current final video
+let upscalesKey = "";                // JSON of the rendered upscaled versions (re-render only on change)
+let upResLoaded = false;
 let prevStatus = null;
 let approvalLoaded = false;
 let pollTimer = null;
@@ -519,6 +531,7 @@ function update(j) {
     $("#finalDl").href = `/jobs/${jobId}/download/video`;
     $("#bundleDl").href = `/jobs/${jobId}/download/bundle`;
   }
+  renderUpscales(j, done);
   const files = j.files || [];
   if (files.length) {
     $("#filesSec").hidden = false;
@@ -527,10 +540,59 @@ function update(j) {
   loadDetails(j).catch(console.error);
   prevStatus = j.status;
 
-  if (["done", "failed"].includes(j.status) && j.yt_status !== "uploading" && pollTimer) {
+  if (["done", "failed"].includes(j.status) && j.yt_status !== "uploading" && !j.upscaling && pollTimer) {
     clearInterval(pollTimer); pollTimer = null;
   }
 }
+
+// ---- on-demand upscales of the finished video: picker + one player/download per version ----
+async function loadUpscaleOptions() {
+  if (upResLoaded) return;
+  upResLoaded = true;
+  try {
+    const o = await api("/options");
+    const opts = (o.resolutions || []).filter(r => !r.startsWith("Native"));
+    $("#upRes").innerHTML = opts.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+    const def = o.default_resolution && opts.includes(o.default_resolution) ? o.default_resolution : opts[opts.length - 2] || opts[0];
+    if (def) $("#upRes").value = def;
+  } catch (e) { upResLoaded = false; }
+}
+
+function renderUpscales(j, done) {
+  const show = done && !!j.final;
+  $("#upscaleBox").hidden = !show;
+  if (!show) return;
+  loadUpscaleOptions();
+  const busy = !!j.upscaling;
+  $("#upBtn").disabled = busy;
+  $("#upRes").disabled = busy;
+  $("#upStatus").textContent = busy ? `${j.detail || "upscaling…"}` : "";
+  const ups = j.upscales || [];
+  const key = JSON.stringify(ups.map(u => [u.file, u.created]));
+  if (key === upscalesKey) return;
+  upscalesKey = key;
+  $("#upList").innerHTML = ups.map(u => {
+    const short = (u.file.match(/final_(\d+)p\.mp4$/) || [])[1];
+    return `<div style="margin-top:14px">
+      <div class="row" style="align-items:center;gap:10px;margin-bottom:6px">
+        <b>${esc(u.label)}</b><span class="hint" style="margin:0">${u.width}×${u.height}</span>
+        ${short ? `<a class="btn secondary sm" href="/jobs/${jobId}/download/video-${short}p">Download ${esc(u.label)}</a>` : ""}
+      </div>
+      <video class="final-video" controls preload="metadata" src="${F(u.file)}?v=${u.created}"></video>
+    </div>`;
+  }).join("");
+}
+
+$("#upBtn").onclick = async () => {
+  const resolution = $("#upRes").value;
+  if (!resolution) return;
+  try {
+    await api(`/jobs/${jobId}/upscale`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resolution }) });
+    toast(`Upscaling to ${resolution} started`);
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+};
 
 async function refresh() {
   try { update(await api(`/jobs/${jobId}`)); }
