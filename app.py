@@ -85,6 +85,7 @@ class Submit(BaseModel):
     channel_id: str = ""       # required: a channel the caller owns (admins: any channel)
     aspect_ratio: str = ""
     megapixels: float | None = None   # clip resolution (0.2-1.0); None -> Settings default
+    resolution: str = ""      # final-video upscale target (GET /options resolutions); "" -> Settings default
     art_style: str = ""
     video_length: str = ""
     audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
@@ -173,11 +174,13 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,
                                                     storyboard_flag=body.storyboard,
-                                                    megapixels=body.megapixels, owner=owner))]
+                                                    megapixels=body.megapixels, owner=owner,
+                                                    resolution=body.resolution))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
-                                         megapixels=body.megapixels, owner=owner)) for u in urls]
+                                         megapixels=body.megapixels, owner=owner,
+                                         resolution=body.resolution)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -580,6 +583,7 @@ def options(user: dict = Depends(auth.require_user)):
     return {"me": users.public(user),
             "aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "megapixels_options": config.MEGAPIXELS_OPTIONS, "default_megapixels": config.DEFAULT_MEGAPIXELS,
+            "resolutions": list(config.OUTPUT_RESOLUTIONS), "default_resolution": config.DEFAULT_RESOLUTION,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
@@ -595,7 +599,7 @@ def get_settings(admin: dict = Depends(auth.require_admin)):
     meta = {k: {"label": v[2], "help": v[3], "type": ("bool" if v[0] is bool else "number" if v[0] in (int, float) else "text")}
             for k, v in config.EDITABLE_SETTINGS.items()}
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
-            "megapixels_options": config.MEGAPIXELS_OPTIONS,
+            "megapixels_options": config.MEGAPIXELS_OPTIONS, "resolutions": list(config.OUTPUT_RESOLUTIONS),
             "art_styles": list(config.ART_STYLES), "video_lengths": list(config.VIDEO_LENGTHS),
             "sources": config.SOURCES}
 

@@ -68,6 +68,7 @@
     <span id="vlenLabel"></span>
     <span id="aspect"></span>
     <span id="mp"></span>
+    <span id="resLabel"></span>
     <span id="created"></span>
     <span id="clipTiming" hidden></span>
   </div>
@@ -422,6 +423,7 @@ function update(j) {
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
+  $("#resLabel").textContent = resolutionLabel(j);
   $("#created").textContent = "created " + timeAgo(j.created);
   const ct = clipTimingText(j);
   $("#clipTiming").innerHTML = ct;

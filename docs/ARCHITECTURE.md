@@ -29,7 +29,8 @@ services/
   comfy.py             ComfyUI client: queue/wait (websocket + polling), cancel-aware waiting, output
                        download with node auto-detection, targeted interrupt, server-side scrubbing
   video.py             ffmpeg helpers: last-frame extraction, thumbnail crop (1280x720), clip concat,
-                       timed RGBA card overlays, N-way audio mix (narration / ambience / music) with
+                       lanczos upscale to the job's output resolution (1080p/2K/4K, before the cards
+                       are drawn so they render at the final size), timed RGBA card overlays, N-way audio mix (narration / ambience / music) with
                        side-chain ducking, music looping/fade-out and clip-cut ambience dips
   storyboard.py        Story board overlay: LLM card planning (via llm.py), related-image rendering
                        through ComfyUI, Pillow card drawing (landscape/portrait/square layouts), schedule

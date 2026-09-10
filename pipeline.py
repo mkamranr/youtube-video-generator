@@ -30,6 +30,7 @@ class Job:
     url: str
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
     megapixels: float | None = None  # clip resolution; None (legacy jobs) = the current Settings default
+    resolution: str = ""            # final-video upscale target (config.OUTPUT_RESOLUTIONS); "" (legacy) = native
     audio_mode: str = ""
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     art_style: str = ""
@@ -344,6 +345,24 @@ def _storyboard_assets(job: Job, plan: dict, n: int):
         job.add_log(f"story board failed ({e}); continuing without the overlay")
 
 
+def _upscale_joined(job: Job, joined: Path) -> Path:
+    """Upscale the joined clips to the job's output resolution (ffmpeg lanczos) before the story
+    board cards are drawn, so the cards render at the final frame size. Native / already large
+    enough: the joined file is returned untouched. Never downscales."""
+    short = config.OUTPUT_RESOLUTIONS.get(job.resolution or "", 0)
+    if not short:
+        return joined
+    w, h = video.frame_size(joined)
+    size = video.target_size(w, h, short)
+    if size is None:
+        job.add_log(f"clips are {w}x{h}: already at or above {job.resolution}, no upscale")
+        return joined
+    job.set("assembling", f"upscaling to {size[0]}x{size[1]}")
+    out = video.upscale(joined, joined.parent / "clips_upscaled.mp4", *size)
+    job.add_log(f"upscaled {w}x{h} -> {size[0]}x{size[1]} ({job.resolution})")
+    return out
+
+
 def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     """Concat the clips, overlay the story board cards (if enabled) and mix the audio
     for the job's audio mode into final.mp4."""
@@ -351,6 +370,7 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     clips = [d / c for c in job.clips]
     joined = video.concat_clips(clips, d / "clips_joined.mp4")
     bounds = video.clip_boundaries(clips)
+    joined = _upscale_joined(job, joined)
     source = joined
     if job.storyboard and isinstance(plan.get("storyboard"), list):
         job.set("assembling", "drawing the story board cards")
@@ -804,9 +824,9 @@ class JobManager:
     @staticmethod
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
                          audio_mode: str, voice_id: str, channel: dict | None,
-                         storyboard_flag=None, megapixels=None):
+                         storyboard_flag=None, megapixels=None, resolution=None):
         """Per-video choices: request value -> channel default -> global default; validated.
-        Megapixels has no channel level: request value -> Settings default.
+        Megapixels and the output resolution have no channel level: request value -> Settings default.
         Real/tech-video channels always use the built-in live-action look (art_style stays "");
         the story board overlay defaults to the channel setting (on for tech channels)."""
         ch = channel or {}
@@ -833,6 +853,9 @@ class JobManager:
         if not any(abs(mp - o) < 1e-6 for o in config.MEGAPIXELS_OPTIONS):
             raise ValueError(f"unsupported megapixels: {megapixels}")
         mp = round(mp, 1)
+        resolution = resolution or config.DEFAULT_RESOLUTION
+        if resolution not in config.OUTPUT_RESOLUTIONS:
+            raise ValueError(f"unsupported output resolution: {resolution}")
         if ch.get("video_type") in config.REALISTIC_VIDEO_TYPES:
             art_style = ""
         else:
@@ -844,18 +867,18 @@ class JobManager:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
         return (aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap,
-                storyboard_flag, mp)
+                storyboard_flag, mp, resolution)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
-               owner: str = "") -> Job:
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp = \
+               owner: str = "", resolution: str = "") -> Job:
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels)
+                                  storyboard_flag, megapixels, resolution)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
-                  aspect_ratio=aspect_ratio, megapixels=mp, audio_mode=audio_mode, voice_id=voice_id,
+                  aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   art_style=art_style, video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
                   owner=owner or (channel or {}).get("owner", ""))
         job.save()
@@ -945,18 +968,19 @@ class JobManager:
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
-                      owner: str = "") -> Job:
+                      owner: str = "", resolution: str = "") -> Job:
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description/transcript is too short")
         if source_kind not in PROMPT_SOURCES:
             raise ValueError("invalid source kind")
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels)
+                                  storyboard_flag, megapixels, resolution)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio, megapixels=mp,
+                  resolution=res,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
                   owner=owner or (channel or {}).get("owner", ""))

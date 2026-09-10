@@ -132,10 +132,19 @@ ASPECT_RATIOS = [
     "3:4 (Portrait Standard)", "3:2 (Photo)", "2:3 (Portrait Photo)", "21:9 (Ultrawide)",
 ]
 MEGAPIXELS_OPTIONS = [round(0.2 + 0.1 * i, 1) for i in range(9)]   # 0.2 … 1.0 (ResolutionSelector)
+# Final-video output resolution: label -> short side in pixels the joined clips are upscaled to with
+# ffmpeg (lanczos) during assembly; 0 = keep the clips' own size. Never downscales.
+OUTPUT_RESOLUTIONS = {
+    "Native (clip size)": 0,
+    "1080p (Full HD)": 1080,
+    "2K (1440p)": 1440,
+    "4K (2160p)": 2160,
+}
 
 # ---- generation defaults (editable in Settings) ---------------------------
 DEFAULT_ASPECT_RATIO = ASPECT_RATIOS[0]
 DEFAULT_MEGAPIXELS = 0.4        # clip resolution in megapixels; per-video override in the New Video dialog (thumbnails: 1.0)
+DEFAULT_RESOLUTION = "Native (clip size)"   # final-video upscale target (OUTPUT_RESOLUTIONS); per-video override
 CLIP_SECONDS = 5                # length of each generated clip
 LIGHTNING_LORA = False          # True -> 8-step turbo LoRA (faster, lower quality)
 NARRATION_WORDS = 170           # target narration length (~65-75 s of speech)
@@ -191,6 +200,11 @@ EDITABLE_SETTINGS = {
                            "Clip resolution (megapixels)",
                            "Default ResolutionSelector megapixels for every clip (0.2-1.0 in 0.1 steps); "
                            "can be changed per video in the New Video dialog. Thumbnails always render at 1.0"),
+    "DEFAULT_RESOLUTION": (str, lambda v: v in OUTPUT_RESOLUTIONS, "Output resolution",
+                           "Size of the final video: after the clips are joined they are upscaled with ffmpeg "
+                           "(lanczos) to this short side - 1080p, 2K (1440p) or 4K (2160p); Native keeps the clips' "
+                           "own size. Upscaling adds no detail, only pixels, and the 2K/4K encode takes a few extra "
+                           "minutes on the CPU. Can be changed per video in the New Video dialog"),
     "NARRATION_WORDS": (int, lambda v: 30 <= v <= 500, "Narration words",
                         "Target narration length; ~2.5 words/s of speech decides the clip count"),
     "CLIP_AUDIO_VOLUME": (float, lambda v: 0 <= v <= 1, "Clip ambience volume",

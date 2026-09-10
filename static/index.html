@@ -83,6 +83,10 @@
               <label for="mp">Resolution (megapixels)</label>
               <select id="mp"></select>
             </div>
+            <div class="grow" style="min-width:160px">
+              <label for="res">Output resolution</label>
+              <select id="res"></select>
+            </div>
           </div>
         </div>
         <div class="msec">
@@ -199,6 +203,7 @@ async function submit() {
   }
   let body = { channel_id: $("#channel").value,
                aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
+               resolution: $("#res").value,
                art_style: real ? "" : $("#artstyle").value,
                video_length: $("#vlen").value, audio_mode: $("#audio").value,
                voice_id: $("#audio").value === "music" ? "" : $("#voice").value,
@@ -274,6 +279,7 @@ function jobCard(j) {
         <span>${j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
+        ${resolutionBadge(j)}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${clipTimingText(j)}
         ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
@@ -455,6 +461,8 @@ async function loadOptions() {
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
   $("#mp").innerHTML = (o.megapixels_options || []).map(v =>
     `<option value="${v}" ${v === o.default_megapixels ? "selected" : ""}>${v} MP</option>`).join("");
+  $("#res").innerHTML = (o.resolutions || []).map(r =>
+    `<option value="${esc(r)}" ${r === o.default_resolution ? "selected" : ""}>${esc(r)}</option>`).join("");
   artStyles = o.art_styles;
   $("#artstyle").value = o.default_art_style;
   $("#source").value = o.default_source || "url";

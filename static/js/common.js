@@ -118,6 +118,15 @@ function isAdmin(me) { const u = me || currentUser; return !!u && u.role === "ad
 // Owner tag next to channels/jobs of other users. The server only sends `owner_name` to admins,
 // so this renders nothing for regular users.
 function ownerBadge(name) { return name ? `<span class="owner" title="Owner">${esc(name)}</span>` : ""; }
+/* output resolution of the final video ("" / Native = the clips' own size: nothing shown) */
+function resolutionLabel(j) {
+  const r = j && j.resolution ? String(j.resolution) : "";
+  return !r || r.startsWith("Native") ? "" : r;
+}
+function resolutionBadge(j) {
+  const r = resolutionLabel(j);
+  return r ? `<span title="Final video upscaled to this size">${esc(r)}</span>` : "";
+}
 
 function pct(j) {
   if (j.status === "done") return 100;

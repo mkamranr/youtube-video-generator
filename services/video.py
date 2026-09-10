@@ -1,4 +1,4 @@
-"""ffmpeg helpers: last-frame extraction, concatenation, story-board overlays and audio mixing."""
+"""ffmpeg helpers: last-frame extraction, concatenation, upscaling, story-board overlays and audio mixing."""
 import math
 import subprocess
 from pathlib import Path
@@ -38,6 +38,32 @@ def frame_size(path: Path) -> tuple:
                  "-of", "csv=p=0")
     w, h = out.split(",")[:2]
     return int(w), int(h)
+
+
+def target_size(width: int, height: int, short_side: int) -> tuple | None:
+    """(w, h) that upscales a width x height frame so its short side equals `short_side`,
+    keeping the aspect and rounding to even numbers (yuv420p). None when the frame's short
+    side already is at least `short_side` - the pipeline never downscales."""
+    width, height, short_side = int(width), int(height), int(short_side)
+    if short_side <= 0 or min(width, height) >= short_side:
+        return None
+    even = lambda v: max(2, int(round(v / 2)) * 2)  # noqa: E731
+    if width >= height:
+        return even(width * short_side / height), even(short_side)
+    return even(short_side), even(height * short_side / width)
+
+
+def upscale(video: Path, out_mp4: Path, width: int, height: int) -> Path:
+    """Re-encode the video scaled (lanczos) to exactly width x height; the audio is copied as is."""
+    out_mp4 = Path(out_mp4)
+    cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video),
+           "-vf", f"scale={int(width)}:{int(height)}:flags=lanczos",
+           "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    if has_audio(video):
+        cmd += ["-c:a", "copy"]
+    cmd += [str(out_mp4)]
+    _run(cmd)
+    return out_mp4
 
 
 def clip_boundaries(clips: list) -> list:
