@@ -316,7 +316,8 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
             on_progress("planning the story board cards with vLLM")
         raw = llm.write_storyboard(plan.get("title", ""), plan.get("narration", ""),
                                    plan.get("segments") or [], n, channel=job.channel,
-                                   max_images=config.STORYBOARD_MAX_IMAGES, used=plan.get("cast_used"))
+                                   max_images=config.STORYBOARD_MAX_IMAGES, used=plan.get("cast_used"),
+                                   clip_seconds=(plan.get("clip_seconds") or [None])[0])
         cards = normalize_cards(raw, n)
         plan["storyboard"] = cards
         if add_log:

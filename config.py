@@ -6,6 +6,7 @@ The file lives in the project root by default; VIDEOGEN_SETTINGS_FILE moves it (
 setup points it into a bind-mounted directory so Settings survive image rebuilds).
 """
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -167,7 +168,13 @@ SCRIPT_REVIEW = True            # LLM double-checks every generated scene and dr
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
 PUBLIC_BASE_URL = ""            # https://host users open the app with; "" = localhost OAuth redirect
 YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)
-WHISPER_MODEL = "base"          # faster-whisper model used to time the sung lyrics per clip
+WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+WHISPER_MODEL = "small"         # faster-whisper model used to time the sung lyrics per clip
+KIDS_SONG_BPM = 66              # tempo forced into every kids-channel song caption (nursery-rhyme pace)
+KIDS_SONG_WPS = 0.9             # sung-words-per-second budget for kids songs (lyrics length + pace check)
+SONG_VOICES = ["auto", "child", "girl", "boy", "female", "male"]   # per-channel default song voice
+SONG_VOICE_LABELS = {"auto": "Auto (child for kids channels)", "child": "Young child",
+                     "girl": "Young girl", "boy": "Young boy", "female": "Adult female", "male": "Adult male"}
 TTS_TEMPERATURE = 0.8           # Fish Speech sampling temperature
 TTS_TOP_P = 0.8                 # Fish Speech nucleus sampling
 TTS_REPETITION_PENALTY = 1.1    # Fish Speech penalty against repeated tokens
@@ -176,6 +183,51 @@ TTS_CHUNK_CHARS = 300           # max characters per Fish Speech request (long t
 # ---- fixed limits ---------------------------------------------------------
 MAX_TRANSCRIPT_CHARS = 60000    # ~15k tokens, leaves room in the 32k context
 COMFY_TIMEOUT = 60 * 60         # seconds to wait for a single clip
+LYRIC_ALIGN_MIN_RATIO = 0.55    # below this whisper/lyrics token match ratio the raw whisper words are kept
+SONG_PACE_TOLERANCE = 1.4       # a song measured faster than budget * this is re-rendered once, slower
+
+# ---- clip length as the video model really renders it ----------------------
+# The MiniMax H3 workflow (node 140:132) quantises the requested seconds to a frame count
+# f = max(5, round(s * 24)) rounded UP to f ≡ 5 (mod 17): 5 s -> 124 frames = 5.1667 s.
+# Everything that lines audio up with clips (lyric windows, scene timelines, the clip count)
+# must use these real lengths, not CLIP_SECONDS.
+VIDEO_FPS = 24
+FRAME_QUANTUM = 17
+MIN_LAST_CLIP_SECONDS = 2.0     # shortest trailing clip when the last clip is trimmed to the audio
+
+
+def clip_frames(seconds: float) -> int:
+    """Frame count the H3 workflow renders for a requested clip length (mirrors node 140:132)."""
+    f = max(5, round(float(seconds) * VIDEO_FPS))
+    return f + (5 - f % FRAME_QUANTUM) % FRAME_QUANTUM
+
+
+def actual_clip_seconds(seconds: float | None = None) -> float:
+    """Real length of a clip requested at `seconds` (default CLIP_SECONDS)."""
+    return clip_frames(CLIP_SECONDS if seconds is None else seconds) / VIDEO_FPS
+
+
+def clip_durations(total_seconds: float) -> list:
+    """Per-clip real lengths covering an audio track of total_seconds: full clips plus one
+    trailing clip quantised from the remainder (at least MIN_LAST_CLIP_SECONDS), so the video
+    ends with the audio instead of a silent tail."""
+    full = actual_clip_seconds()
+    total = max(0.0, float(total_seconds))
+    n = max(1, math.ceil(total / full - 1e-6))
+    rem = total - (n - 1) * full
+    if n > 1 and rem < 0.5:     # a few hundred ms of fade-out are not worth a whole extra clip
+        return [full] * (n - 1)
+    last = actual_clip_seconds(max(MIN_LAST_CLIP_SECONDS, rem))
+    return [full] * (n - 1) + [last]
+
+
+def boundaries(durations: list) -> list:
+    """Cumulative end times of consecutive clips (the last entry is the total length)."""
+    out, t = [], 0.0
+    for d in durations:
+        t += float(d)
+        out.append(round(t, 4))
+    return out
 
 # ---------------------------------------------------------------------------
 EDITABLE_SETTINGS = {
@@ -195,7 +247,16 @@ EDITABLE_SETTINGS = {
     "DEFAULT_SOURCE": (str, lambda v: v in SOURCES, "Default source (Create from)",
                        "Preselected creation mode in the New Video dialog: url, topic, description or transcript"),
     "CLIP_SECONDS": (float, lambda v: 2 <= v <= 15, "Clip length (s)",
-                     "Duration of each generated clip (2-15 s)"),
+                     "Requested duration of each generated clip (2-15 s). The video model rounds it to an "
+                     "allowed frame count (5 s renders as 5.17 s); lyric timing and scenes use that real length"),
+    "WHISPER_MODEL": (str, lambda v: v in WHISPER_MODELS, "Whisper model (lyric timing)",
+                      "faster-whisper size used on the CPU to time the sung lyrics: small is a good default, "
+                      "medium is slower but more accurate. The first use downloads the model"),
+    "KIDS_SONG_BPM": (int, lambda v: 50 <= v <= 110, "Kids song tempo (BPM)",
+                      "Nursery-rhyme tempo forced into every kids-channel song caption (60-72 recommended)"),
+    "KIDS_SONG_WPS": (float, lambda v: 0.4 <= v <= 2.0, "Kids song words/second",
+                      "Sung-words-per-second budget for kids songs (sizes the lyrics); a song measured 40% faster "
+                      "than this is re-rendered once with a slower caption and fewer words"),
     "DEFAULT_MEGAPIXELS": (float, lambda v: any(abs(v - o) < 1e-6 for o in MEGAPIXELS_OPTIONS),
                            "Clip resolution (megapixels)",
                            "Default ResolutionSelector megapixels for every clip (0.2-1.0 in 0.1 steps); "

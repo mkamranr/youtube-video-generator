@@ -27,7 +27,7 @@ MAX_CAST_NAME_CHARS = 40
 MAX_CAST_KIND_CHARS = 60
 CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: detail helps consistency
 
-DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length")
+DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice")
 BOOL_DEFAULT_KEYS = ("storyboard",)   # story board overlay on by default for this channel's videos
 
 
@@ -39,6 +39,7 @@ def _read_index() -> dict:
                 if isinstance(c, dict):
                     c.setdefault("made_for_kids", c.get("audience") == "kids")
                     c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
+                    c["defaults"].setdefault("song_voice", default_song_voice(c.get("audience")))
                     c.setdefault("cast", [])
                     c.setdefault("cast_opening", True)
                     c.setdefault("rules", "")
@@ -47,6 +48,11 @@ def _read_index() -> dict:
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
     return {"channels": []}
+
+
+def default_song_voice(audience) -> str:
+    """Kids channels sing with a child's voice unless told otherwise; others leave it to the model."""
+    return "child" if audience == "kids" else "auto"
 
 
 def _write_index(data: dict):
@@ -150,7 +156,8 @@ def _validate(data: dict, base: dict | None = None) -> dict:
            "made_for_kids": False, "cast": [], "cast_opening": True,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
-                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None}}
+                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
+                        "song_voice": ""}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast", "cast_opening"):
             if k in base:
@@ -199,6 +206,10 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         raise ValueError(f"video_length must be one of {list(config.VIDEO_LENGTHS)}")
     if df["audio_mode"] == "music":
         df["voice_id"] = ""  # a reference voice is meaningless for songs
+    # the song voice stays whatever the audio default is: the audio mode is chosen per video
+    df["song_voice"] = df.get("song_voice") or default_song_voice(rec["audience"])
+    if df["song_voice"] not in config.SONG_VOICES:
+        raise ValueError(f"song_voice must be one of {config.SONG_VOICES}")
     return rec
 
 

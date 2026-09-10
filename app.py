@@ -90,6 +90,7 @@ class Submit(BaseModel):
     video_length: str = ""
     audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
+    song_voice: str = ""       # singer of a generated song (config.SONG_VOICES); "" -> channel default
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
 
 
@@ -122,7 +123,8 @@ def _job_json(job, names: dict | None = None):
     d = asdict(job)
     d["log"] = d["log"][-40:]
     d["files"] = [f.name for f in sorted(job.dir.glob("*"))
-                  if f.is_file() and f.name not in ("job.json", "bundle.zip") and not f.name.startswith(".")]
+                  if f.is_file() and f.name not in ("job.json", "bundle.zip") and not f.name.startswith(".")
+                  and not f.name.startswith("music_try")]   # song candidates; the chosen one is music.mp3
     if job.status == "queued":
         d["detail"] = _queued_detail(job)
     d["owner_name"] = (_owner_names() if names is None else names).get(job.owner, "")
@@ -175,12 +177,14 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     body.audio_mode, vid, channel=ch,
                                                     storyboard_flag=body.storyboard,
                                                     megapixels=body.megapixels, owner=owner,
-                                                    resolution=body.resolution))]
+                                                    resolution=body.resolution,
+                                                    song_voice=body.song_voice))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
                                          megapixels=body.megapixels, owner=owner,
-                                         resolution=body.resolution)) for u in urls]
+                                         resolution=body.resolution,
+                                         song_voice=body.song_voice)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -662,6 +666,7 @@ def list_channels_api(user: dict = Depends(auth.require_user)):
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
             "art_styles": list(config.ART_STYLES), "aspect_ratios": config.ASPECT_RATIOS,
             "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES,
+            "song_voices": config.SONG_VOICES, "song_voice_labels": config.SONG_VOICE_LABELS,
             "max_cast": channels.MAX_CAST, "max_rules_chars": channels.MAX_RULES_CHARS}
 
 

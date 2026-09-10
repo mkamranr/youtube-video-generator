@@ -123,7 +123,8 @@ def _style_example(channel: dict | None) -> str:
 
 SCENE_RULES = """Each scene prompt describes ONE continuous {secs}-second shot for a text-to-video model and must contain, in this order:
 - Scene overview: subject, setting, action, mood (2-3 sentences).
-- Storyboard with timestamps, e.g. "[0s-2s] ... [2s-4s] ... [4s-{secs}s] ...".
+- Storyboard with timestamps, e.g. "[0s-2s] ... [2s-4s] ... [4s-{secs}s] ...". When a sung-lyrics TIMELINE
+  is given for the clip, the storyboard timestamps follow it: each visual beat starts when its line is sung.
 - Camera: angle and movement.
 - Audio: ambient sound / effects appropriate to the scene (no speech, no narration, no music with lyrics).
 - End with: "No text, subtitles, logos or watermarks of any kind."
@@ -272,20 +273,34 @@ def split_narration(narration: str, n: int) -> list:
     return segments
 
 
+def _secs(x) -> str:
+    """Seconds for prompt text without float noise: 5.2, 2.3, 5."""
+    return f"{float(x):.1f}".rstrip("0").rstrip(".")
+
+
 def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  kind: str = "voiceover narration", segments: list | None = None,
                  on_review_issue=None, channel: dict | None = None,
-                 opening: dict | None = None, used: list | None = None) -> list:
+                 opening: dict | None = None, used: list | None = None,
+                 timelines: list | None = None, clip_secs: list | None = None,
+                 aligned: bool = True) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
     segments: optional pre-computed per-clip text (e.g. whisper-timed lyrics); empty
     entries mean nothing is heard during that clip (instrumental/silence).
+    timelines: optional per-clip lyric timelines (lyrics.format_timeline), times relative to
+    the clip start, so the storyboard beats can follow the singing.
+    clip_secs: the real length of each clip (config.clip_durations); default: the quantised
+    CLIP_SECONDS for every clip.
+    aligned: False when the segment text is raw speech recognition (may contain mis-hearings).
     opening: the cast character whose portrait is clip 1's first frame, if any.
     used: the names of this video's cast (plan["cast_used"]); None = legacy plan, all cast."""
     if segments is None:
         segments = split_narration(narration, n)
     segments = (list(segments) + [""] * n)[:n]
+    timelines = (list(timelines or []) + [""] * n)[:n]
+    clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds()] * n)[:n]
     cast_rule = ""
     if cast.all_characters(channel):
         in_video = cast.names(cast.all_characters(channel)) if used is None else list(used)
@@ -313,13 +328,29 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
             else first
         nxt = (f'For flow only, the next segment will be: "{segments[i + 1]}"') if i + 1 < n \
             else "This is the FINAL clip: give it a conclusive ending."
-        if seg.strip():
+        secs = _secs(clip_secs[i])
+        if seg.strip() and timelines[i]:
+            heard = f"""While this clip plays, the {kind} is EXACTLY this (the lyric text, timed from the recording):
+"{seg}"
+TIMELINE - what is sung, with times measured from the START of this clip:
+{timelines[i]}
+
+Write ONE scene prompt for this clip that visualizes exactly what is heard during it.
+EVERY object, creature, letter or concept mentioned above MUST appear in the storyboard - give each
+its own moment within the {secs} seconds. Your storyboard timestamps MUST follow the TIMELINE: the
+visual beat for a sung line begins when that line begins and lasts while it is sung; "(instrumental)"
+spans carry motion, reaction or atmosphere and introduce nothing new. Do NOT add a singer, band,
+microphone or stage to illustrate the singing; if a cast character already on screen fits a line,
+they MAY be shown singing or mouthing it, but never invent a performer for that purpose. Never
+render the lyrics as on-screen text. Do not show things from other segments except as a
+continuation of the previous shot."""
+        elif seg.strip():
             heard = f"""While this clip plays, the {kind} is EXACTLY this:
 "{seg}"
 
 Write ONE scene prompt for this clip that visualizes exactly what is heard during it.
 EVERY object, creature, letter or concept mentioned above MUST appear in the storyboard —
-give each its own moment within the {config.CLIP_SECONDS} seconds. Do not show things from other segments
+give each its own moment within the {secs} seconds. Do not show things from other segments
 except as a continuation of the previous shot."""
         else:
             heard = f"""During this clip the {kind} is INSTRUMENTAL - no words are heard.
@@ -328,12 +359,12 @@ build atmosphere, or transition toward the next segment. Introduce nothing that 
 other segments' content."""
         user = f"""Global visual style: {style}
 
-We are storyboarding clip {i + 1} of {n} for a video. Each clip is {config.CLIP_SECONDS} seconds.
+We are storyboarding clip {i + 1} of {n} for a video. This clip is {secs} seconds long.
 The soundtrack is a {kind}.
 {prev}
 {nxt}
 {heard}
-{SCENE_RULES.format(secs=config.CLIP_SECONDS)}{cast_rule}
+{SCENE_RULES.format(secs=secs)}{cast_rule}
 Return JSON: {{"scene": "the scene prompt string"}}"""
         out = _chat([{"role": "system", "content": _system(channel, used=used)},
                      {"role": "user", "content": user}])
@@ -348,7 +379,8 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
                 on_progress(f"reviewing scene {i + 1}/{n}")
             scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
                                          prev_scene=scenes[-1] if scenes else "",
-                                         channel=channel, used=used)
+                                         channel=channel, used=used,
+                                         timeline=timelines[i], aligned=aligned)
             if issues and on_review_issue:
                 on_review_issue(i + 1, issues)
         scenes.append(scene)
@@ -364,25 +396,36 @@ SAFETY_CHECKS = {
 
 def review_scene(scene: str, segment: str, style: str, i: int, n: int,
                  kind: str = "voiceover narration", prev_scene: str = "",
-                 channel: dict | None = None, used: list | None = None) -> tuple:
+                 channel: dict | None = None, used: list | None = None,
+                 timeline: str = "", aligned: bool = True) -> tuple:
     """Second-pass review of one scene prompt against the audio it must match.
 
     Returns (corrected_scene, issues). Catches inconsistencies like a letter or object
-    in the storyboard not matching what the audio actually says at that moment."""
+    in the storyboard not matching what the audio actually says at that moment, and - when a
+    lyric timeline is given - storyboard beats that do not fall where their line is sung."""
     if segment.strip():
         audio_ctx = f'While this clip plays, the {kind} is EXACTLY this:\n"{segment}"'
+        if timeline:
+            audio_ctx += f"\nTIMELINE (what is sung, times from the START of this clip): {timeline}"
         rule = ("Every letter, word, object, creature, name and count that the storyboard displays or "
                 "features MUST match what the audio says during this clip - e.g. if the audio says "
-                "\"F is fairy\", the scene must show the letter F with the fairy, never a different letter. "
-                "IMPORTANT: the audio text comes from automatic speech transcription and may contain small "
-                "mis-hearings - if it pairs a letter with a word that clearly starts with a DIFFERENT letter "
-                "(e.g. \"A is for fairy\"), trust the word: fairy belongs to the letter F, so show F.")
+                "\"F is fairy\", the scene must show the letter F with the fairy, never a different letter.")
+        if not aligned:
+            rule += (" IMPORTANT: the audio text comes from automatic speech transcription and may contain "
+                     "small mis-hearings - if it pairs a letter with a word that clearly starts with a DIFFERENT "
+                     "letter (e.g. \"A is for fairy\"), trust the word: fairy belongs to the letter F, so show F.")
     else:
         audio_ctx = f"During this clip the {kind} is INSTRUMENTAL - no words are heard."
         rule = "The scene must not introduce letters/objects that belong to other clips' audio."
+    timing = ""
+    if timeline and segment.strip():
+        timing = ("5. TIMING: every storyboard beat that visualises a sung line falls within about 1 second of "
+                  "that line's window in the TIMELINE; beats during \"(instrumental)\" spans introduce nothing "
+                  "that belongs to a later line. The timeline is timing metadata only: never add the lyrics as "
+                  "on-screen text or subtitles, and never invent a singer, band, microphone or stage.")
     continuity = ""
     if prev_scene.strip():
-        continuity = f"""5. SEAMLESS CONTINUITY: this clip is rendered starting from the LAST frame of the previous clip.
+        continuity = f"""6. SEAMLESS CONTINUITY: this clip is rendered starting from the LAST frame of the previous clip.
 The previous clip's scene was:
 \"\"\"{prev_scene}\"\"\"
 This scene's [0s] beat must directly continue that scene's ending (same camera angle, same characters in
@@ -409,6 +452,7 @@ Check strictly:
 2. Internal consistency (no contradictions within the storyboard).
 3. {safety}
 4. The required format is kept (overview, timestamped storyboard, camera, audio, the closing no-text line).
+{timing}
 {continuity}
 
 If everything is correct, return the scene UNCHANGED. If there are issues, FIX them with the smallest
@@ -565,29 +609,95 @@ MUSIC_CAPTION_EXAMPLE = ("Global Metadata: Lo-fi hip-hop, chillhop. 78 BPM, D fl
                          "Intro: solo chords fading in. Outro: elements fade one by one.")
 
 
+SONG_VOICE_DESCRIPTIONS = {
+    "auto": "",
+    "child": "a single young child's voice (about 6-8 years old): sweet, bright, clear and innocent, gently sung",
+    "girl": "a single young girl's voice: light, sweet and clear, gently sung",
+    "boy": "a single young boy's voice: bright, clear and cheerful, gently sung",
+    "female": "one warm, friendly female singer with clear, intelligible delivery",
+    "male": "one warm, friendly male singer with clear, intelligible delivery",
+}
+
+
+def resolve_song_voice(voice, kids: bool) -> str:
+    """The singer to ask for: an explicit choice wins; "auto" means a child for kids channels."""
+    if voice in SONG_VOICE_DESCRIPTIONS and voice != "auto":
+        return voice
+    return "child" if kids else "auto"
+
+
+_BPM_RE = re.compile(r"\b\d{2,3}(?:\s*(?:-|–|to)\s*\d{2,3})?\s*BPM\b", re.I)
+
+
+def finalize_caption(caption: str, bpm: int | None = None, voice_desc: str | None = None) -> str:
+    """Deterministic fixes to the LLM's music caption: the literal "\\n" copied from the example
+    becomes a real newline, any tempo is replaced by the forced BPM (or one is inserted), and
+    the requested voice description is guaranteed to sit in the Vocal Details section."""
+    cap = (caption or "").replace("\\n", "\n").strip()
+    if bpm:
+        if _BPM_RE.search(cap):
+            cap = _BPM_RE.sub(f"{bpm} BPM", cap)
+        elif re.search(r"Global Metadata:\s*", cap, re.I):
+            cap = re.sub(r"(Global Metadata:\s*)", lambda m: f"{m.group(1)}{bpm} BPM. ", cap, count=1, flags=re.I)
+        else:
+            cap = f"Global Metadata: {bpm} BPM.\n\n{cap}"
+    if voice_desc:
+        desc = voice_desc[0].upper() + voice_desc[1:]
+        key = re.split(r"[:(,]", voice_desc)[0].strip().lower()   # e.g. "a single young child's voice"
+        if key not in cap.lower():
+            m = re.search(r"Vocal Details:\s*", cap, re.I)
+            cap = (cap[:m.end()] + desc + ". " + cap[m.end():]) if m else f"{cap}\n\nVocal Details: {desc}."
+    return cap
+
+
+def needs_slowdown(measured: float, budget: float) -> bool:
+    """A song sung clearly faster than its words-per-second budget gets one slower re-render."""
+    return bool(measured) and measured > budget * config.SONG_PACE_TOLERANCE
+
+
 def write_music(title: str, narration: str, transcript: str,
                 standalone: bool = False, seconds: float | None = None,
                 max_seconds: float | None = None,
                 seconds_range: tuple | None = None,
-                channel: dict | None = None, used: list | None = None) -> dict:
+                channel: dict | None = None, used: list | None = None,
+                song_voice: str = "auto", slow_down: dict | None = None) -> dict:
     """Caption + lyrics for the MiniMax Music3 model, derived from the video content.
 
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
-    video's story in order, so the words being sung at any moment match the visuals."""
+    video's story in order, so the words being sung at any moment match the visuals.
+    song_voice: config.SONG_VOICES entry ("auto" = a child for kids channels).
+    slow_down: {"measured", "budget", "previous_lyrics"} when a first render was sung too
+    fast - the lyrics are rewritten shorter and the pace instructions are stressed."""
     transcript = transcript[:8000]
     kids = _channel(channel)["audience"] == "kids"
+    voice = resolve_song_voice(song_voice, kids)
+    voice_desc = SONG_VOICE_DESCRIPTIONS[voice]
+    bpm = config.KIDS_SONG_BPM if kids else None
     # sung words per second: young children need slow, clearly enunciated singing
-    wps = 1.3 if kids else 2
+    wps = config.KIDS_SONG_WPS if kids else 2
     kids_rule = ("" if not kids else
                  " The audience is YOUNG CHILDREN (early education): the music must be soft, gentle and "
-                 "calm - slow tempo (65-90 BPM), simple sparse instrumentation (soft piano, ukulele, "
-                 "glockenspiel, light hand percussion, warm pads), low dynamics, no busy or loud "
+                 f"calm - nursery-rhyme pace at EXACTLY {bpm} BPM, simple sparse instrumentation (soft piano, "
+                 "ukulele, glockenspiel, light hand percussion, warm pads), low dynamics, no busy or loud "
                  "arrangements, no dense drums, no fast rhythms. "
-                 + ("Vocals: one warm friendly singer, slow clear sing-along delivery with short simple "
-                    "words and pauses between lines so every word is understood; simple repeating "
-                    "melody; keep instrumental gaps short. " if standalone else
+                 + (f"Vocals: slow, clear sing-along delivery - one sung word per beat, a breath-length pause "
+                    f"between lines, about {wps:g} sung words per second, short simple lines of 4-6 words, a "
+                    "simple repeating melody, notes held long at the end of each line, so every word is "
+                    "understood; keep instrumental gaps short. " if standalone else
                     "It sits far in the background so every narrated word stays clear. ")
-                 + "State the slow tempo, the soft instruments and the gentle mood explicitly in the caption.")
+                 + f"State the tempo ({bpm} BPM), the soft instruments and the gentle mood explicitly in the caption.")
+    voice_rule = (f' The Vocal Details section of the caption MUST describe the singer as: "{voice_desc}".'
+                  if standalone and voice_desc else "")
+    slow_rule = ""
+    if standalone and slow_down:
+        prev = str(slow_down.get("previous_lyrics") or "")
+        prev_words = len(clean_lyrics(prev).split())
+        slow_rule = (f"\n\nIMPORTANT: a previous version of this song was sung TOO FAST - "
+                     f"{float(slow_down.get('measured') or 0):.1f} words per second where the limit is "
+                     f"{float(slow_down.get('budget') or wps):.1f}. Rewrite the lyrics with FEWER words (at most "
+                     f"{max(12, int(prev_words * 0.75))} words in total), shorter lines, longer held notes and clear "
+                     "pauses between lines, keeping the same story order and ending. Previous lyrics:\n"
+                     f'"""{prev}"""')
     if standalone:
         ceiling = int(max_seconds or ((seconds or 90) * 2))
         if seconds_range:
@@ -631,7 +741,7 @@ Story of the video, in order:
 Original transcript excerpt (for flavor and vocabulary):
 \"\"\"{transcript}\"\"\"
 
-Design one music track for this video. {role}{kids_rule}
+Design one music track for this video. {role}{kids_rule}{voice_rule}{slow_rule}
 Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
 - "lyrics": {lyrics_rule}
@@ -641,6 +751,9 @@ Never mention real people's names or brands."""
     if not out.get("caption"):
         raise RuntimeError("vLLM returned no music caption")
     out.setdefault("lyrics", "")
+    out["caption"] = finalize_caption(str(out["caption"]), bpm=bpm,
+                                      voice_desc=voice_desc if standalone else None)
+    out["song_voice"] = voice
     return out
 
 

@@ -99,6 +99,11 @@
             <label for="chVoice">Default voice</label>
             <select id="chVoice"><option value="">Default voice</option></select>
           </div>
+          <div class="grow" style="min-width:190px">
+            <label for="chSongVoice">Default song voice</label>
+            <select id="chSongVoice"></select>
+            <div class="hint">Singer of generated songs (kids channels: a child's voice)</div>
+          </div>
           <div class="grow" style="min-width:180px">
             <label for="chAspect">Default aspect ratio</label>
             <select id="chAspect"></select>
@@ -375,6 +380,23 @@
           <input type="number" id="TARGET_VIDEO_SECONDS" min="0" max="300" step="5">
           <div class="hint">Music mode: requested song length. <b>0 = no target</b> — the song covers the full content, up to 6 min</div>
         </div>
+        <div class="field">
+          <label for="WHISPER_MODEL">Whisper model (lyric timing)</label>
+          <select id="WHISPER_MODEL">
+            <option>tiny</option><option>base</option><option>small</option><option>medium</option><option>large-v3</option>
+          </select>
+          <div class="hint">faster-whisper size that times the sung lyrics on the CPU so scenes follow the song. <b>small</b> is a good default; medium is slower but more accurate. The first use downloads the model</div>
+        </div>
+        <div class="field">
+          <label for="KIDS_SONG_BPM">Kids song tempo (BPM)</label>
+          <input type="number" id="KIDS_SONG_BPM" min="50" max="110" step="1">
+          <div class="hint">Nursery-rhyme tempo forced into every kids-channel song caption (60-72 recommended)</div>
+        </div>
+        <div class="field">
+          <label for="KIDS_SONG_WPS">Kids song words/second</label>
+          <input type="number" id="KIDS_SONG_WPS" min="0.4" max="2" step="0.1">
+          <div class="hint">Sung-words-per-second budget for kids songs (sizes the lyrics). A song measured 40% faster is re-rendered once with a slower caption and fewer words</div>
+        </div>
       </div>
     </div>
 
@@ -436,6 +458,7 @@
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
                 "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY",
+                "WHISPER_MODEL", "KIDS_SONG_BPM", "KIDS_SONG_WPS",
                 "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT", "PUBLIC_BASE_URL",
                 "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS",
                 "GPU_SCHEDULE_ENABLED", "GPU_WINDOW_START", "GPU_WINDOW_END"];
@@ -575,6 +598,9 @@ const CH_REAL_TYPES = ["real", "tech"];
 function chApplyType() { $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value); }
 function chTypeChanged() { chApplyType(); $("#chStoryboard").checked = $("#chVideoType").value === "tech"; }
 function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "music"; }
+function chDefaultSongVoice() { return $("#chAudience").value === "kids" ? "child" : "auto"; }
+// a new channel follows its audience (child voice for kids); an edited one keeps its explicit choice
+function chAudienceChanged() { if (!chEditing) $("#chSongVoice").value = chDefaultSongVoice(); }
 
 async function chLoadVoices(selected) {
   try {
@@ -605,6 +631,9 @@ async function chOpen(c) {
   $("#chStoryboard").checked = c ? !!(d.storyboard != null ? d.storyboard : c.video_type === "tech") : false;
   if (d.art_style) $("#chStyle").value = d.art_style;
   $("#chAudio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
+  const svs = chData.song_voices || ["auto"], svl = chData.song_voice_labels || {};
+  $("#chSongVoice").innerHTML = svs.map(v => `<option value="${esc(v)}">${esc(svl[v] || v)}</option>`).join("");
+  $("#chSongVoice").value = d.song_voice || chDefaultSongVoice();
   if (d.aspect_ratio) $("#chAspect").value = d.aspect_ratio;
   if (d.video_length) $("#chVlen").value = d.video_length;
   $("#chLogoFile").value = "";
@@ -771,6 +800,7 @@ function chBody() {
       storyboard: $("#chStoryboard").checked,
       audio_mode: $("#chAudio").value,
       voice_id: $("#chAudio").value === "music" ? "" : $("#chVoice").value,
+      song_voice: $("#chSongVoice").value,
       aspect_ratio: $("#chAspect").value,
       video_length: $("#chVlen").value,
     },
@@ -981,6 +1011,7 @@ $("#chModal").addEventListener("click", ev => { if (ev.target === $("#chModal"))
 document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#chModal").classList.contains("open")) chCloseModal(); });
 $("#chVideoType").onchange = chTypeChanged;
 $("#chAudio").onchange = chApplyAudio;
+$("#chAudience").onchange = chAudienceChanged;
 
 // ---- users (admin) ---------------------------------------------------------
 let userEditing = null;   // user id being edited (password reset); null = adding

@@ -1,6 +1,5 @@
 """Job model + the end-to-end generation pipeline."""
 import json
-import math
 import os
 import re
 import shutil
@@ -37,6 +36,7 @@ class Job:
     upscaling: str = ""
     audio_mode: str = ""
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
+    song_voice: str = ""            # singer of a generated song (config.SONG_VOICES); "" = legacy job, auto
     art_style: str = ""
     video_length: str = "Auto"
     source: str = "youtube"         # youtube | topic | description | transcript
@@ -244,6 +244,10 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
                    f"({opening.get('look', '')}). Bring that image to life from the very first moment and keep "
                    f"{opening['name']}'s exact appearance throughout - no cut or scene change at the start.")
     template = t2v if first_frame is None else i2v
+    # the plan freezes each clip's real length (the last one is trimmed to the audio);
+    # legacy plans without it render the Settings default
+    clip_secs = plan.get("clip_seconds") or []
+    seconds = clip_secs[i - 1] if i - 1 < len(clip_secs) else None
 
     def progress(msg):
         job.set("clips", f"{label}: {msg}")
@@ -252,7 +256,7 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
         _gpu_gate(job)
         try:
             wf = client.build(template, prompt, f"videogen/{job.id}/clip_{i:02d}",
-                              first_frame=first_frame, aspect_ratio=job.aspect_ratio,
+                              first_frame=first_frame, seconds=seconds, aspect_ratio=job.aspect_ratio,
                               megapixels=job.megapixels)
             client.run(wf, dest, on_progress=progress,
                        should_stop=lambda: job.cancel_requested,
@@ -550,38 +554,97 @@ def _run(job: Job):
             l_target = config.TARGET_VIDEO_SECONDS
             l_max = (min(360.0, config.TARGET_VIDEO_SECONDS * 2 + 30)
                      if config.TARGET_VIDEO_SECONDS else 360.0)
-        music_plan = plan.get("music") or {}
-        if not music_plan.get("caption"):
-            job.set("music", "writing music caption and lyrics with vLLM")
-            music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
-                                         standalone=True, seconds=l_target,
-                                         max_seconds=l_max, seconds_range=l_range,
-                                         channel=job.channel, used=plan.get("cast_used"))
-            plan["music"] = music_plan
-            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
-        if (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
-            music_file = d / "music.mp3"
+        kids = (job.channel or {}).get("audience") == "kids"
+        budget = config.KIDS_SONG_WPS if kids else 2.0     # sung words per second the lyrics were sized for
+        # song candidates (resume-safe; each is rendered, whisper-timed and paced at most once):
+        # [{caption, lyrics, file, duration, words, ratio, wps}]; the chosen one is copied to music.mp3
+        tries = plan.setdefault("music_tries", [])
+        music_file = d / "music.mp3"
+        if music_file.exists() and music_file.stat().st_size > 1000 and (plan.get("music_final") or not tries):
             job.add_log("resume: reusing music track")
         else:
-            _gpu_gate(job)
-            job.set("music", "generating music with ComfyUI")
-            mclient = comfy.ComfyClient()
-            mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
-                                      music_plan["caption"], music_plan.get("lyrics", ""),
-                                      l_max,
-                                      f"videogen/{job.id}/music")
-            music_file = mclient.run(mwf, d / "music.mp3",
-                                     on_progress=lambda m: job.set("music", f"music: {m}"),
-                                     should_stop=lambda: job.cancel_requested,
-                                     cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
+            for k in (1, 2):
+                _check_cancel(job)
+                if k == 2 and not llm.needs_slowdown(tries[0].get("wps", 0.0), budget):
+                    break
+                if len(tries) < k:
+                    if k == 1 and (plan.get("music") or {}).get("caption"):
+                        mp = plan["music"]
+                    else:
+                        job.set("music", "writing music caption and lyrics with vLLM" if k == 1
+                                else "song too fast - writing a slower version with vLLM")
+                        slow = None if k == 1 else {"measured": tries[0]["wps"], "budget": budget,
+                                                   "previous_lyrics": tries[0]["lyrics"]}
+                        mp = llm.write_music(plan.get("title", ""), plan["narration"], text,
+                                             standalone=True, seconds=l_target,
+                                             max_seconds=l_max, seconds_range=l_range,
+                                             channel=job.channel, used=plan.get("cast_used"),
+                                             song_voice=job.song_voice, slow_down=slow)
+                        plan["music"] = mp
+                    tries.append({"caption": mp["caption"], "lyrics": mp.get("lyrics", ""),
+                                  "file": f"music_try{k}.mp3"})
+                    _save_plan(job, plan)
+                t = tries[k - 1]
+                f = d / t["file"]
+                if not (f.exists() and f.stat().st_size > 1000):
+                    _gpu_gate(job)
+                    job.set("music", "generating music with ComfyUI" if k == 1
+                            else "generating a slower version of the song with ComfyUI")
+                    mclient = comfy.ComfyClient()
+                    mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
+                                              t["caption"], t["lyrics"], l_max,
+                                              f"videogen/{job.id}/music{k}")
+                    mclient.run(mwf, f, on_progress=lambda m: job.set("music", f"music: {m}"),
+                                should_stop=lambda: job.cancel_requested,
+                                cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
+                if "wps" not in t:
+                    job.set("music", "timing the sung lyrics (whisper)")
+                    heard = lyrics.transcribe_words(f, initial_prompt=llm.clean_lyrics(t["lyrics"])[:600],
+                                                    on_progress=_progress(job, "music"))
+                    aligned_words, ratio = lyrics.align_to_lyrics(heard, t["lyrics"])
+                    t.update(duration=round(tts.audio_duration(f), 3), words=aligned_words,
+                             ratio=round(ratio, 3), wps=lyrics.words_per_second(aligned_words),
+                             whisper_model=config.WHISPER_MODEL)
+                    _save_plan(job, plan)
+                    job.add_log(f"song try {k}: {t['duration']:.1f}s, {t['wps']:.2f} sung words/s "
+                                f"(budget {budget:g}), lyric match {ratio:.0%}")
+                if k == 2:
+                    job.add_log("song too fast: re-rendered once with a slower caption and fewer words")
+            best = tries[0]
+            if len(tries) > 1 and 0 < tries[1].get("wps", 0.0) < tries[0].get("wps", 0.0):
+                best = tries[1]
+            shutil.copyfile(d / best["file"], music_file)
+            plan["music"] = {"caption": best["caption"], "lyrics": best["lyrics"]}
+            plan["music_final"] = {"try": tries.index(best) + 1, "wps": best.get("wps", 0.0)}
+            _save_plan(job, plan)
+            if len(tries) > 1:
+                job.add_log(f"song: keeping try {tries.index(best) + 1} (slowest singing)")
         duration = tts.audio_duration(music_file)
         job.add_log(f"music track: {duration:.1f}s")
-        n = max(1, math.ceil(duration / config.CLIP_SECONDS))
-        job.set("music", "timing the sung lyrics (whisper)")
-        segments = lyrics.transcribe_windows(music_file, n, config.CLIP_SECONDS,
-                                             on_progress=_progress(job, "music"))
+        durs = config.clip_durations(duration)
+        n = len(durs)
+        music_plan = plan.get("music") or {}
+        final = plan.get("music_final") or {}
+        chosen = tries[final["try"] - 1] if final.get("try") and final["try"] <= len(tries) else None
+        if chosen is not None and "words" in chosen:
+            words, ratio = chosen["words"], chosen.get("ratio", 0.0)
+        else:   # legacy job: music.mp3 without cached timing
+            job.set("music", "timing the sung lyrics (whisper)")
+            heard = lyrics.transcribe_words(music_file, initial_prompt=llm.clean_lyrics(music_plan.get("lyrics", ""))[:600],
+                                            on_progress=_progress(job, "music"))
+            words, ratio = lyrics.align_to_lyrics(heard, music_plan.get("lyrics", ""))
+        timed = lyrics.timeline(words, config.boundaries(durs))
+        segments = [t["text"] for t in timed]
+        timelines = [lyrics.format_timeline(t) for t in timed]
+        aligned = ratio >= config.LYRIC_ALIGN_MIN_RATIO
+        plan["timed_segments"] = timed
+        plan["lyric_align"] = {"ratio": round(ratio, 3), "aligned": aligned, "words": len(words),
+                               "inferred": sum(1 for w in words if w.get("src") == "inferred"),
+                               "wps": lyrics.words_per_second(words), "whisper_model": config.WHISPER_MODEL,
+                               "try": final.get("try", 1)}
         sung = sum(1 for s in segments if s.strip())
-        job.add_log(f"lyrics timed: words heard in {sung}/{n} clip windows")
+        job.add_log(f"lyrics timed: words heard in {sung}/{n} clip windows"
+                    + ("" if aligned else " (whisper words only - they did not match the written lyrics)"))
         sync_text = llm.clean_lyrics(music_plan.get("lyrics", "")) or plan["narration"]
         kind = "song being played"
     else:
@@ -612,9 +675,12 @@ def _run(job: Job):
                                       on_progress=_progress(job, "tts"),
                                       ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
             job.add_log(f"narration: {duration:.1f}s")
-        n = max(1, math.ceil(duration / config.CLIP_SECONDS))
+        durs = config.clip_durations(duration)
+        n = len(durs)
         sync_text = plan["narration"]
         segments = None
+        timelines = None
+        aligned = True
         kind = "voiceover narration"
 
     # 4. scenes: one per audio segment so each clip matches what is heard
@@ -630,7 +696,10 @@ def _run(job: Job):
                 job.add_log(f"opening frame: {oc['name']}'s portrait")
             except Exception as e:  # noqa: BLE001 - fall back to text-to-video for clip 1
                 job.add_log(f"cast portrait unusable ({e}); clip 1 starts from text")
-    if len(plan.get("scenes") or []) == n:
+    # scenes are written for these exact clip lengths; a legacy plan (no clip_seconds) keeps its scenes
+    same_clips = "clip_seconds" not in plan or plan["clip_seconds"] == durs
+    plan["clip_seconds"] = durs
+    if len(plan.get("scenes") or []) == n and same_clips:
         job.add_log("resume: reusing scene prompts")
     else:
         job.set("scenes", f"writing {n} scene prompts with vLLM")
@@ -642,7 +711,8 @@ def _run(job: Job):
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
                                           on_progress=scene_progress, on_review_issue=review_issue,
                                           channel=job.channel, used=plan.get("cast_used"),
-                                          opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None)
+                                          opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None,
+                                          timelines=timelines, clip_secs=durs, aligned=aligned)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -687,7 +757,8 @@ def _run(job: Job):
             mclient = comfy.ComfyClient()
             mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
                                       music_plan["caption"], music_plan.get("lyrics", ""),
-                                      n * config.CLIP_SECONDS * 1.05 + 2, f"videogen/{job.id}/music")
+                                      sum(plan.get("clip_seconds") or [config.actual_clip_seconds()] * n) * 1.05 + 2,
+                                      f"videogen/{job.id}/music")
             music_file = mclient.run(mwf, d / "music.mp3",
                                      on_progress=lambda m: job.set("music", f"music: {m}"),
                                      should_stop=lambda: job.cancel_requested,
@@ -847,7 +918,7 @@ class JobManager:
     @staticmethod
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
                          audio_mode: str, voice_id: str, channel: dict | None,
-                         storyboard_flag=None, megapixels=None, resolution=None):
+                         storyboard_flag=None, megapixels=None, resolution=None, song_voice: str = ""):
         """Per-video choices: request value -> channel default -> global default; validated.
         Megapixels and the output resolution have no channel level: request value -> Settings default.
         Real/tech-video channels always use the built-in live-action look (art_style stays "");
@@ -863,6 +934,10 @@ class JobManager:
         if audio_mode not in config.AUDIO_MODES:
             raise ValueError(f"unsupported audio mode: {audio_mode}")
         voice_id = "" if audio_mode == "music" else (voice_id or defaults.get("voice_id") or "")
+        song_voice = (song_voice or defaults.get("song_voice")
+                      or channels.default_song_voice(ch.get("audience")))
+        if song_voice not in config.SONG_VOICES:
+            raise ValueError(f"unsupported song voice: {song_voice}")
         aspect_ratio = aspect_ratio or defaults.get("aspect_ratio") or config.DEFAULT_ASPECT_RATIO
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
@@ -889,21 +964,21 @@ class JobManager:
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
-        return (aspect_ratio, art_style, video_length, audio_mode, voice_id, ch.get("id", ""), snap,
+        return (aspect_ratio, art_style, video_length, audio_mode, voice_id, song_voice, ch.get("id", ""), snap,
                 storyboard_flag, mp, resolution)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
-               owner: str = "", resolution: str = "") -> Job:
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp, res = \
+               owner: str = "", resolution: str = "", song_voice: str = "") -> Job:
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels, resolution)
+                                  storyboard_flag, megapixels, resolution, song_voice)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
-                  art_style=art_style, video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
-                  owner=owner or (channel or {}).get("owner", ""))
+                  song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
+                  storyboard=sb, owner=owner or (channel or {}).get("owner", ""))
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -991,19 +1066,19 @@ class JobManager:
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
-                      owner: str = "", resolution: str = "") -> Job:
+                      owner: str = "", resolution: str = "", song_voice: str = "") -> Job:
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description/transcript is too short")
         if source_kind not in PROMPT_SOURCES:
             raise ValueError("invalid source kind")
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, cid, snap, sb, mp, res = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels, resolution)
+                                  storyboard_flag, megapixels, resolution, song_voice)
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
                   source=source_kind, topic=text, status="drafting",
                   detail="writing script with the LLM", aspect_ratio=aspect_ratio, megapixels=mp,
-                  resolution=res,
+                  resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
                   owner=owner or (channel or {}).get("owner", ""))

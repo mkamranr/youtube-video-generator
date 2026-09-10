@@ -27,6 +27,12 @@
   .badge-stale { color: var(--warn); font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
   .scene textarea { width: 100%; min-height: 120px; margin-top: 8px; }
   .scene .row { margin-top: 8px; }
+  .scene-secs { color: var(--muted); font-size: 12px; font-weight: 600; }
+  .scene-lyrics { margin-top: 8px; font-size: 13px; border-left: 2px solid var(--border, #ccc); padding-left: 10px; }
+  .lyric-line { display: flex; gap: 10px; padding: 1px 0; }
+  .lyric-line .t { flex: 0 0 88px; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .lyric-line.instr { opacity: .55; font-style: italic; }
+  .badge-align { color: var(--muted); font-size: 12px; font-weight: 500; margin-left: 8px; }
   .clip-grid figure.stale video { outline: 2px solid var(--warn); }
   .stale-badge {
     position: absolute; top: 6px; right: 6px; z-index: 2; display: none;
@@ -299,7 +305,7 @@ async function loadDetails(j) {
     if (Array.isArray(d.plan.scenes) && d.plan.scenes.length) {
       $("#scenesSec").hidden = false;
       $("#sceneCount").textContent = `(${d.plan.scenes.length})`;
-      renderScenes(d.plan.scenes);
+      renderScenes(d.plan.scenes, d.plan.timed_segments, d.plan.lyric_align);
     }
     renderStoryboard(d.plan.storyboard, j);
   }
@@ -330,21 +336,43 @@ function renderStoryboard(cards, j) {
   }).join("");
 }
 
-function renderScenes(scenes) {
+function lyricRows(seg) {
+  // the whisper-timed lyric lines sung during this clip (times from the clip's start)
+  const lines = seg && Array.isArray(seg.lines) ? seg.lines : [];
+  if (!lines.some(l => l.text)) return "";
+  return `<div class="scene-lyrics">${lines.map(l =>
+    `<div class="lyric-line${l.instrumental ? " instr" : ""}"><span class="t">${Number(l.start).toFixed(1)}–${Number(l.end).toFixed(1)}s</span>` +
+    `<span>${l.instrumental ? "(instrumental)" : esc(l.text)}</span></div>`).join("")}</div>`;
+}
+
+function renderScenes(scenes, timed, align) {
   const stale = new Set((lastJob && lastJob.stale_clips) || []);
   const editable = lastJob && lastJob.status === "done";
+  const oldBadge = document.getElementById("alignBadge");
+  if (oldBadge) oldBadge.remove();
+  if (align && typeof align.ratio === "number") {
+    const b = document.createElement("span");
+    b.id = "alignBadge"; b.className = "badge-align";
+    b.textContent = align.aligned
+      ? `lyrics aligned ${Math.round(align.ratio * 100)}% · ${align.wps || 0} words/s`
+      : `whisper words only (lyrics matched ${Math.round(align.ratio * 100)}%)`;
+    $("#sceneCount").after(b);
+  }
   $("#sceneList").innerHTML = "";
   scenes.forEach((text, idx) => {
     const n = idx + 1;
+    const seg = Array.isArray(timed) ? timed[idx] : null;
+    const secs = seg && typeof seg.end === "number" ? `<span class="scene-secs">${(seg.end - seg.start).toFixed(1)}s</span>` : "";
     const div = document.createElement("div");
     div.className = "scene";
     div.innerHTML = `
-      <div class="scene-head"><b>Clip ${n}</b>
+      <div class="scene-head"><b>Clip ${n}</b> ${secs}
         ${stale.has(n) ? '<span class="badge-stale">edited - regenerate clip</span>' : ""}
         <span class="spacer"></span>
         ${editable ? '<button class="btn secondary sm edit-btn">Edit</button>' : ""}
       </div>
       <div class="scene-text" style="margin-top:6px">${esc(text)}</div>
+      ${lyricRows(seg)}
       <div class="scene-editor" hidden>
         <textarea></textarea>
         <div class="row"><button class="btn sm save-btn">Save scene</button>
