@@ -33,6 +33,8 @@ services:
       - whisper-cache:/root/.cache/huggingface
       # Channels: index, logos and per-channel YouTube tokens
       - ./data/channels:/app/channels
+      # Weekly content plans (Planner page)
+      - ./data/plans:/app/plans
       # Login accounts (password hashes) and the session signing key
       - ./data/users:/app/users
       # Reference voices for voice cloning (Settings page) - without this mount

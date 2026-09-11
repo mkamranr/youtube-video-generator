@@ -161,6 +161,9 @@ a.btn.danger, a.btn.danger:hover { color: var(--err); }
 .pill.queued { color: var(--muted); }
 .pill.queued::before { box-shadow: none; }
 .pill.approval { color: var(--warn); background: color-mix(in srgb, currentColor 16%, transparent); }
+/* planned: from the weekly plan, nothing generated yet - muted so it does not read as "review script" */
+.pill.planned { color: var(--muted); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.pill.planned::before { box-shadow: none; }
 @keyframes lamp { 50% { opacity: .35; } }
 
 /* ---- progress: a filmstrip filling with frames ---- */

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VideoGen — Planner</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  .day-row { display: grid; grid-template-columns: 132px 1fr auto; gap: 14px; padding: 14px 0; border-top: 1px solid var(--line); align-items: start; }
+  .day-row:first-child { border-top: 0; }
+  .day-when { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .day-when b { display: block; color: var(--fg); font-size: 14px; }
+  .day-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+  .day-text { color: var(--fg); font-size: 14px; line-height: 1.55; }
+  .day-extra { color: var(--muted); font-size: 13px; line-height: 1.55; margin-top: 6px; }
+  .day-side { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; min-width: 128px; }
+  .day-row.busy { opacity: .55; }
+  .day-row textarea, .day-row input[type="text"] { width: 100%; }
+  @media (max-width: 760px) { .day-row { grid-template-columns: 1fr; } .day-side { align-items: flex-start; } }
+</style>
+</head>
+<body>
+<div id="nav"></div>
+<main>
+  <div class="page-head">
+    <div>
+      <h1 class="page-title">Planner</h1>
+      <p class="page-sub" style="margin:0">A week of videos for one channel, written by the LLM. Review the ideas, rewrite the ones you don't like, then turn the good ones into videos.</p>
+    </div>
+  </div>
+
+  <section class="card">
+    <h2>New weekly plan</h2>
+    <div class="row" style="margin-top:6px">
+      <div class="grow" style="min-width:220px">
+        <label for="channel">Channel</label>
+        <select id="channel"></select>
+      </div>
+      <div class="grow" style="min-width:170px">
+        <label for="weekStart">Week starts</label>
+        <input type="date" id="weekStart">
+      </div>
+      <div class="grow" style="min-width:260px">
+        <label for="notes">Anything specific this week? (optional)</label>
+        <input type="text" id="notes" placeholder="e.g. stories about sharing and first days at school">
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="genBtn">Generate 7-day plan</button>
+      <span class="hint" id="genHint"></span>
+    </div>
+  </section>
+
+  <div id="plans"></div>
+</main>
+<script src="/js/common.js"></script>
+<script>
+document.getElementById("nav").outerHTML = navbar("planner");
+
+let channelsList = [];   // the channels the user may plan for
+let plans = [];          // plans of the selected channel, newest first
+let busy = new Set();    // "planId:day" rows with a request in flight
+
+function channelName(cid) {
+  const c = channelsList.find(x => x.id === cid);
+  return c ? c.name : "(deleted channel)";
+}
+
+function dayLabel(row) {
+  if (!row.date) return `Day ${row.day}`;
+  const d = new Date(row.date + "T00:00:00");
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function rowHTML(plan, row) {
+  const key = `${plan.id}:${row.day}`;
+  const done = !!row.job_id;
+  const actors = (row.actors || []).map(a => `<span class="chip">${esc(a)}</span>`).join(" ");
+  return `<div class="day-row ${busy.has(key) ? "busy" : ""}">
+    <div class="day-when"><b>Day ${row.day}</b>${esc(dayLabel(row))}</div>
+    <div>
+      <div class="day-title">${esc(row.title || "(empty - regenerate this day)")}</div>
+      ${actors ? `<div class="chips" style="margin:4px 0 6px">${actors}</div>` : ""}
+      <div class="day-text">${esc(row.description)}</div>
+      ${row.hook ? `<div class="day-extra"><b>Hook:</b> ${esc(row.hook)}</div>` : ""}
+      ${row.thumbnail_idea ? `<div class="day-extra"><b>Thumbnail:</b> ${esc(row.thumbnail_idea)}</div>` : ""}
+    </div>
+    <div class="day-side">
+      ${done
+        ? `<a class="btn secondary sm" href="/job/${esc(row.job_id)}">Open video</a>
+           <span class="pill planned">made</span>`
+        : `<label class="hint" style="display:flex;gap:6px;align-items:center">
+             <input type="checkbox" class="rowpick" data-plan="${plan.id}" data-day="${row.day}"> select
+           </label>
+           <button class="btn sm" onclick="makeJobs('${plan.id}',[${row.day}])">Make video</button>
+           <button class="btn secondary sm" onclick="regenerate('${plan.id}',[${row.day}])">Rewrite</button>`}
+    </div>
+  </div>`;
+}
+
+function planHTML(plan) {
+  const made = (plan.days || []).filter(d => d.job_id).length;
+  return `<section class="card">
+    <h2>Week of ${esc(plan.week_start)} <span class="count">${esc(channelName(plan.channel_id))}</span></h2>
+    <div class="hint" style="margin-bottom:10px">
+      ${made}/${(plan.days || []).length} made${plan.notes ? ` &middot; ${esc(plan.notes)}` : ""}
+      ${plan.owner_name ? ` &middot; ${esc(plan.owner_name)}` : ""}
+    </div>
+    ${(plan.days || []).map(d => rowHTML(plan, d)).join("")}
+    <div class="row" style="margin-top:14px">
+      <button class="btn" onclick="makeSelected('${plan.id}')">Make selected videos</button>
+      <button class="btn secondary" onclick="regenSelected('${plan.id}')">Rewrite selected</button>
+      <div class="spacer"></div>
+      <button class="btn danger sm" onclick="removePlan('${plan.id}')">Delete plan</button>
+    </div>
+  </section>`;
+}
+
+function render() {
+  $("#plans").innerHTML = plans.length
+    ? plans.map(planHTML).join("")
+    : `<div class="empty">${icon("calendar")}No plan yet for this channel - generate one above.</div>`;
+}
+
+function picked(planId) {
+  return [...document.querySelectorAll(`.rowpick[data-plan="${planId}"]`)]
+    .filter(cb => cb.checked).map(cb => Number(cb.dataset.day));
+}
+
+async function refresh() {
+  try {
+    const d = await api(`/api/plans?channel_id=${encodeURIComponent($("#channel").value)}`);
+    plans = d.plans || [];
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function regenerate(planId, days, feedback = "") {
+  if (!days.length) { toast("Select at least one day first", true); return; }
+  days.forEach(d => busy.add(`${planId}:${d}`));
+  render();
+  try {
+    const plan = await api(`/api/plans/${planId}/regenerate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days, feedback }) });
+    plans = plans.map(p => (p.id === plan.id ? plan : p));
+    toast(days.length > 1 ? `${days.length} days rewritten` : `Day ${days[0]} rewritten`);
+  } catch (e) { toast(e.message, true); }
+  finally { days.forEach(d => busy.delete(`${planId}:${d}`)); render(); }
+}
+
+function regenSelected(planId) { regenerate(planId, picked(planId)); }
+
+async function makeJobs(planId, days) {
+  if (!days.length) { toast("Select at least one day first", true); return; }
+  days.forEach(d => busy.add(`${planId}:${d}`));
+  render();
+  try {
+    const r = await api(`/api/plans/${planId}/jobs`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days }) });
+    plans = plans.map(p => (p.id === r.plan.id ? r.plan : p));
+    const n = (r.jobs || []).length;
+    toast(n ? `${n} video${n > 1 ? "s" : ""} created - open each one to set it up` : "Nothing to create");
+  } catch (e) { toast(e.message, true); }
+  finally { days.forEach(d => busy.delete(`${planId}:${d}`)); render(); }
+}
+
+function makeSelected(planId) { makeJobs(planId, picked(planId)); }
+
+async function removePlan(planId) {
+  if (!confirm("Delete this plan? Videos already created from it stay.")) return;
+  try {
+    await api(`/api/plans/${planId}`, { method: "DELETE" });
+    plans = plans.filter(p => p.id !== planId);
+    render();
+    toast("Plan deleted");
+  } catch (e) { toast(e.message, true); }
+}
+
+$("#genBtn").onclick = async () => {
+  if (!$("#channel").value) { toast("Create a channel first (Settings > Channels)", true); return; }
+  $("#genBtn").disabled = true;
+  $("#genHint").textContent = "Writing the week with the LLM - this takes a moment...";
+  try {
+    const plan = await api("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_id: $("#channel").value, week_start: $("#weekStart").value,
+                             notes: $("#notes").value }) });
+    plans = [plan, ...plans];
+    render();
+    toast("Weekly plan ready - review the seven days");
+  } catch (e) { toast(e.message, true); }
+  finally { $("#genBtn").disabled = false; $("#genHint").textContent = ""; }
+};
+
+$("#channel").addEventListener("change", refresh);
+
+(async function init() {
+  const monday = new Date();
+  monday.setDate(monday.getDate() + ((8 - monday.getDay()) % 7 || 7));   // the next Monday
+  $("#weekStart").value = monday.toISOString().slice(0, 10);
+  try {
+    const o = await api("/options");
+    channelsList = o.channels || [];
+    $("#channel").innerHTML = channelsList.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")
+      || `<option value="">No channel yet</option>`;
+    if (o.default_channel_id) $("#channel").value = o.default_channel_id;
+  } catch (e) { toast(e.message, true); }
+  await refresh();
+})();
+</script>
+</body>
+</html>

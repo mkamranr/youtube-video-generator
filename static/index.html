@@ -227,9 +227,14 @@ async function submit() {
 
 async function cancelJob(ev, id) {
   ev.preventDefault(); ev.stopPropagation();
-  if (!confirm("Cancel this running job?")) return;
-  try { await api(`/jobs/${id}/cancel`, { method: "POST" }); toast("Cancelling job"); await refresh(); }
-  catch (e) { toast(e.message, true); }
+  const planned = (lastJobs.find(j => j.id === id) || {}).status === "planned";
+  if (!confirm(planned ? "Discard this planned video? Nothing has been generated yet."
+                       : "Cancel this running job?")) return;
+  try {
+    await api(`/jobs/${id}/cancel`, { method: "POST" });
+    toast(planned ? "Planned video discarded" : "Cancelling job");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
 }
 
 async function resumeJob(ev, id) {
@@ -263,6 +268,7 @@ function thumbHTML(j) {
 
 function jobCard(j) {
   const canDelete = ["done", "failed"].includes(j.status);
+  const needsSetup = j.status === "planned";   // from the weekly plan: not started yet
   const detail = j.error || j.detail || "";
   return `<a class="jobcard" href="/job/${j.id}">
     ${thumbHTML(j)}
@@ -290,10 +296,12 @@ function jobCard(j) {
     <div class="jc-side">
       <div style="display:flex;gap:8px;align-items:center">
         ${j.status === "awaiting_approval" ? `<button class="btn sm" onclick="event.preventDefault();location.href='/job/${j.id}'">Review script</button>` : ""}
+        ${needsSetup ? `<button class="btn sm" onclick="event.preventDefault();location.href='/job/${j.id}'">Set up</button>` : ""}
         ${j.status === "failed" ? `<button class="btn sm" onclick="resumeJob(event,'${j.id}')">Resume</button>` : ""}
         ${j.status === "done" && j.final ? `<button class="btn sm" onclick="bundleDownload(event,'${j.id}')" title="Download the video, thumbnail, audio and SEO text as one ZIP">Bundle</button>` : ""}
         ${canDelete ? `<button class="btn secondary sm" onclick="archiveJob(event,'${j.id}')">Archive</button>
                        <button class="btn danger sm" onclick="removeJob(event,'${j.id}')">Delete</button>`
+                    : needsSetup ? `<button class="btn danger sm" onclick="cancelJob(event,'${j.id}')">Discard</button>`
                     : `<button class="btn danger sm" onclick="cancelJob(event,'${j.id}')">Cancel</button>`}
         ${pillHTML(j)}
       </div>
@@ -307,8 +315,8 @@ let lastJobs = [];
 
 const CHIP_DEFS = [
   ["all", "All", () => true],
-  ["attention", "Needs attention", j => ["awaiting_approval", "failed"].includes(j.status)],
-  ["production", "In production", j => !["awaiting_approval", "failed", "done"].includes(j.status)],
+  ["attention", "Needs attention", j => ["awaiting_approval", "planned", "failed"].includes(j.status)],
+  ["production", "In production", j => !["awaiting_approval", "planned", "failed", "done"].includes(j.status)],
   ["done", "Done", j => j.status === "done"],
 ];
 let statusFilter = "all";

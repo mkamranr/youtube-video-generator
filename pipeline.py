@@ -18,7 +18,8 @@ from services import cast, channels, comfy, llm, lyrics, schedule, storyboard, t
 PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
 
 
-# statuses that are real pipeline work; `queued`, `awaiting_approval`, `done`, `failed` only close the open one
+# statuses that are real pipeline work; `planned`, `queued`, `awaiting_approval`, `done`, `failed`
+# only close the open one
 STAGE_STATUSES = frozenset({"drafting", "transcript", "planning", "tts", "music", "scenes",
                             "thumbnail", "storyboard", "clips", "assembling"})
 
@@ -46,7 +47,15 @@ class Job:
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     script_approved: bool = False
-    status: str = "queued"          # queued|transcript|planning|tts|scenes|music|storyboard|clips|assembling|done|failed
+    # weekly planner (services/planner.py): the plan row this job was created from. A planned job
+    # rests at status "planned" until the user sets its parameters on the job page.
+    plan_id: str = ""
+    setup_done: bool = False        # the setup form was submitted, so the job left "planned"
+    planned_day: int = 0
+    planned_for: str = ""           # ISO date of the plan row
+    hook: str = ""                  # opening line the plan chose
+    thumb_idea: str = ""            # thumbnail the plan asked for
+    status: str = "queued"          # planned|queued|transcript|planning|tts|scenes|music|storyboard|clips|assembling|done|failed
     detail: str = ""
     title: str = ""
     clips_total: int = 0
@@ -728,7 +737,8 @@ def _run(job: Job):
             job.set("thumbnail", "designing the thumbnail with vLLM")
             if not plan.get("thumbnail_prompt"):
                 plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
-                                                channel=job.channel, used=plan.get("cast_used")))
+                                                channel=job.channel, used=plan.get("cast_used"),
+                                                idea=plan.get("thumbnail_idea", "")))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
@@ -894,7 +904,7 @@ class JobManager:
         for p in sorted(config.OUTPUT_DIR.glob("*/job.json")):
             try:
                 j = Job.load(p)
-                if j.status == "awaiting_approval":
+                if j.status in ("awaiting_approval", "planned"):   # waiting for the user, not for us
                     self.jobs[j.id] = j
                     continue
                 if j.status == "drafting":
@@ -1023,6 +1033,10 @@ class JobManager:
                 raise KeyError(job_id)
             if job.status in ("done", "failed"):
                 raise ValueError("job already finished")
+            if job.status == "planned":   # never queued and never started: discard it outright
+                job.set("failed", "discarded before setup", error="discarded before setup")
+                job.add_log("discarded by user before setup")
+                return
             if job_id in self.queue:
                 self.queue.remove(job_id)
                 if job.regen_queue or job.assemble_requested:
@@ -1049,6 +1063,11 @@ class JobManager:
                 raise ValueError("only failed jobs can be resumed")
             job.cancel_requested = False
             job.pause_requested = False
+            if job.plan_id and not job.setup_done:   # discarded before setup: back to the setup form
+                job.set("planned", "needs setup - open the job to choose length and resolution",
+                        error="", archived=False)
+                job.add_log("restored by user - waiting to be set up")
+                return job
             restart_draft = job.source in PROMPT_SOURCES and not job.script_approved
             if restart_draft:
                 job.set("drafting", "resumed - writing script with the LLM", error="", archived=False)
@@ -1066,7 +1085,11 @@ class JobManager:
                       video_length: str = "",
                       audio_mode: str = "", voice_id: str = "",
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
-                      owner: str = "", resolution: str = "", song_voice: str = "") -> Job:
+                      owner: str = "", resolution: str = "", song_voice: str = "",
+                      start: bool = True, title: str = "", plan: dict | None = None) -> Job:
+        """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
+        listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
+        parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
         text = (text or "").strip()
         if len(text) < 3:
             raise ValueError("topic/description/transcript is too short")
@@ -1075,19 +1098,62 @@ class JobManager:
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
+        plan = plan or {}
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
-                  source=source_kind, topic=text, status="drafting",
-                  detail="writing script with the LLM", aspect_ratio=aspect_ratio, megapixels=mp,
+                  source=source_kind, topic=text, title=title.strip(),
+                  status="drafting" if start else "planned",
+                  detail=("writing script with the LLM" if start else
+                          "needs setup - open the job to choose length and resolution"),
+                  aspect_ratio=aspect_ratio, megapixels=mp,
                   resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
-                  owner=owner or (channel or {}).get("owner", ""))
+                  owner=owner or (channel or {}).get("owner", ""),
+                  plan_id=str(plan.get("plan_id", "")), planned_day=int(plan.get("day", 0) or 0),
+                  planned_for=str(plan.get("date", "")), hook=str(plan.get("hook", "")),
+                  thumb_idea=str(plan.get("thumb_idea", "")))
         job.save()
         if source_kind == "transcript":   # shown by the job page's Transcript card
             job.dir.mkdir(parents=True, exist_ok=True)
             (job.dir / "transcript.txt").write_text(text, encoding="utf-8")
         with self.lock:
             self.jobs[job.id] = job
+        if start:
+            self._start_draft(job)
+        return job
+
+    def setup_planned(self, job_id: str, aspect_ratio: str = "", art_style: str = "",
+                      video_length: str = "", audio_mode: str = "", voice_id: str = "",
+                      storyboard_flag=None, megapixels=None, resolution: str = "",
+                      song_voice: str = "") -> Job:
+        """The Start button of a planned job: apply the parameters the user chose and hand the job
+        to the normal drafting flow.
+
+        Resolved against the channel snapshot frozen at plan time (the channel may have been edited
+        or deleted since) with the job's own values as the fallback layer, so a field the form left
+        blank keeps what the job was created with instead of snapping back to the global default.
+        Nothing is mutated until every value validates."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "planned":
+                raise ValueError("job is not waiting for setup")
+            ch = {**job.channel, "id": job.channel_id,
+                  "defaults": {"aspect_ratio": job.aspect_ratio, "art_style": job.art_style,
+                               "video_length": job.video_length, "audio_mode": job.audio_mode,
+                               "song_voice": job.song_voice, "storyboard": job.storyboard,
+                               "voice_id": job.voice_id}}
+            ar, style, vlen, mode, voice, sv, _cid, _snap, sb, mp, res = self._resolve_choices(
+                aspect_ratio, art_style, video_length, audio_mode, voice_id, ch, storyboard_flag,
+                megapixels if megapixels not in (None, "", 0) else job.megapixels,
+                resolution or job.resolution, song_voice)
+            # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
+            job.set("drafting", "writing script with the LLM", aspect_ratio=ar, art_style=style,
+                    video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
+                    storyboard=sb, megapixels=mp, resolution=res, setup_done=True)
+            job.add_log(f"setup confirmed ({vlen}, {ar}, {mp} MP, {res}, "
+                        f"{'song' if mode == 'music' else 'voiceover'}) - writing the script")
         self._start_draft(job)
         return job
 
@@ -1108,8 +1174,10 @@ class JobManager:
             plan = llm.write_script_from_prompt(
                 job.topic, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
                 words=_length_params(job)[0], feedback=feedback, previous=previous,
-                channel=job.channel)
+                channel=job.channel, hook=job.hook)
             plan["audio_mode"] = job.audio_mode
+            if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
+                plan["thumbnail_idea"] = job.thumb_idea
             if cast.all_characters(job.channel):
                 used = _set_cast_used(job, plan)
                 job.add_log("cast in this story: " + (", ".join(used) or "none"))
@@ -1225,7 +1293,8 @@ class JobManager:
             job.set("thumbnail", "designing a new thumbnail with vLLM")
             plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
                                             plan.get("style", ""), channel=job.channel,
-                                            used=plan.get("cast_used")))
+                                            used=plan.get("cast_used"),
+                                            idea=plan.get("thumbnail_idea", "")))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")

@@ -10,7 +10,7 @@ created for. Users see only their own records; admins see everything (services/a
     right after the first admin is created;
   * user deletion - the deleted account's channels and jobs move to the acting admin.
 """
-from services import channels, users
+from services import channels, planner, users
 
 
 def oldest_admin_id() -> str:
@@ -38,8 +38,9 @@ def migrate_unowned(jobs) -> dict:
 
 
 def reassign(old_uid: str, new_uid: str, jobs) -> dict:
-    """Move every channel and job of `old_uid` to `new_uid`."""
+    """Move every channel, weekly plan and job of `old_uid` to `new_uid`."""
     n_ch = channels.reassign_owner(old_uid, new_uid)
+    planner.reassign_owner(old_uid, new_uid)
     n_jobs = 0
     for j in list(jobs):
         if j.owner == old_uid:

@@ -35,6 +35,7 @@ const ICONS = {
   user: '<circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20c.8-3.6 3.7-5.6 7.5-5.6s6.7 2 7.5 5.6"/>',
   logout: '<path d="M14 5.5h4a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5h-4"/><path d="M10 8l-4 4 4 4M6 12h9"/>',
   lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3.5v3M16 3.5v3"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/>',
 };
 
@@ -49,6 +50,7 @@ function navbar(active) {
     <a class="brand" href="/"><span class="logo" aria-hidden="true"></span> VideoGen</a>
     <div class="links">
       <a href="/" class="${active === "home" ? "active" : ""}">${icon("list")} Jobs</a>
+      <a href="/planner" class="${active === "planner" ? "active" : ""}">${icon("calendar")} Planner</a>
       <a href="/archive" class="${active === "archive" ? "active" : ""}">${icon("archive")} Archived Jobs</a>
       <a href="/settings" class="${active === "settings" ? "active" : ""}">${icon("gear")} Settings</a>
     </div>
@@ -59,14 +61,14 @@ function navbar(active) {
 }
 
 /* ---- status helpers ---- */
-const STEP_LABELS = { queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", clips: "Clips", assembling: "Assemble", done: "Done" };
+const STEP_LABELS = { planned: "Setup", queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", clips: "Clips", assembling: "Assemble", done: "Done" };
 
 function orderFor(j) {
   const mid = j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
             : j.audio_mode === "narration" ? ["tts", "scenes", "thumbnail"]
             : ["tts", "scenes", "thumbnail", "music"];
   const head = (j.source === "topic" || j.source === "description")
-            ? ["drafting", "awaiting_approval", "queued", "planning"]
+            ? [...(j.plan_id ? ["planned"] : []), "drafting", "awaiting_approval", "queued", "planning"]
             : ["queued", "transcript", "planning"];
   if (j.storyboard) mid.push("storyboard");
   return [...head, ...mid, "clips", "assembling", "done"];
@@ -130,7 +132,7 @@ function resolutionBadge(j) {
 
 function pct(j) {
   if (j.status === "done") return 100;
-  if (j.status === "failed") return 0;
+  if (j.status === "failed" || j.status === "planned") return 0;   // planned: nothing has run yet
   if (j.status === "clips") return j.clips_total ? Math.round(40 + 52 * j.clips_done / j.clips_total) : 40;
   if (j.status === "assembling") return 95;
   const order = orderFor(j);
@@ -139,11 +141,13 @@ function pct(j) {
 }
 
 function pillHTML(j) {
-  const active = !["done", "failed", "queued", "awaiting_approval"].includes(j.status);
+  const active = !["done", "failed", "queued", "awaiting_approval", "planned"].includes(j.status);
   const cls = j.status === "done" ? "done" : j.status === "failed" ? "failed"
-            : j.status === "queued" ? "queued" : j.status === "awaiting_approval" ? "approval" : "running";
+            : j.status === "queued" ? "queued" : j.status === "awaiting_approval" ? "approval"
+            : j.status === "planned" ? "planned" : "running";
   const text = j.status === "clips" && j.clips_total ? `clips ${j.clips_done}/${j.clips_total}`
-             : j.status === "awaiting_approval" ? "review script" : (STEP_LABELS[j.status] || j.status);
+             : j.status === "awaiting_approval" ? "review script"
+             : j.status === "planned" ? "needs setup" : (STEP_LABELS[j.status] || j.status);
   return `<span class="pill ${cls} ${active ? "running" : ""}">${esc(text.toLowerCase())}</span>`;
 }
 

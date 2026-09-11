@@ -27,6 +27,8 @@ def _patch_config():
     config.CHANNELS_DIR = TMP / "channels"
     config.CHANNELS_INDEX = config.CHANNELS_DIR / "channels.json"
     config.OUTPUT_DIR = TMP / "output"
+    config.PLANS_DIR = TMP / "plans"
+    config.PLANS_INDEX = config.PLANS_DIR / "plans.json"
     config.USERS_DIR = TMP / "users"
     config.USERS_INDEX = config.USERS_DIR / "users.json"
     config.SESSION_SECRET_FILE = config.USERS_DIR / "session_secret"
@@ -213,6 +215,94 @@ class Jobs(unittest.TestCase):
         finally:
             clients["alice"].delete(f"/jobs/{jid}")
             clients["alice"].delete(f"/jobs/{admin_job}")
+            clients["alice"].delete(f"/api/channels/{ch['id']}")
+
+
+PLAN_ROWS = [{"day": i + 1, "actors": [], "title": f"Story {i + 1}",
+              "description": f"Day {i + 1}: a small adventure that ends happily.",
+              "thumbnail_idea": "A happy face.", "hook": "What happens next?"} for i in range(7)]
+
+
+class Plans(unittest.TestCase):
+    """The weekly Planner: plans are owner-scoped and confirmed rows become paused jobs."""
+
+    def test_the_planner_page_is_served_to_signed_in_users(self):
+        self.assertEqual(clients["alice"].get("/planner").status_code, 200)
+
+    def test_plan_lifecycle_and_scoping(self):
+        ch = _new_channel(clients["alice"], "Alice Plans")
+        with mock.patch.object(app.llm, "write_week_plan", return_value=PLAN_ROWS):
+            r = clients["alice"].post("/api/plans", json={"channel_id": ch["id"],
+                                                          "week_start": "2026-09-15",
+                                                          "notes": "gentle stories"})
+        self.assertEqual(r.status_code, 200, r.text)
+        plan = r.json()
+        self.assertEqual(len(plan["days"]), 7)
+        self.assertEqual(plan["owner"], ids["alice"])
+        self.assertEqual(plan["days"][0]["date"], "2026-09-15")
+        pid = plan["id"]
+        try:
+            # another user sees neither the plan nor its rows
+            bob = clients["bob"]
+            self.assertEqual([p["id"] for p in bob.get("/api/plans").json()["plans"]], [])
+            for method, path in (("post", f"/api/plans/{pid}/regenerate"),
+                                 ("post", f"/api/plans/{pid}/jobs"),
+                                 ("put", f"/api/plans/{pid}/days/1")):
+                self.assertEqual(getattr(bob, method)(path, json={}).status_code, 404, path)
+            self.assertEqual(bob.delete(f"/api/plans/{pid}").status_code, 404)
+            self.assertEqual(clients["bob"].post("/api/plans",
+                                                 json={"channel_id": ch["id"]}).status_code, 404)
+
+            # rewrite one day
+            new_row = {**PLAN_ROWS[2], "title": "A better idea"}
+            with mock.patch.object(app.llm, "write_plan_day", return_value=new_row):
+                r = clients["alice"].post(f"/api/plans/{pid}/regenerate", json={"days": [3]})
+            self.assertEqual(r.json()["days"][2]["title"], "A better idea")
+
+            # a hand-edited row is stored clamped
+            r = clients["alice"].put(f"/api/plans/{pid}/days/1",
+                                     json={"title": "Mine", "description": "I wrote this.",
+                                           "actors": ["Nobody"], "hook": "Hi!", "thumbnail_idea": ""})
+            self.assertEqual(r.json()["days"][0]["title"], "Mine")
+            # this channel has no cast, so free-text actor names are kept as typed
+            self.assertEqual(r.json()["days"][0]["actors"], ["Nobody"])
+            self.assertEqual(clients["alice"].put(f"/api/plans/{pid}/days/99", json={}).status_code, 404)
+
+            # confirm two rows: paused jobs, nothing started
+            with mock.patch.object(app.JobManager, "_start_draft") as draft:
+                r = clients["alice"].post(f"/api/plans/{pid}/jobs", json={"days": [1, 2]})
+                self.assertEqual(r.status_code, 200, r.text)
+                jobs = r.json()["jobs"]
+                draft.assert_not_called()
+            self.assertEqual(len(jobs), 2)
+            self.assertEqual(jobs[0]["status"], "planned")
+            self.assertEqual(jobs[0]["owner"], ids["alice"])
+            self.assertEqual(jobs[0]["plan_id"], pid)
+            self.assertEqual(r.json()["plan"]["days"][0]["job_id"], jobs[0]["id"])
+            # a row that already has a job is skipped on a second confirm
+            self.assertEqual(clients["alice"].post(f"/api/plans/{pid}/jobs",
+                                                   json={"days": [1]}).json()["jobs"], [])
+
+            jid = jobs[0]["id"]
+            self.assertEqual(bob.post(f"/jobs/{jid}/setup", json={}).status_code, 404)
+            self.assertEqual(clients["alice"].post(f"/jobs/{jid}/setup",
+                                                   json={"voice_id": "nope"}).status_code, 400)
+            with mock.patch.object(app.JobManager, "_start_draft") as draft:
+                r = clients["alice"].post(f"/jobs/{jid}/setup", json={"video_length": "1-2 minutes"})
+                self.assertEqual(r.status_code, 200, r.text)
+                draft.assert_called_once()
+            self.assertEqual(r.json()["status"], "drafting")
+            self.assertEqual(r.json()["video_length"], "1-2 minutes")
+            # setting up twice is refused
+            self.assertEqual(clients["alice"].post(f"/jobs/{jid}/setup", json={}).status_code, 409)
+
+            self.assertEqual(clients["alice"].delete(f"/api/plans/{pid}").status_code, 200)
+            self.assertEqual(clients["alice"].get(f"/jobs/{jid}").status_code, 200)  # the job stays
+        finally:
+            for j in clients["alice"].get("/jobs").json():
+                if j.get("plan_id") == pid:
+                    clients["alice"].delete(f"/jobs/{j['id']}")
+            clients["alice"].delete(f"/api/plans/{pid}")
             clients["alice"].delete(f"/api/channels/{ch['id']}")
 
 

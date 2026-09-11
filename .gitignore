@@ -22,3 +22,6 @@ channels/
 
 # login accounts (password hashes) and the session signing key
 users/
+
+# weekly content plans (Planner)
+plans/

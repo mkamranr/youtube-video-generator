@@ -83,6 +83,10 @@ One job object:
 
 Statuses: `queued → transcript → planning → [music | tts] → scenes → thumbnail → [storyboard] → clips → assembling → done | failed` (`storyboard` only for jobs with the overlay enabled: the LLM plans the cards and ComfyUI renders their images).
 Prompt-based jobs (`source` = `topic`/`description`/`transcript`) start with `drafting → awaiting_approval` and enter the queue only when approved.
+A job confirmed from a weekly plan starts one step earlier, at `planned`: it exists and is listed, but nothing runs and no LLM is called until `POST /jobs/{id}/setup` supplies the missing parameters. `plan_id`, `planned_day`, `planned_for`, `hook` and `thumb_idea` name the plan row it came from; `setup_done` turns true when it is started. A server restart never resumes a `planned` job, `POST /jobs/{id}/cancel` discards it (to `failed`, restorable with `resume`), and it cannot be archived until it has run.
+
+### `POST /jobs/{id}/setup`
+The Start button of a `planned` job (one confirmed from a weekly plan): `{aspect_ratio, megapixels, resolution, art_style, video_length, audio_mode, voice_id, song_voice, storyboard}`, every field optional — a blank one keeps the value the job was created with (its channel's default at plan time), never the global default. Applies them and hands the job to the normal prompt flow (`drafting → awaiting_approval`). `409` when the job is not waiting for setup, `400` for an unknown `voice_id`.
 
 ### `GET /jobs/{id}/details`
 Large payload for the job page: full `transcript` text, the parsed `plan` (narration/story, style, scenes, per-clip audio `segments`, `music` caption+lyrics, `seo_title`, `seo_description`, `thumbnail_prompt`, `storyboard` — the overlay cards as `[{start_clip, end_clip, kicker, headline, body, image_prompt}]`), and the full `log`.
@@ -155,6 +159,19 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 
 - `POST /jobs/{id}/youtube-upload` — uploads a finished job's video (resumable, live `yt_progress` on the job) to the YouTube account connected for the job's channel, with the SEO title/description and the configured privacy (default **private** — an unpublished draft reviewable in YouTube Studio); made-for-kids comes from the channel's own `made_for_kids` toggle (snapshotted onto the job at submit). Then sets the custom thumbnail (best-effort). Job fields: `yt_status` (`uploading`/`uploaded`/`failed`), `yt_progress`, `yt_video_id`, `yt_error`. Returns `409` if the channel is not connected.
 
+## Weekly plans (Planner)
+
+A plan is seven video ideas for one channel, written by the LLM and reviewed before anything is generated. Plans are kept per channel (a history of the weeks already covered) and are owner-scoped like channels and jobs: `404` for someone else's. Stored in `plans/plans.json` (`VIDEOGEN_PLANS_DIR`).
+
+A plan row is `{day, date, actors: [cast names], title, description, thumbnail_idea, hook, job_id}`; `job_id` is filled once the row has been confirmed into a job. The prompts use the **spoken** cast sheet, so a description names the characters without describing how they look.
+
+- `GET /api/plans?channel_id=` — `{"plans": [{id, channel_id, owner, owner_name, created, updated, week_start, notes, days: [...]}], "days": 7}`, newest first (admins see everyone's).
+- `POST /api/plans` `{channel_id, week_start, notes}` — writes the week with the LLM and stores it. `week_start` is the ISO date of day 1 (today when missing); `notes` optionally steers the week. Titles from the channel's earlier plans are sent along so a new week does not repeat them. `502` when the LLM is unreachable or returns nothing usable.
+- `POST /api/plans/{id}/regenerate` `{days: [1, 3], feedback}` — rewrites those days in place, each told what the other days are so the new idea stays different. Rows that already became a job are skipped; empty `days` rewrites the whole week.
+- `PUT /api/plans/{id}/days/{day}` `{actors, title, description, thumbnail_idea, hook}` — saves a hand-edited row (text clamped; `actors` kept to names in the channel's cast when it has one). The day number, its date and an existing `job_id` are preserved.
+- `POST /api/plans/{id}/jobs` `{days: [1, 2]}` — confirms rows: one **paused** job per day (status `planned`, see `POST /jobs/{id}/setup`), built from the row's description, with its title, hook and thumbnail idea carried along. Returns `{"plan": ..., "jobs": [...]}`. `400` when the plan's channel no longer exists.
+- `DELETE /api/plans/{id}` — forgets the plan. Jobs already created from it stay.
+
 ## Channels
 
 Channels are managed on the Settings page; each has a name, purpose, audience (`kids`/`family`/`general`), video type (`animated`/`real`/`tech`), per-video defaults, an optional logo and its own YouTube connection. A default channel is created automatically on first start, migrated from the legacy single-channel settings (name, defaults, logo and YouTube token are carried over).
@@ -202,4 +219,4 @@ GPU schedule window state (settings `GPU_SCHEDULE_ENABLED`, `GPU_WINDOW_START`, 
 
 ## Pages (HTML)
 
-`/` (jobs + submit) · `/job/{id}` (job detail) · `/archive` (archived jobs) · `/settings` · `/login` · `/setup` (first run only).
+`/` (jobs + submit) · `/job/{id}` (job detail) · `/planner` (weekly plans) · `/archive` (archived jobs) · `/settings` · `/login` · `/setup` (first run only).

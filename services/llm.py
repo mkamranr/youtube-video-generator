@@ -215,8 +215,11 @@ Create a new short video inspired by this content.{_cast_selection_rule(channel)
 def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                              words: int | None = None, feedback: str = "",
                              previous: str | None = None,
-                             channel: dict | None = None) -> dict:
-    """Draft a video script (title/narration/style) from a user topic, description or pasted transcript."""
+                             channel: dict | None = None, hook: str = "") -> dict:
+    """Draft a video script (title/narration/style) from a user topic, description or pasted transcript.
+
+    hook: the opening line a weekly plan chose for this video (services/planner.py); the script
+    starts from it. Empty for every other job."""
     words = words or config.NARRATION_WORDS
     if art_style:
         style_rule = (f'one sentence describing the global visual style applied to every shot. '
@@ -246,6 +249,9 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
     # a pasted transcript is kept verbatim; the selection then only decides who plays in the visuals
     task += _cast_selection_rule(channel, text, verbatim=source_kind == "transcript")
+    if hook.strip() and source_kind != "transcript":
+        task += ('\nThe video opens on this hook - use it as the first spoken line, word for word: '
+                 f'"{hook.strip()}"')
     revision = ""
     if feedback:
         revision = '\n\nThe user reviewed a previous draft and asked for these changes: "' + feedback + '"'
@@ -564,6 +570,82 @@ Never mention real people's names or brands."""
     return cards
 
 
+PLAN_ROW_KEYS = ('- "actors": the cast characters of this video, by name, as a list (usually 1-3; '
+                 'empty when the story needs none).\n'
+                 '- "title": the video title a viewer would click, max 12 words.\n'
+                 '- "description": 2-4 sentences telling the whole story from beginning to end - what '
+                 'happens, to whom, and how it ends. This becomes the brief the script is written from, '
+                 'so name the characters and never describe how they look.\n'
+                 '- "thumbnail_idea": one sentence describing the thumbnail picture (who is in it, what '
+                 'they are doing, the feeling).\n'
+                 '- "hook": the spoken opening line of the video, max 15 words, in quotation marks in the '
+                 'story\'s own voice.')
+
+
+def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, avoid) -> str:
+    """The shared part of the weekly-plan prompts: what a good week looks like."""
+    avoid = [str(a).strip() for a in (avoid or []) if str(a).strip()]
+    parts = [f"Plan {days} videos for this channel, one per day"
+             + (f", starting {week_start}." if week_start else ".")]
+    parts.append("Every video stands on its own (a viewer may watch only one) but the week as a whole "
+                 "has variety: different settings, different problems to solve, different characters in "
+                 "the lead. Never plan the same story twice.")
+    if cast.all_characters(channel):
+        parts.append("Cast the videos from the channel roster above - usually 1-3 characters each, and "
+                     "not the same lead every day. Use their names exactly as written.")
+    if notes.strip():
+        parts.append(f'The user asks for this week: "{notes.strip()}"')
+    if avoid:
+        parts.append("These titles were already planned for this channel - plan something different:\n- "
+                     + "\n- ".join(avoid[:40]))
+    return "\n\n".join(parts)
+
+
+def write_week_plan(channel: dict | None = None, days: int = 7, week_start: str = "",
+                    notes: str = "", avoid=()) -> list:
+    """A week of video ideas: one row per day (actors, title, description, thumbnail idea, hook).
+
+    Returns the raw row list (normalized by services.planner.normalize_days). The rows are written
+    with the spoken cast sheet: a description becomes the brief the narration is written from, so it
+    must not carry the characters' looks."""
+    user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}
+
+Return JSON: {{"plan": [{{"day": 1, "actors": ["..."], "title": "...", "description": "...", "thumbnail_idea": "...", "hook": "..."}}, ...]}} with exactly {days} entries, "day" running 1 to {days}, where:
+{PLAN_ROW_KEYS}
+Never mention real people's names or brands."""
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
+                 {"role": "user", "content": user}])
+    rows = out.get("plan") or out.get("days") or out.get("videos")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("vLLM returned no weekly plan")
+    return rows
+
+
+def write_plan_day(channel: dict | None = None, day: int = 1, others: list | None = None,
+                   feedback: str = "", days: int = 7, week_start: str = "", notes: str = "",
+                   avoid=()) -> dict:
+    """One replacement row for day `day`, written so it stays different from the other days."""
+    rest = "\n".join(f'day {r.get("day")}: {r.get("title", "")} - {r.get("description", "")}'
+                     for r in (others or []) if r.get("title") or r.get("description"))
+    context = f"\n\nThe other days of this week are:\n{rest}\n\nThe new idea must be different from all of them." \
+        if rest else ""
+    wish = f'\n\nThe user asks for this day: "{feedback.strip()}"' if feedback.strip() else ""
+    user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}{context}{wish}
+
+Rewrite DAY {day} only, as one fresh idea.
+Return JSON: {{"day": {{"day": {day}, "actors": ["..."], "title": "...", "description": "...", "thumbnail_idea": "...", "hook": "..."}}}} where:
+{PLAN_ROW_KEYS}
+Never mention real people's names or brands."""
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
+                 {"role": "user", "content": user}])
+    row = out.get("day") or out.get("plan") or out
+    if isinstance(row, list):
+        row = next(iter(row), {})
+    if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+        raise RuntimeError(f"vLLM returned no plan for day {day}")
+    return row
+
+
 def write_seo(title: str, narration: str, transcript: str, channel: dict | None = None,
               used: list | None = None) -> dict:
     """YouTube-ready SEO title and description for the generated video."""
@@ -595,10 +677,15 @@ def _lowercase_hashtags(text: str) -> str:
 
 
 def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None,
-                    used: list | None = None) -> dict:
-    """A single-image prompt for an eye-catching YouTube thumbnail."""
+                    used: list | None = None, idea: str = "") -> dict:
+    """A single-image prompt for an eye-catching YouTube thumbnail.
+
+    idea: the thumbnail the weekly plan asked for (services/planner.py); the prompt then realises
+    that composition instead of inventing one. Empty for every other job."""
     emotion = ("big expressive joyful emotion" if _channel(channel)["audience"] == "kids"
                else "strong expressive emotion")
+    wish = (f'\nThe thumbnail must show this, as planned for the video: "{idea.strip()}"'
+            if idea.strip() else "")
     featured = cast.names(cast.main_characters(channel)) if used is None else list(used)
     subject = "the main character(s) and the key objects of the story"
     if featured:
@@ -606,7 +693,7 @@ def write_thumbnail(title: str, narration: str, style: str, channel: dict | None
                    "described exactly as in the cast sheet - with the key objects of the story")
     user = f"""We produced a short video titled "{title}".
 Its story: \"\"\"{narration[:1500]}\"\"\"
-Its visual style: {style}
+Its visual style: {style}{wish}
 
 Design ONE eye-catching YouTube thumbnail image for it. A viewer glancing for half a second
 must INSTANTLY understand what the video is about. Return JSON with key:

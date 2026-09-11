@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, bible, cast, channels, ownership, schedule, users, voices
+from services import auth, bible, cast, channels, llm, ownership, planner, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -33,7 +33,8 @@ async def no_cache_static(request, call_next):
     """UI assets change often during development: force browsers to revalidate."""
     response = await call_next(request)
     path = request.url.path
-    if path.endswith((".js", ".css", ".html")) or path in ("/", "/settings", "/archive", "/login", "/setup") \
+    if path.endswith((".js", ".css", ".html")) \
+            or path in ("/", "/settings", "/archive", "/planner", "/login", "/setup") \
             or path.startswith("/job/"):
         response.headers["Cache-Control"] = "no-cache"
     return response
@@ -216,6 +217,39 @@ class ApproveBody(BaseModel):
 
 class RedraftBody(BaseModel):
     feedback: str = ""
+
+
+class JobSetup(BaseModel):
+    """The parameters a planned job is still missing; empty fields fall back to the channel."""
+    aspect_ratio: str = ""
+    megapixels: float | None = None
+    resolution: str = ""
+    art_style: str = ""
+    video_length: str = ""
+    audio_mode: str = ""
+    voice_id: str = ""
+    song_voice: str = ""
+    storyboard: bool | None = None
+
+
+@app.post("/jobs/{job_id}/setup")
+def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_user)):
+    """Start a job created from a weekly plan: apply its parameters, then draft the script."""
+    _owned_job(job_id, user)
+    vid = body.voice_id.strip()
+    if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
+        raise HTTPException(400, "unknown reference voice")
+    try:
+        return _job_json(manager.setup_planned(job_id, body.aspect_ratio, body.art_style,
+                                               body.video_length, body.audio_mode, vid,
+                                               storyboard_flag=body.storyboard,
+                                               megapixels=body.megapixels,
+                                               resolution=body.resolution,
+                                               song_voice=body.song_voice))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/jobs/{job_id}/approve")
@@ -652,6 +686,140 @@ def put_settings(body: dict, admin: dict = Depends(auth.require_admin)):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"settings": settings}
+
+
+# ---- weekly plans ----------------------------------------------------------
+class PlanCreate(BaseModel):
+    channel_id: str = ""
+    week_start: str = ""       # ISO date of day 1; today when empty
+    notes: str = ""            # optional steer for the week
+
+
+class PlanRegen(BaseModel):
+    days: list[int] = []       # day numbers to rewrite; empty = the whole week
+    feedback: str = ""
+
+
+class PlanDay(BaseModel):
+    actors: list[str] = []
+    title: str = ""
+    description: str = ""
+    thumbnail_idea: str = ""
+    hook: str = ""
+
+
+class PlanJobs(BaseModel):
+    days: list[int] = []       # day numbers to turn into jobs
+
+
+def _owned_plan(pid: str, user: dict) -> dict:
+    p = planner.get_plan(pid)
+    if not p or not auth.can_access(user, p.get("owner", "")):
+        raise HTTPException(404, "plan not found")
+    return p
+
+
+def _plan_channel(plan: dict, user: dict) -> dict:
+    """The plan's channel, or {} when it was deleted - a plan outlives its channel."""
+    ch = channels.get_channel(plan.get("channel_id", ""))
+    return ch if ch and auth.can_access(user, ch.get("owner", "")) else {}
+
+
+@app.get("/api/plans")
+def list_plans_api(channel_id: str = "", user: dict = Depends(auth.require_user)):
+    """The caller's weekly plans (admins: everyone's), newest first."""
+    owner = None if auth.is_admin(user) else user["id"]
+    names = _owner_names()
+    plans = planner.list_plans(owner=owner, channel_id=channel_id or None)
+    return {"plans": [{**p, "owner_name": names.get(p.get("owner", ""), "")} for p in plans],
+            "days": planner.DAYS}
+
+
+@app.post("/api/plans")
+def create_plan_api(body: PlanCreate, user: dict = Depends(auth.require_user)):
+    """Write a week of video ideas with the LLM and store it. No job is created here."""
+    ch = _owned_channel(body.channel_id, user)
+    week_start = planner.parse_week_start(body.week_start)
+    try:
+        rows = llm.write_week_plan(channel=channels.snapshot(ch), days=planner.DAYS,
+                                   week_start=week_start, notes=body.notes,
+                                   avoid=planner.previous_titles(ch["id"]))
+    except Exception as e:  # noqa: BLE001  (vLLM down / bad reply)
+        raise HTTPException(502, f"the LLM could not write the plan: {e}")
+    days = planner.normalize_days(rows, week_start, ch)
+    return planner.create_plan(ch["id"], ch.get("owner") or user["id"], week_start, days, body.notes)
+
+
+@app.post("/api/plans/{plan_id}/regenerate")
+def regenerate_plan_api(plan_id: str, body: PlanRegen, user: dict = Depends(auth.require_user)):
+    """Rewrite one or more days in place. Rows that already became a job are left alone."""
+    plan = _owned_plan(plan_id, user)
+    ch = _plan_channel(plan, user)
+    snap = channels.snapshot(ch) if ch else plan.get("channel_snapshot") or {}
+    wanted = [d for d in (body.days or [r["day"] for r in plan["days"]])]
+    out = plan
+    for day in wanted:
+        row = next((r for r in plan["days"] if r["day"] == day), None)
+        if not row or row.get("job_id"):
+            continue
+        others = [r for r in plan["days"] if r["day"] != day]
+        try:
+            new = llm.write_plan_day(channel=snap, day=day, others=others, feedback=body.feedback,
+                                     days=planner.DAYS, week_start=plan["week_start"],
+                                     notes=plan.get("notes", ""),
+                                     avoid=planner.previous_titles(plan["channel_id"]))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, f"the LLM could not rewrite day {day}: {e}")
+        out = planner.set_day(plan_id, day,
+                              planner.validate_day(new, day, plan["week_start"], ch or None, row))
+        plan = out
+    return out
+
+
+@app.put("/api/plans/{plan_id}/days/{day}")
+def edit_plan_day_api(plan_id: str, day: int, body: PlanDay, user: dict = Depends(auth.require_user)):
+    """Save a row the user edited by hand."""
+    plan = _owned_plan(plan_id, user)
+    row = next((r for r in plan["days"] if r["day"] == day), None)
+    if not row:
+        raise HTTPException(404, "unknown day")
+    ch = _plan_channel(plan, user)
+    clean = planner.validate_day(body.model_dump(), day, plan["week_start"], ch or None, row)
+    return planner.set_day(plan_id, day, clean)
+
+
+@app.post("/api/plans/{plan_id}/jobs")
+def create_plan_jobs_api(plan_id: str, body: PlanJobs, user: dict = Depends(auth.require_user)):
+    """Confirm rows: one paused job per day. Nothing is generated until the job is set up."""
+    plan = _owned_plan(plan_id, user)
+    ch = _plan_channel(plan, user)
+    if not ch:
+        raise HTTPException(400, "the channel of this plan no longer exists")
+    owner = ch.get("owner") or user["id"]
+    made = []
+    for day in body.days or []:
+        row = next((r for r in plan["days"] if r["day"] == day), None)
+        if not row or row.get("job_id") or not row.get("description"):
+            continue
+        try:
+            job = manager.submit_prompt(planner.job_seed(row), "description", channel=ch,
+                                        owner=owner, start=False, title=row.get("title", ""),
+                                        plan={"plan_id": plan_id, "day": day,
+                                              "date": row.get("date", ""), "hook": row.get("hook", ""),
+                                              "thumb_idea": row.get("thumbnail_idea", "")})
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        plan = planner.set_job(plan_id, day, job.id)
+        made.append(_job_json(job))
+    return {"plan": plan, "jobs": made}
+
+
+@app.delete("/api/plans/{plan_id}")
+def delete_plan_api(plan_id: str, user: dict = Depends(auth.require_user)):
+    """Forget a plan. Jobs already created from it stay - they are real work."""
+    _owned_plan(plan_id, user)
+    planner.delete_plan(plan_id)
+    return {"ok": True}
 
 
 # ---- channels --------------------------------------------------------------
@@ -1183,6 +1351,11 @@ def setup_page():
 @app.get("/archive")
 def archive_page():
     return FileResponse(config.STATIC_DIR / "archive.html")
+
+
+@app.get("/planner")
+def planner_page():
+    return FileResponse(config.STATIC_DIR / "planner.html")
 
 
 app.mount("/", StaticFiles(directory=config.STATIC_DIR, html=True), name="static")

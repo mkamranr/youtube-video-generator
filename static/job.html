@@ -85,6 +85,40 @@
     <div class="statusline" id="statusline"></div>
   </div>
 
+  <section class="card" id="setupSec" hidden>
+    <h2>Set up this video</h2>
+    <div class="hint" style="margin-bottom:12px">From your weekly plan - nothing has been generated yet.
+      Choose the options and press Start; the script is written next, for your review.</div>
+    <div class="row">
+      <div class="grow" style="min-width:170px">
+        <label for="suAudio">Audio</label>
+        <select id="suAudio">
+          <option value="music">Generate Song</option>
+          <option value="narration+music">Generate Voiceover</option>
+        </select>
+      </div>
+      <div class="grow" id="suVoiceField" style="min-width:170px" hidden>
+        <label for="suVoice">Voice</label>
+        <select id="suVoice"></select>
+      </div>
+      <div class="grow" style="min-width:160px"><label for="suVlen">Video length</label><select id="suVlen"></select></div>
+      <div class="grow" style="min-width:180px"><label for="suAr">Aspect ratio</label><select id="suAr"></select></div>
+      <div class="grow" style="min-width:140px"><label for="suMp">Resolution (megapixels)</label><select id="suMp"></select></div>
+      <div class="grow" style="min-width:160px"><label for="suRes">Output resolution</label><select id="suRes"></select></div>
+    </div>
+    <div id="suStyleBlock" style="margin-top:12px">
+      <label for="suStyle">Art style</label>
+      <div class="row" style="align-items:center;gap:12px">
+        <select id="suStyle" class="grow" style="min-width:220px"></select>
+        <img id="suStylePreview" alt="style preview" hidden style="max-height:76px;border-radius:6px">
+      </div>
+    </div>
+    <label class="switch" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
+    <div class="row" style="margin-top:14px">
+      <button class="btn" id="startBtn">Start video generation</button>
+    </div>
+  </section>
+
   <section class="card" id="approvalSec" hidden>
     <h2>Script approval</h2>
     <div class="hint" style="margin-bottom:12px">Review and edit the script below. After approval, the whole video (music, scenes, clips, thumbnail) is generated from it.</div>
@@ -246,6 +280,7 @@ let upscalesKey = "";                // JSON of the rendered upscaled versions (
 let upResLoaded = false;
 let prevStatus = null;
 let approvalLoaded = false;
+let setupLoaded = false;             // the setup form is filled once; the 3 s poll must not stomp edits
 let pollTimer = null;
 
 function startPolling() {
@@ -477,6 +512,8 @@ function update(j) {
   $("#resumeBtn").hidden = j.status !== "failed";
   $("#approvalSec").hidden = j.status !== "awaiting_approval";
   if (j.status === "drafting") approvalLoaded = false;
+  $("#setupSec").hidden = j.status !== "planned";
+  if (j.status === "planned") fillSetup(j).catch(console.error);
 
   // when a regeneration/reassembly finishes, rebuild the media with cache-busters
   const cameBackDone = prevStatus && !["done", "failed"].includes(prevStatus) && j.status === "done";
@@ -641,9 +678,14 @@ $("#resumeBtn").onclick = async () => {
 };
 
 $("#cancelBtn").onclick = async () => {
-  if (!confirm("Cancel this running job?")) return;
-  try { await api(`/jobs/${jobId}/cancel`, { method: "POST" }); toast("Cancelling job"); refresh(); }
-  catch (e) { toast(e.message, true); }
+  const planned = lastJob && lastJob.status === "planned";
+  if (!confirm(planned ? "Discard this planned video? Nothing has been generated yet."
+                       : "Cancel this running job?")) return;
+  try {
+    await api(`/jobs/${jobId}/cancel`, { method: "POST" });
+    toast(planned ? "Planned video discarded" : "Cancelling job");
+    refresh();
+  } catch (e) { toast(e.message, true); }
 };
 
 $("#approveBtn").onclick = async () => {
@@ -653,6 +695,64 @@ $("#approveBtn").onclick = async () => {
     toast("Script approved - queued for video generation");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
+};
+
+// ---- setup of a job created from the weekly plan: the parameters the plan did not decide ----
+let stylePreviews = {};
+
+function suStylePreview() {
+  const url = stylePreviews[$("#suStyle").value];
+  const img = $("#suStylePreview");
+  if (url) { img.src = url; img.hidden = false; } else { img.hidden = true; }
+}
+
+async function fillSetup(j) {
+  if (setupLoaded) return;
+  setupLoaded = true;
+  const o = await api("/options");
+  const opt = (v, label) => `<option value="${esc(v)}">${esc(label ?? v)}</option>`;
+  $("#suAr").innerHTML = (o.aspect_ratios || []).map(a => opt(a)).join("");
+  $("#suVlen").innerHTML = (o.video_lengths || []).map(a => opt(a)).join("");
+  $("#suMp").innerHTML = (o.megapixels_options || []).map(v => opt(v, `${v} MP`)).join("");
+  $("#suRes").innerHTML = (o.resolutions || []).map(r => opt(r)).join("");
+  $("#suStyle").innerHTML = (o.art_styles || []).map(a => opt(a)).join("");
+  // prefilled from the job: submit_prompt already resolved the channel's defaults onto it
+  $("#suAr").value = j.aspect_ratio || o.default_aspect_ratio;
+  $("#suVlen").value = j.video_length || o.default_video_length;
+  $("#suMp").value = j.megapixels || o.default_megapixels;
+  $("#suRes").value = j.resolution || o.default_resolution;
+  $("#suAudio").value = j.audio_mode === "music" ? "music" : "narration+music";
+  $("#suSb").checked = !!j.storyboard;
+  // the channel may have been deleted since the plan was made: use the job's frozen snapshot
+  const vt = (j.channel && j.channel.video_type) || "";
+  $("#suStyleBlock").hidden = (o.realistic_video_types || ["real", "tech"]).includes(vt);
+  if (j.art_style) $("#suStyle").value = j.art_style;
+  try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
+  suStylePreview();
+  try {
+    const d = await api("/api/voices");
+    fillVoiceSelect($("#suVoice"), d.voices, j.voice_id);
+  } catch (e) { /* the built-in voice options stay */ }
+  $("#suVoiceField").hidden = $("#suAudio").value === "music";
+}
+
+$("#suAudio").onchange = () => { $("#suVoiceField").hidden = $("#suAudio").value === "music"; };
+$("#suStyle").onchange = suStylePreview;
+
+$("#startBtn").onclick = async () => {
+  const real = $("#suStyleBlock").hidden;
+  $("#startBtn").disabled = true;
+  try {
+    await api(`/jobs/${jobId}/setup`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aspect_ratio: $("#suAr").value, video_length: $("#suVlen").value,
+        megapixels: Number($("#suMp").value), resolution: $("#suRes").value,
+        art_style: real ? "" : $("#suStyle").value, audio_mode: $("#suAudio").value,
+        voice_id: $("#suAudio").value === "music" ? "" : $("#suVoice").value,
+        storyboard: $("#suSb").checked }) });
+    toast("Video started - the script is being written");
+    startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+  finally { $("#startBtn").disabled = false; }
 };
 
 $("#redraftBtn").onclick = () => { $("#redraftBox").hidden = !$("#redraftBox").hidden; };
