@@ -52,14 +52,23 @@ TECH_RULES = ("This is a TECH channel: be concrete and technically accurate - na
               "code, data centres, chips, robots, dashboards and clean abstract data visualisations. ")
 
 
-def _system(channel: dict | None = None, used: list | None = None, rules: bool = True) -> str:
+SPOKEN_OVERRIDE = ("The channel rules and the character sheet above describe how the characters are DRAWN: "
+                   "they apply to image and video prompts only. What you write here is SPOKEN ALOUD, so it "
+                   "must never contain appearance detail - name a character and move on. ")
+
+
+def _system(channel: dict | None = None, used: list | None = None, rules: bool = True,
+            spoken: bool = False) -> str:
     """The per-job system prompt.
 
     used:  None while the script is being written (the cast sheet lists the whole roster and asks
            the writer to pick); afterwards the video's cast_used names, so every later call only
            carries the looks of the characters that are actually in this video.
     rules: include the channel's fixed style & rules text (off for calls that only need names,
-           such as SEO and music)."""
+           such as SEO and music).
+    spoken: the call writes words a voice reads out (narration, script review, song lyrics). The
+           cast sheet then carries no looks, and the override cancels the "repeat the look"
+           instructions a channel's own rules text may contain."""
     ch = _channel(channel)
     kind = VIDEO_KIND.get(ch["video_type"], VIDEO_KIND["real"])
     purpose = (f'Channel purpose: "{ch["purpose"]}" - keep every video aligned with this purpose '
@@ -77,7 +86,8 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
             "channel naturally only where it fits (intros, outros, sign-offs), without forcing it "
             "into every line. "
             + rules_block
-            + cast.sheet_text(ch, used=used)
+            + cast.sheet_text(ch, used=used, spoken=spoken)
+            + (SPOKEN_OVERRIDE if spoken else "")
             + "Always answer with a single JSON object and nothing else.")
 
 
@@ -187,10 +197,10 @@ def write_narration(transcript: str, words: int | None = None, art_style: str = 
 
 Create a new short video inspired by this content.{_cast_selection_rule(channel)} Return JSON with keys:
 - "title": short title.
-- "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice. Stay close to {words} words.
+- "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice, so refer to any character by name only and never describe how they look. Stay close to {words} words.
 - "style": {style_rule}
 """
-    plan = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    plan = _chat([{"role": "system", "content": _system(channel, spoken=True)}, {"role": "user", "content": user}])
     for key in ("title", "narration", "style"):
         plan.setdefault(key, "")
     plan["cast_chosen"] = _chosen(channel, plan.pop("characters", None))
@@ -216,6 +226,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
         style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
     narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
                       f'no headings, no stage directions, no emojis. It will drive the whole video. '
+                      f'Refer to any character by name only and never describe how they look. '
                       f'Stay close to {words} words.')
     if source_kind == "transcript":
         text = text[: config.MAX_TRANSCRIPT_CHARS]
@@ -247,7 +258,7 @@ Return JSON with keys:
 - "narration": {narration_rule}
 - "style": {style_rule}
 """
-    plan = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}])
+    plan = _chat([{"role": "system", "content": _system(channel, spoken=True)}, {"role": "user", "content": user}])
     for key in ("title", "narration", "style"):
         plan.setdefault(key, "")
     plan["cast_chosen"] = _chosen(channel, plan.pop("characters", None))
@@ -255,7 +266,8 @@ Return JSON with keys:
         raise RuntimeError("vLLM returned an empty script")
     if config.SCRIPT_REVIEW:
         plan["narration"], plan["review_issues"] = review_script(
-            plan["narration"], f'a video about: "{text[:300]}"', channel=channel)
+            plan["narration"], f'a video about: "{text[:300]}"', channel=channel,
+            verbatim=source_kind == "transcript")
     return plan
 
 
@@ -467,13 +479,24 @@ Return JSON: {{"issues": ["short description of each issue found, empty list if 
     return fixed, issues
 
 
-def review_script(narration: str, context: str = "", channel: dict | None = None) -> tuple:
-    """One review pass over a drafted script. Returns (corrected_narration, issues)."""
+def review_script(narration: str, context: str = "", channel: dict | None = None,
+                  verbatim: bool = False) -> tuple:
+    """One review pass over a drafted script. Returns (corrected_narration, issues).
+
+    verbatim: the user pasted these exact words - their wording wins, so the appearance check
+    (which rewrites sentences) is left out."""
     ctx = f"\nContext: {context}" if context else ""
     safety = {"kids": "anything not gentle and kid-safe",
               "family": "anything unsuitable for a family audience",
               "general": "anything violating YouTube community or advertiser guidelines"}[
         _channel(channel)["audience"]]
+    cast_checks = ", stray cast names (only the characters that belong to this story appear)" \
+        if cast.all_characters(channel) else ""
+    if cast_checks and not verbatim:
+        cast_checks += (", character looks in the spoken words (the script names a character and never "
+                        "describes them: strip any fur, colour, clothing, accessory or marking detail "
+                        'hung on a name - "Piko, a small round panda in a yellow T-shirt, is worried" '
+                        'becomes "Piko is worried" - and change nothing else)')
     user = f"""You are reviewing the final voiceover script of a video before production.{ctx}
 
 Script:
@@ -481,10 +504,10 @@ Script:
 
 Check strictly: factual slips, internal inconsistencies (e.g. a letter or item paired with the wrong
 word), ordering mistakes, {safety}, awkward phrasing that would sound wrong
-read aloud{", stray cast names (only the characters that belong to this story appear)" if cast.all_characters(channel) else ""}.
+read aloud{cast_checks}.
 If everything is correct, return the script UNCHANGED; otherwise fix it with minimal edits.
 Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": "the final script"}}"""
-    out = _chat([{"role": "system", "content": _system(channel)}, {"role": "user", "content": user}],
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)}, {"role": "user", "content": user}],
                 max_tokens=4000)
     fixed = str(out.get("narration") or "").strip()
     issues = [str(x) for x in (out.get("issues") or []) if str(x).strip()]
@@ -731,7 +754,8 @@ def write_music(title: str, narration: str, transcript: str,
                 "gentle, soft, unobtrusive instrumentation with low intensity and smooth dynamics, "
                 "and state clearly in the caption's Vocal Details that the track is instrumental "
                 "with no vocals.")
-    lyrics_rule = ("song lyrics using section tags like [Intro], [Verse], [Chorus], [Instrumental], [Outro]."
+    lyrics_rule = ("song lyrics using section tags like [Intro], [Verse], [Chorus], [Instrumental], [Outro]. "
+                   "The lyrics are sung aloud: name any character, never describe how they look."
                    if standalone else
                    'exactly the string "[Instrumental]" - this background track has no words.')
     user = f"""We are scoring a short video titled "{title}".
@@ -746,7 +770,7 @@ Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
 - "lyrics": {lyrics_rule}
 Never mention real people's names or brands."""
-    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False, spoken=True)},
                  {"role": "user", "content": user}])
     if not out.get("caption"):
         raise RuntimeError("vLLM returned no music caption")

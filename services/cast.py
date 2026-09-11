@@ -63,43 +63,59 @@ def select_characters(channel: dict | None, used) -> list:
 
 
 # ---- prompt text -----------------------------------------------------------
-def _sheet_line(c: dict) -> str:
+def _sheet_line(c: dict, spoken: bool = False) -> str:
+    """One roster line; spoken=True leaves the look out (see sheet_text)."""
     role = "MAIN" if c.get("role", "main") == "main" else "supporting"
     kind = (c.get("kind") or "").strip()
-    line = f"- {c['name']} ({role}{', ' + kind if kind else ''}): {c.get('look', '').strip()}"
+    line = f"- {c['name']} ({role}{', ' + kind if kind else ''})"
+    line += "." if spoken else f": {c.get('look', '').strip()}"
     if (c.get("personality") or "").strip():
         line += f" Personality: {c['personality'].strip()}"
     return line
 
 
-def sheet_text(channel: dict | None, used: list | None = None) -> str:
+SPOKEN_RULE = ("This text is SPOKEN ALOUD: refer to the characters by name only. Never describe how a "
+               "character looks - no fur, skin, colours, clothes, accessories or markings - the visuals "
+               "carry the appearance. Never rename them and never invent other recurring named "
+               "characters. ")
+_LOOK_RULE = ("Never invent other recurring named characters, never rename these ones and never change "
+              "their looks. Whenever a scene shows a cast character, name them and repeat their full look "
+              "from this sheet. ")
+
+
+def sheet_text(channel: dict | None, used: list | None = None, spoken: bool = False) -> str:
     """The LLM-facing cast block; empty string when the channel has no cast.
 
     used=None  -> roster mode (script writing): every character, and the instruction to pick
                   only the ones this story needs.
     used=[...] -> video mode (every later call): full looks for the characters of this video
-                  only, plus the names that must stay out."""
+                  only, plus the names that must stay out.
+    spoken     -> the call writes words a voice reads out (narration, script review, song lyrics):
+                  names, kinds and personalities, no looks at all. A writer that never sees the
+                  look cannot recite it into the audio; the visual calls keep the full sheet."""
     cast = all_characters(channel)
     if not cast:
         return ""
+    written = "names" if spoken else "names and looks"
     if used is None:
-        return ("RECURRING CAST of this channel (the roster - keep names and looks EXACTLY as written):\n"
-                + "\n".join(_sheet_line(c) for c in cast) + "\n"
+        return (f"RECURRING CAST of this channel (the roster - keep {written} EXACTLY as written):\n"
+                + "\n".join(_sheet_line(c, spoken) for c in cast) + "\n"
                 "Pick only the characters this story needs (usually 1-3). MAIN characters are the usual "
                 "protagonists; supporting characters appear when the story calls for them. Characters you "
                 "do not pick stay out entirely - never name them. If the request names cast characters, use "
-                "exactly those, in the roles the request gives them. Never invent other recurring named "
-                "characters, never rename these ones and never change their looks. Whenever a scene shows a "
-                "cast character, name them and repeat their full look from this sheet. ")
+                "exactly those, in the roles the request gives them. "
+                + (SPOKEN_RULE if spoken else _LOOK_RULE))
     chosen = select_characters(channel, used)
     others = [c["name"] for c in cast if c not in chosen]
     if not chosen:
         return (f"This video features NONE of the channel's recurring cast ({', '.join(others)}): do not "
                 "add any of them. ")
-    return ("CAST IN THIS VIDEO (keep names and looks EXACTLY as written):\n"
-            + "\n".join(_sheet_line(c) for c in chosen) + "\n"
-            "Whenever a scene shows one of them, name them and repeat their full look from this sheet; "
-            "never rename them, never change their looks, never invent other recurring named characters. "
+    return (f"CAST IN THIS VIDEO (keep {written} EXACTLY as written):\n"
+            + "\n".join(_sheet_line(c, spoken) for c in chosen) + "\n"
+            + (SPOKEN_RULE if spoken else
+               "Whenever a scene shows one of them, name them and repeat their full look from this sheet; "
+               "never rename them, never change their looks, never invent other recurring named "
+               "characters. ")
             + (f"The channel's other cast members ({', '.join(others)}) do NOT appear in this video - do "
                "not add them. " if others else ""))
 

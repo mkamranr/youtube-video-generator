@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import config
 from services import bible, cast, channels, llm
@@ -74,6 +75,32 @@ class SheetAndSystem(unittest.TestCase):
         legacy = llm._system({"name": "Old", "audience": "kids", "video_type": "animated"})
         self.assertIn("Always answer with a single JSON object", legacy)
 
+    def test_spoken_sheet_drops_the_looks(self):
+        """The narration is heard, not seen: the writer must not get the looks at all."""
+        roster = cast.sheet_text(self.ch, spoken=True)
+        self.assertIn("- Piko (MAIN", roster)
+        self.assertIn("Personality: Shy at first", roster)
+        self.assertIn("Pick only the characters this story needs", roster)
+        self.assertNotIn("Sunny-yellow T-shirt", roster)
+        self.assertNotIn("black-and-white fur", roster)
+        self.assertNotIn("repeat their full look", roster)
+        video = cast.sheet_text(self.ch, used=["Piko"], spoken=True)
+        self.assertIn("CAST IN THIS VIDEO", video)
+        self.assertIn("Piko", video)
+        self.assertNotIn("backpack", video)
+        self.assertIn("Finn", video)                             # still in the do-not-add list
+        self.assertEqual(cast.sheet_text({"cast": []}, spoken=True), "")
+
+    def test_spoken_system_prompt_overrides_the_channel_rules(self):
+        s = llm._system(self.ch, spoken=True)
+        self.assertNotIn("Sunny-yellow T-shirt", s)
+        self.assertNotIn("Sky-blue hoodie", s)
+        self.assertIn("CHANNEL STYLE & RULES", s)                # tone and story rules still apply
+        self.assertIn(llm.SPOKEN_OVERRIDE, s)
+        self.assertGreater(s.index(llm.SPOKEN_OVERRIDE),         # an override comes last
+                           s.index("Never redesign an established character"))
+        self.assertIn("Sky-blue hoodie", llm._system(self.ch, used=["Finn"]))   # visuals unchanged
+
     def test_prefix_restricted_to_used(self):
         scene = "Finn walks past a daisy while Pip sings."
         full = cast.render_prefix(self.ch, scene)
@@ -131,6 +158,51 @@ class Thumbnail(unittest.TestCase):
         self.assertEqual(seeded[config.NODE_DURATION]["inputs"]["value"], config.THUMB_SEED_SECONDS)
         self.assertEqual(seeded[config.NODE_LOAD_IMAGE]["inputs"]["image"], "videogen_x_cast.jpg")
         self.assertEqual(seeded[config.NODE_PROMPT]["inputs"]["prompt"], "p")
+
+
+class SpokenCalls(unittest.TestCase):
+    """Which calls see the looks: the ones writing pictures, never the ones writing audio."""
+
+    def setUp(self):
+        self.ch = _channel()
+
+    def _capture(self, reply):
+        calls = []
+
+        def fake(messages, max_tokens=8000):
+            calls.append(messages)
+            return dict(reply)
+        return calls, fake
+
+    def test_script_draft_and_review_are_spoken(self):
+        calls, fake = self._capture({"title": "t", "narration": "Piko is worried.", "style": "s",
+                                     "issues": [], "characters": ["Piko"]})
+        with mock.patch.object(llm, "_chat", fake), mock.patch.object(config, "SCRIPT_REVIEW", True):
+            llm.write_script_from_prompt("Piko loses his way", "topic", channel=self.ch)
+        self.assertEqual(len(calls), 2)                          # draft + review
+        for messages in calls:
+            self.assertNotIn("Sunny-yellow T-shirt", messages[0]["content"])
+            self.assertIn(llm.SPOKEN_OVERRIDE, messages[0]["content"])
+        self.assertIn("never describe how they look", calls[0][1]["content"])
+        self.assertIn("character looks in the spoken words", calls[1][1]["content"])
+
+    def test_pasted_transcript_keeps_the_users_words(self):
+        calls, fake = self._capture({"title": "t", "narration": "Piko, a small round panda, is worried.",
+                                     "style": "s", "issues": []})
+        with mock.patch.object(llm, "_chat", fake), mock.patch.object(config, "SCRIPT_REVIEW", True):
+            llm.write_script_from_prompt("Piko, a small round panda, is worried.", "transcript",
+                                         channel=self.ch)
+        self.assertNotIn("character looks in the spoken words", calls[1][1]["content"])
+
+    def test_song_lyrics_are_spoken_and_scenes_are_not(self):
+        calls, fake = self._capture({"caption": "Global Metadata: pop. 90 BPM.", "lyrics": "[Verse] Piko walks",
+                                     "scene": "A scene."})
+        with mock.patch.object(llm, "_chat", fake), mock.patch.object(config, "SCRIPT_REVIEW", False):
+            llm.write_music("t", "Piko walks", "", standalone=True, channel=self.ch, used=["Piko"])
+            llm.write_scenes("Piko walks", "style", 1, channel=self.ch, used=["Piko"])
+        self.assertNotIn("Sunny-yellow T-shirt", calls[0][0]["content"])
+        self.assertIn("never describe how they look", calls[0][1]["content"])
+        self.assertIn("Sunny-yellow T-shirt", calls[1][0]["content"])   # the video model still gets it
 
 
 class Validation(unittest.TestCase):
