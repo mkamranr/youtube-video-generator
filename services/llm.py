@@ -277,6 +277,34 @@ Return JSON with keys:
     return plan
 
 
+SHORT_SCRIPT_RATIO = 0.85   # a draft below target * this is extended once before it is spoken
+
+
+def extend_narration(narration: str, words: int, channel: dict | None = None) -> str:
+    """Rewrite a too-short script up to its word target, keeping the same story and ending.
+
+    The word target comes from the job's video length; a draft that falls well under it would
+    make a video shorter than the user asked for. Called before any TTS and before the user
+    approves the script, so nothing approved is ever rewritten."""
+    have = len(narration.split())
+    user = f"""This voiceover script is TOO SHORT: {have} words where it must be about {words} words.
+
+\"\"\"{narration}\"\"\"
+
+Rewrite it LONGER, to about {words} words. Keep the same story, the same order and the same ending -
+expand what is already there: more detail on each beat, more examples, more explanation. Do not add a
+new topic, do not repeat yourself, and do not pad with filler. It will be read aloud by a TTS voice,
+so keep it plain spoken English with no headings, no stage directions and no emojis; refer to any
+character by name only and never describe how they look.
+Return JSON with one key:
+- "narration": the longer script.
+"""
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
+                 {"role": "user", "content": user}])
+    longer = str(out.get("narration") or "").strip()
+    return longer if len(longer.split()) > have else narration
+
+
 def split_narration(narration: str, n: int) -> list:
     """Split the narration into n roughly equal word segments."""
     words = narration.split()
@@ -765,19 +793,39 @@ def needs_slowdown(measured: float, budget: float) -> bool:
     return bool(measured) and measured > budget * config.SONG_PACE_TOLERANCE
 
 
+def retry_reason(first: dict, budget: float, seconds_range: tuple | None) -> str:
+    """Why a first song render earns its one re-render: "fast" (sung well over its
+    words-per-second budget), "short" (the recording ended before the job's target length
+    range) or "" (keep it). Pace wins when both are true - there is only one retry, and a
+    raced-through song is usually short because it raced. A song LONGER than the range is
+    never re-rendered: the recording is already hard-cut at max_seconds and the clip count
+    simply follows the measured track."""
+    if needs_slowdown(float(first.get("wps") or 0.0), budget):
+        return "fast"
+    lo = float(seconds_range[0]) if seconds_range else 0.0
+    dur = float(first.get("duration") or 0.0)
+    if lo and dur and dur < lo * config.SONG_SHORT_TOLERANCE:
+        return "short"
+    return ""
+
+
 def write_music(title: str, narration: str, transcript: str,
                 standalone: bool = False, seconds: float | None = None,
                 max_seconds: float | None = None,
                 seconds_range: tuple | None = None,
                 channel: dict | None = None, used: list | None = None,
-                song_voice: str = "auto", slow_down: dict | None = None) -> dict:
+                song_voice: str = "auto", slow_down: dict | None = None,
+                lengthen: dict | None = None) -> dict:
     """Caption + lyrics for the MiniMax Music3 model, derived from the video content.
 
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
     video's story in order, so the words being sung at any moment match the visuals.
     song_voice: config.SONG_VOICES entry ("auto" = a child for kids channels).
     slow_down: {"measured", "budget", "previous_lyrics"} when a first render was sung too
-    fast - the lyrics are rewritten shorter and the pace instructions are stressed."""
+    fast - the lyrics are rewritten shorter and the pace instructions are stressed.
+    lengthen: {"measured", "low", "target", "previous_lyrics"} when a first render ended
+    before the job's target length range - the lyrics are rewritten longer at the same
+    pace. Never passed together with slow_down."""
     transcript = transcript[:8000]
     kids = _channel(channel)["audience"] == "kids"
     voice = resolve_song_voice(song_voice, kids)
@@ -807,6 +855,21 @@ def write_music(title: str, narration: str, transcript: str,
                      f"{float(slow_down.get('budget') or wps):.1f}. Rewrite the lyrics with FEWER words (at most "
                      f"{max(12, int(prev_words * 0.75))} words in total), shorter lines, longer held notes and clear "
                      "pauses between lines, keeping the same story order and ending. Previous lyrics:\n"
+                     f'"""{prev}"""')
+    long_rule = ""
+    if standalone and lengthen and not slow_down:
+        prev = str(lengthen.get("previous_lyrics") or "")
+        prev_words = len(clean_lyrics(prev).split())
+        measured = float(lengthen.get("measured") or 0)
+        low = float(lengthen.get("low") or 0)
+        grow = min(2.5, max(1.3, float(lengthen.get("target") or low) / max(1.0, measured)))
+        long_rule = (f"\n\nIMPORTANT: a previous version of this song came out TOO SHORT - "
+                     f"{measured:.0f} seconds where the song must last at least {low:.0f} seconds. "
+                     f"Rewrite the lyrics LONGER (at least {max(24, int(prev_words * grow))} words in total), "
+                     "keeping the same story, the same order and the same ending: give every story beat its "
+                     "own lines and ADD sections ([Verse 2], [Bridge], a repeated [Chorus]). Do NOT sing the "
+                     "existing words faster - the pace must stay exactly as unhurried - and do not pad with "
+                     "long instrumental sections. Previous lyrics:\n"
                      f'"""{prev}"""')
     if standalone:
         ceiling = int(max_seconds or ((seconds or 90) * 2))
@@ -852,7 +915,7 @@ Story of the video, in order:
 Original transcript excerpt (for flavor and vocabulary):
 \"\"\"{transcript}\"\"\"
 
-Design one music track for this video. {role}{kids_rule}{voice_rule}{slow_rule}
+Design one music track for this video. {role}{kids_rule}{voice_rule}{slow_rule}{long_rule}
 Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
 - "lyrics": {lyrics_rule}

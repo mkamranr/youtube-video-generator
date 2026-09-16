@@ -37,6 +37,22 @@ class ClipDurations(unittest.TestCase):
             self.assertTrue(all(x < y for x, y in zip(b, b[1:])))
             self.assertAlmostEqual(b[-1], sum(durs), places=3)
 
+    def test_long_targets_render_longer_clips(self):
+        self.assertEqual(config.video_length_clip_seconds("4-5 minutes"), 10)
+        self.assertEqual(config.video_length_clip_seconds("3-4 minutes"), 8)
+        self.assertEqual(config.video_length_range("4-5 minutes"), (240, 300))
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(config.video_length_clip_seconds("Auto"), 5)        # global default
+            self.assertEqual(config.video_length_clip_seconds("9-10 minutes"), 5)  # unknown name
+            self.assertIsNone(config.video_length_range("Auto"))
+            ten = config.actual_clip_seconds(10)      # 243 frames after quantisation
+            self.assertAlmostEqual(ten, 243 / 24)
+            durs = config.clip_durations(270.0, 10)
+            self.assertEqual(len(durs), 27)           # 59 clips at the 5 s default
+            self.assertTrue(all(abs(d - ten) < 1e-9 for d in durs[:-1]))
+            self.assertGreaterEqual(sum(durs), 270.0)
+            self.assertEqual(config.clip_durations(90.0, None), config.clip_durations(90.0))
+
 
 class Alignment(unittest.TestCase):
     LYRICS = "[Verse]\nGood morning sun\nWake up, little one!\n(oh oh)\n[Chorus]\nF is for fairy"
@@ -135,6 +151,18 @@ class Pace(unittest.TestCase):
             self.assertTrue(llm.needs_slowdown(1.6, 0.9))
             self.assertFalse(llm.needs_slowdown(1.2, 0.9))
             self.assertFalse(llm.needs_slowdown(0.0, 0.9))    # too few words to judge: no retry
+
+    def test_retry_reason(self):
+        with mock.patch.object(config, "SONG_PACE_TOLERANCE", 1.4), \
+                mock.patch.object(config, "SONG_SHORT_TOLERANCE", 0.9):
+            rng = (120, 180)
+            # both true: pace wins, there is only one retry
+            self.assertEqual(llm.retry_reason({"wps": 1.6, "duration": 100}, 0.9, rng), "fast")
+            self.assertEqual(llm.retry_reason({"wps": 1.0, "duration": 100}, 0.9, rng), "short")
+            self.assertEqual(llm.retry_reason({"wps": 1.0, "duration": 115}, 0.9, rng), "")   # inside tolerance
+            self.assertEqual(llm.retry_reason({"wps": 1.0, "duration": 150}, 0.9, rng), "")
+            self.assertEqual(llm.retry_reason({"wps": 1.0, "duration": 400}, 0.9, rng), "")   # too long: never retried
+            self.assertEqual(llm.retry_reason({"wps": 1.0, "duration": 30}, 0.9, None), "")   # Auto: no range
 
 
 class Caption(unittest.TestCase):
@@ -238,6 +266,26 @@ class Prompts(unittest.TestCase):
         self.assertEqual(out2["song_voice"], "male")
         self.assertNotIn("young child", bed["caption"])           # instrumental bed: no singer injected
         self.assertIn("66 BPM", bed["caption"])
+
+    def test_write_music_asks_for_longer_lyrics_after_a_short_render(self):
+        calls, fake = self._capture({"caption": "Global Metadata: Pop. 66 BPM.", "lyrics": "[Verse]\nla la"})
+        with mock.patch.object(llm, "_chat", fake), mock.patch.object(config, "KIDS_SONG_WPS", 0.9):
+            llm.write_music("T", "story", "", standalone=True, seconds=270, seconds_range=(240, 300),
+                            channel=_channel(),
+                            lengthen={"measured": 150.0, "low": 240, "target": 270,
+                                      "previous_lyrics": "[Verse]\n" + "la " * 100})
+            # slow_down wins when both are somehow passed: the two instructions contradict each other
+            llm.write_music("T", "story", "", standalone=True, seconds=270, seconds_range=(240, 300),
+                            channel=_channel(),
+                            slow_down={"measured": 1.6, "budget": 0.9, "previous_lyrics": "la la"},
+                            lengthen={"measured": 150.0, "low": 240, "target": 270, "previous_lyrics": "la la"})
+        self.assertIn("TOO SHORT", calls[0])
+        self.assertIn("150 seconds where the song must last at least 240 seconds", calls[0])
+        self.assertIn("at least 180 words", calls[0])      # 100 previous words * 270/150
+        self.assertIn("Previous lyrics", calls[0])
+        self.assertNotIn("TOO FAST", calls[0])
+        self.assertIn("TOO FAST", calls[1])
+        self.assertNotIn("TOO SHORT", calls[1])
 
 
 class ChannelSongVoice(unittest.TestCase):

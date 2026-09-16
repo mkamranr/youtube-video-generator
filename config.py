@@ -101,13 +101,17 @@ AUDIENCES = ["kids", "family", "general"]
 VIDEO_TYPES = ["animated", "real", "tech"]
 REALISTIC_VIDEO_TYPES = ("real", "tech")     # no art-style picker, built-in realistic look
 
-# Per-job soft target length presets (None = Auto, use the global settings)
+# Per-job soft target length presets (None = Auto, use the global settings).
+# (low_seconds, high_seconds, clip_seconds): longer videos render longer clips, so the clip
+# count - and with it the scene LLM calls and the GPU renders - stays around 25-30.
 VIDEO_LENGTHS = {
     "Auto": None,
-    "30-45 seconds": (30, 45),
-    "45-60 seconds": (45, 60),
-    "1-2 minutes": (60, 120),
-    "2-3 minutes": (120, 180),
+    "30-45 seconds": (30, 45, 5),
+    "45-60 seconds": (45, 60, 5),
+    "1-2 minutes": (60, 120, 5),
+    "2-3 minutes": (120, 180, 6),
+    "3-4 minutes": (180, 240, 8),
+    "4-5 minutes": (240, 300, 10),
 }
 DEFAULT_VIDEO_LENGTH = "Auto"
 SOURCES = ["url", "topic", "description", "transcript"]
@@ -115,7 +119,14 @@ DEFAULT_SOURCE = "url"
 
 
 def video_length_range(name: str):
-    return VIDEO_LENGTHS.get(name)
+    v = VIDEO_LENGTHS.get(name)
+    return (v[0], v[1]) if v else None
+
+
+def video_length_clip_seconds(name: str) -> float:
+    """Requested clip length for a target preset; CLIP_SECONDS for Auto and unknown names."""
+    v = VIDEO_LENGTHS.get(name)
+    return float(v[2]) if v and len(v) > 2 else float(CLIP_SECONDS)
 
 # Thumbnail dimensions per aspect ratio (long side <= 1280)
 THUMB_SEED_SECONDS = 3.0   # thumbnail render length when it is seeded from a cast portrait (last frame is kept)
@@ -187,6 +198,7 @@ MAX_TRANSCRIPT_CHARS = 60000    # ~15k tokens, leaves room in the 32k context
 COMFY_TIMEOUT = 60 * 60         # seconds to wait for a single clip
 LYRIC_ALIGN_MIN_RATIO = 0.55    # below this whisper/lyrics token match ratio the raw whisper words are kept
 SONG_PACE_TOLERANCE = 1.4       # a song measured faster than budget * this is re-rendered once, slower
+SONG_SHORT_TOLERANCE = 0.9      # a song shorter than the target range's low bound * this is re-rendered once, longer
 
 # ---- clip length as the video model really renders it ----------------------
 # The MiniMax H3 workflow (node 140:132) quantises the requested seconds to a frame count
@@ -209,11 +221,14 @@ def actual_clip_seconds(seconds: float | None = None) -> float:
     return clip_frames(CLIP_SECONDS if seconds is None else seconds) / VIDEO_FPS
 
 
-def clip_durations(total_seconds: float) -> list:
+def clip_durations(total_seconds: float, clip_seconds: float | None = None) -> list:
     """Per-clip real lengths covering an audio track of total_seconds: full clips plus one
     trailing clip quantised from the remainder (at least MIN_LAST_CLIP_SECONDS), so the video
-    ends with the audio instead of a silent tail."""
-    full = actual_clip_seconds()
+    ends with the audio instead of a silent tail.
+
+    clip_seconds: requested length of a full clip (default CLIP_SECONDS); the per-job target
+    length picks it (video_length_clip_seconds) so long videos do not become 60 clips."""
+    full = actual_clip_seconds(clip_seconds)
     total = max(0.0, float(total_seconds))
     n = max(1, math.ceil(total / full - 1e-6))
     rem = total - (n - 1) * full

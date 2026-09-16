@@ -185,6 +185,43 @@ def _length_params(job: Job):
     return int(mid * 2.5), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
 
 
+def _clip_seconds(job: Job) -> float:
+    """Clip length this job renders: longer targets use longer clips so a 5-minute video is
+    ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS)."""
+    return config.video_length_clip_seconds(job.video_length or "Auto")
+
+
+def _range_miss(t: dict, rng) -> float:
+    """Seconds by which a rendered song falls outside the job's length range
+    (0.0 inside it, and 0.0 for Auto jobs, which have no range)."""
+    if not rng:
+        return 0.0
+    lo, hi = rng
+    d = float(t.get("duration") or 0.0)
+    return max(0.0, lo - d, d - hi)
+
+
+def _fit_narration(job: Job, plan: dict, words: int | None):
+    """Extend a drafted script that fell well under the job's word target (in place)."""
+    if not words or job.source == "transcript":
+        return
+    have = len((plan.get("narration") or "").split())
+    if not have or have >= words * llm.SHORT_SCRIPT_RATIO:
+        return
+    job.set(detail="script too short - asking vLLM for a longer one")   # keeps planning/drafting
+    try:
+        longer = llm.extend_narration(plan["narration"], words, channel=job.channel)
+    except Exception as e:  # noqa: BLE001 - a short script is still a usable script
+        job.add_log(f"script extension failed ({e}); keeping the {have}-word draft")
+        return
+    got = len(longer.split())
+    if got <= have:     # the LLM did not manage a longer script: keep the draft we have
+        job.add_log(f"script is {have} words for a {words}-word target - could not be extended")
+        return
+    plan["narration"] = longer
+    job.add_log(f"script was {have} words for a {words}-word target - extended to {got}")
+
+
 def _logo_for(job: Job):
     """The job's channel logo for the thumbnail overlay; legacy global logo as fallback."""
     if job.channel_id:
@@ -533,9 +570,11 @@ def _run(job: Job):
             plan = None
     if plan is None:
         job.set("planning", "asking vLLM for the story plan")
-        plan = llm.write_narration(text, words=_length_params(job)[0],
+        target_words = _length_params(job)[0]
+        plan = llm.write_narration(text, words=target_words,
                                    art_style=config.ART_STYLES.get(job.art_style, ""),
                                    channel=job.channel)
+        _fit_narration(job, plan, target_words)
     plan["audio_mode"] = mode
     if "cast_used" not in plan and cast.all_characters(job.channel):   # URL jobs and pre-selection plans
         job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
@@ -566,39 +605,51 @@ def _run(job: Job):
         kids = (job.channel or {}).get("audience") == "kids"
         budget = config.KIDS_SONG_WPS if kids else 2.0     # sung words per second the lyrics were sized for
         # song candidates (resume-safe; each is rendered, whisper-timed and paced at most once):
-        # [{caption, lyrics, file, duration, words, ratio, wps}]; the chosen one is copied to music.mp3
+        # [{caption, lyrics, file, reason, duration, words, ratio, wps}]; the chosen one is copied
+        # to music.mp3. try 2 exists when try 1 was sung too fast or ended short of the target range.
         tries = plan.setdefault("music_tries", [])
         music_file = d / "music.mp3"
         if music_file.exists() and music_file.stat().st_size > 1000 and (plan.get("music_final") or not tries):
             job.add_log("resume: reusing music track")
         else:
+            why = ""        # why try 2 exists: "fast" | "short" | "" (one try only)
             for k in (1, 2):
                 _check_cancel(job)
-                if k == 2 and not llm.needs_slowdown(tries[0].get("wps", 0.0), budget):
-                    break
+                if k == 2:
+                    # frozen once try 2 exists - a resume must never re-decide the branch
+                    why = ((tries[1].get("reason") or "fast") if len(tries) > 1
+                           else llm.retry_reason(tries[0], budget, l_range))
+                    if not why:
+                        break
                 if len(tries) < k:
                     if k == 1 and (plan.get("music") or {}).get("caption"):
                         mp = plan["music"]
                     else:
-                        job.set("music", "writing music caption and lyrics with vLLM" if k == 1
-                                else "song too fast - writing a slower version with vLLM")
-                        slow = None if k == 1 else {"measured": tries[0]["wps"], "budget": budget,
-                                                   "previous_lyrics": tries[0]["lyrics"]}
+                        job.set("music", "writing music caption and lyrics with vLLM" if k == 1 else
+                                "song too fast - writing a slower version with vLLM" if why == "fast" else
+                                "song too short - writing a longer version with vLLM")
+                        slow = ({"measured": tries[0]["wps"], "budget": budget,
+                                 "previous_lyrics": tries[0]["lyrics"]} if why == "fast" else None)
+                        longer = ({"measured": tries[0]["duration"], "low": l_range[0],
+                                   "target": l_target, "previous_lyrics": tries[0]["lyrics"]}
+                                  if why == "short" else None)
                         mp = llm.write_music(plan.get("title", ""), plan["narration"], text,
                                              standalone=True, seconds=l_target,
                                              max_seconds=l_max, seconds_range=l_range,
                                              channel=job.channel, used=plan.get("cast_used"),
-                                             song_voice=job.song_voice, slow_down=slow)
+                                             song_voice=job.song_voice, slow_down=slow,
+                                             lengthen=longer)
                         plan["music"] = mp
                     tries.append({"caption": mp["caption"], "lyrics": mp.get("lyrics", ""),
-                                  "file": f"music_try{k}.mp3"})
+                                  "file": f"music_try{k}.mp3", "reason": why or "first"})
                     _save_plan(job, plan)
                 t = tries[k - 1]
                 f = d / t["file"]
                 if not (f.exists() and f.stat().st_size > 1000):
                     _gpu_gate(job)
-                    job.set("music", "generating music with ComfyUI" if k == 1
-                            else "generating a slower version of the song with ComfyUI")
+                    job.set("music", "generating music with ComfyUI" if k == 1 else
+                            "generating a slower version of the song with ComfyUI" if why == "fast" else
+                            "generating a longer version of the song with ComfyUI")
                     mclient = comfy.ComfyClient()
                     mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
                                               t["caption"], t["lyrics"], l_max,
@@ -618,19 +669,32 @@ def _run(job: Job):
                     job.add_log(f"song try {k}: {t['duration']:.1f}s, {t['wps']:.2f} sung words/s "
                                 f"(budget {budget:g}), lyric match {ratio:.0%}")
                 if k == 2:
-                    job.add_log("song too fast: re-rendered once with a slower caption and fewer words")
+                    job.add_log("song too fast: re-rendered once with a slower caption and fewer words"
+                                if why == "fast" else
+                                f"song too short: re-rendered once with longer lyrics (try 1 was "
+                                f"{tries[0]['duration']:.1f}s, target {l_range[0]:g}-{l_range[1]:g}s)")
             best = tries[0]
-            if len(tries) > 1 and 0 < tries[1].get("wps", 0.0) < tries[0].get("wps", 0.0):
-                best = tries[1]
+            if len(tries) > 1 and "wps" in tries[1]:        # try 2 was rendered and timed
+                if why == "short":
+                    # the longer re-write wins only if it lands closer to the target range AND the
+                    # extra words were not crammed in over the pace budget
+                    if (_range_miss(tries[1], l_range) < _range_miss(tries[0], l_range)
+                            and not llm.needs_slowdown(tries[1]["wps"], budget)):
+                        best = tries[1]
+                elif 0 < tries[1]["wps"] < tries[0].get("wps", 0.0):
+                    best = tries[1]
             shutil.copyfile(d / best["file"], music_file)
             plan["music"] = {"caption": best["caption"], "lyrics": best["lyrics"]}
-            plan["music_final"] = {"try": tries.index(best) + 1, "wps": best.get("wps", 0.0)}
+            plan["music_final"] = {"try": tries.index(best) + 1, "wps": best.get("wps", 0.0),
+                                   "duration": best.get("duration", 0.0), "reason": why}
             _save_plan(job, plan)
             if len(tries) > 1:
-                job.add_log(f"song: keeping try {tries.index(best) + 1} (slowest singing)")
+                job.add_log(f"song: keeping try {tries.index(best) + 1} "
+                            + ("(slowest singing)" if why == "fast"
+                               else f"(closest to {l_range[0]:g}-{l_range[1]:g}s)"))
         duration = tts.audio_duration(music_file)
         job.add_log(f"music track: {duration:.1f}s")
-        durs = config.clip_durations(duration)
+        durs = config.clip_durations(duration, _clip_seconds(job))
         n = len(durs)
         music_plan = plan.get("music") or {}
         final = plan.get("music_final") or {}
@@ -684,7 +748,7 @@ def _run(job: Job):
                                       on_progress=_progress(job, "tts"),
                                       ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
             job.add_log(f"narration: {duration:.1f}s")
-        durs = config.clip_durations(duration)
+        durs = config.clip_durations(duration, _clip_seconds(job))
         n = len(durs)
         sync_text = plan["narration"]
         segments = None
@@ -1171,10 +1235,12 @@ class JobManager:
                     previous = json.loads(pfile.read_text(encoding="utf-8")).get("narration")
                 except Exception:  # noqa: BLE001
                     previous = None
+            target_words = _length_params(job)[0]
             plan = llm.write_script_from_prompt(
                 job.topic, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
-                words=_length_params(job)[0], feedback=feedback, previous=previous,
+                words=target_words, feedback=feedback, previous=previous,
                 channel=job.channel, hook=job.hook)
+            _fit_narration(job, plan, target_words)   # still pre-approval: the user reviews the result
             plan["audio_mode"] = job.audio_mode
             if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
                 plan["thumbnail_idea"] = job.thumb_idea
