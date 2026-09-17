@@ -102,7 +102,7 @@ def upload(video_path, thumb_path, title: str, description: str,
     body = {
         "snippet": {
             "title": (title or "Untitled")[:100],
-            "description": (description or "")[:4900],
+            "description": (description or "")[:config.YT_DESCRIPTION_LIMIT],
             "categoryId": "24",
         },
         "status": {

@@ -186,6 +186,24 @@
       <button class="btn secondary sm" id="copyDesc" type="button" title="Copy the description to the clipboard"></button>
     </div>
     <pre class="box" id="seoDesc" style="max-height:none"></pre>
+    <div class="row" style="margin-top:12px">
+      <button class="btn secondary sm" id="resMake" type="button" hidden>Check the script for a promised resource</button>
+    </div>
+  </section>
+
+  <section class="card" id="resSec" hidden>
+    <h2>Viewer resource <span class="count" id="resKind"></span></h2>
+    <div class="hint" style="margin:-6px 0 12px" id="resWhy"></div>
+    <div class="row" style="align-items:center;margin:0 0 6px">
+      <h4 style="margin:0;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px" id="resTitle"></h4>
+      <div class="spacer"></div>
+      <button class="btn secondary sm" id="copyRes" type="button" title="Copy the resource to the clipboard"></button>
+      <a class="btn secondary sm" id="resMd" download hidden>.md</a>
+      <a class="btn secondary sm" id="resTxt" download hidden>.txt</a>
+      <a class="btn secondary sm" id="resPdf" download hidden>PDF</a>
+      <button class="btn secondary sm" id="resRegen" type="button" hidden>Regenerate</button>
+    </div>
+    <pre class="box" id="resText" style="max-height:460px"></pre>
   </section>
 
   <section class="card" id="thumbSec" hidden>
@@ -332,6 +350,7 @@ async function loadDetails(j) {
       $("#seoTitle").textContent = d.plan.seo_title || "";
       $("#seoDesc").textContent = d.plan.seo_description || "";
     }
+    renderResource(d.plan.resource, j);
     if (d.plan.narration) { $("#narrSec").hidden = false; $("#narrText").textContent = d.plan.narration; }
     if (d.plan.style) { $("#styleSec").hidden = false; $("#styleText").textContent = d.plan.style; }
     if (d.plan.music) {
@@ -585,6 +604,8 @@ function update(j) {
     $("#thumbDl").href = `/jobs/${jobId}/download/thumbnail`;
   }
   $("#thumbRegen").hidden = j.status !== "done";
+  $("#resRegen").hidden = j.status !== "done";
+  $("#resMake").hidden = j.status !== "done" || !!(resOffered);
   if ((j.files || []).includes("music.mp3") && !musicShown) {
     musicShown = true;
     $("#musicSec").hidden = false;
@@ -623,6 +644,29 @@ async function loadUpscaleOptions() {
     const def = o.default_resolution && opts.includes(o.default_resolution) ? o.default_resolution : opts[opts.length - 2] || opts[0];
     if (def) $("#upRes").value = def;
   } catch (e) { upResLoaded = false; }
+}
+
+// The thing the video promised its viewer - only present when the narration actually promised one.
+let resOffered = false;
+function renderResource(res, j) {
+  const show = !!(res && res.offered);
+  resOffered = show;
+  $("#resSec").hidden = !show;
+  if (!show) return;
+  const files = new Set(j.files || []);
+  $("#resKind").textContent = `(${res.kind || "resource"}, promised in the script)`;
+  $("#resTitle").textContent = res.title || "Resource";
+  $("#resText").textContent = res.markdown || "";
+  $("#resWhy").textContent =
+    (res.promise ? `The script says: \u201c${res.promise}\u201d ` : "")
+    + (res.in_description
+        ? "It is appended to the description above, so the description is ready to publish."
+        : "It did not fit YouTube's description limit - upload a file or paste the text in yourself.")
+    + (res.pdf_error ? ` No PDF was made (${res.pdf_error}).` : "");
+  for (const [id, name] of [["#resMd", "resource.md"], ["#resTxt", "resource.txt"], ["#resPdf", "resource.pdf"]]) {
+    $(id).hidden = !files.has(name);
+    $(id).href = `${F(name)}?v=${j.updated}`;
+  }
 }
 
 function renderUpscales(j, done) {
@@ -844,6 +888,18 @@ $("#copyTitle").innerHTML = icon("copy") + " Copy";
 $("#copyDesc").innerHTML = icon("copy") + " Copy";
 $("#copyTitle").onclick = () => copyText($("#seoTitle").textContent, "Title copied");
 $("#copyDesc").onclick = () => copyText($("#seoDesc").textContent, "Description copied");
+$("#copyRes").innerHTML = icon("copy") + " Copy";
+$("#copyRes").onclick = () => copyText($("#resText").textContent, "Resource copied");
+async function regenResource() {
+  if (!confirm("Re-read the script and rewrite what it promised the viewer?")) return;
+  try {
+    await api(`/jobs/${jobId}/regen-resource`, { method: "POST" });
+    toast("Checking the script...");
+    detailsStamp = null; startPolling(); refresh();
+  } catch (e) { toast(e.message, true); }
+}
+$("#resRegen").onclick = regenResource;
+$("#resMake").onclick = regenResource;
 
 $("#assembleBtn").onclick = async () => {
   try {

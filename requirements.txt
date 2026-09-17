@@ -8,6 +8,7 @@ yt-dlp
 openai
 static-ffmpeg
 pillow
+fpdf2>=2.8
 python-multipart
 faster-whisper
 google-api-python-client

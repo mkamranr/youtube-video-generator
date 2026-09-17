@@ -488,6 +488,12 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
                 z.write(d / "music.mp3", f"{title} - music.mp3")
             if (d / "narration.wav").exists():
                 z.write(d / "narration.wav", f"{title} - narration.wav")
+            res = plan.get("resource") or {}
+            if res.get("offered"):   # the thing the script promised the viewer
+                rname = _safe_filename(res.get("title", ""), "resource")
+                for ext in ("md", "txt", "pdf"):
+                    if (d / f"resource.{ext}").exists():
+                        z.write(d / f"resource.{ext}", f"{title} - {rname}.{ext}")
             text = (f"Title: {plan.get('seo_title') or plan.get('title') or job.title}\r\n\r\n"
                     f"Description:\r\n{plan.get('seo_description', '')}\r\n")
             z.writestr(f"{title}.txt", text)
@@ -1068,6 +1074,18 @@ def voice_audio(voice_id: str, user: dict = Depends(auth.require_user)):
     if not path.exists():
         raise HTTPException(404, "unknown reference voice")
     return FileResponse(path, media_type="audio/wav")
+
+
+@app.post("/jobs/{job_id}/regen-resource")
+def regen_resource(job_id: str, user: dict = Depends(auth.require_user)):
+    """Re-decide what the script promised the viewer and rewrite the hand-out."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.regen_resource(job_id))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/jobs/{job_id}/regen-thumbnail")

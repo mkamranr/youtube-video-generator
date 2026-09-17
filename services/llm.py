@@ -836,6 +836,106 @@ Never mention that the video is AI-generated unless the content is about AI. Nev
             "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
 
 
+_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _quoted_from(narration: str, quote: str) -> bool:
+    """Is the promise really in the script?
+
+    Compared on letters and digits only, so smart quotes, hyphens and re-punctuation do not matter
+    while a paraphrase still fails. The whole quote first, then its longest sentence - a quote may
+    legitimately span a line break. Below ~25 characters nothing counts: a short fragment matches by
+    accident, and a fabricated promise is the exact bug this guards against."""
+    hay = _ALNUM.sub(" ", (narration or "").lower())
+    for part in sorted([quote] + re.split(r"(?<=[.!?])\s+", quote), key=len, reverse=True):
+        needle = _ALNUM.sub(" ", part.lower()).strip()
+        if len(needle) >= 25 and needle in hay:
+            return True
+    return False
+
+
+def write_resource(title: str, narration: str, source_text: str = "", channel: dict | None = None,
+                   used: list | None = None, max_chars: int = 3000) -> dict:
+    """The thing the video promised its viewer - or nothing at all.
+
+    Decides whether the FINAL narration offers the viewer a concrete take-away ("the exact prompt
+    structure is in the description", "grab the checklist") and, only then, writes that exact thing
+    in full. The script is never touched and is never told to make such an offer - the promise is
+    the writer's own; this only keeps the ones it made.
+
+    An invented offer is the bug this exists to prevent, so the answer must quote the promise word
+    for word out of the narration; a quote that is not in the narration is thrown away and nothing
+    is produced. source_text is the README or transcript the video was written from: for repo and
+    URL jobs the narration deliberately leaves out the detail a resource needs (see the repo arm of
+    write_script_from_prompt), so without it the model would invent the template.
+
+    Returns {} when the video promises nothing (the normal case), otherwise
+    {"promise", "kind", "title", "markdown"}."""
+    words = max(150, min(600, max_chars // 6))
+    source = source_text[: config.MAX_TRANSCRIPT_CHARS] if source_text else ""
+    extra = (f"""
+
+For the facts, wording and detail - NOT for deciding whether a promise was made - here is the
+source the video was written from:
+\"\"\"{source}\"\"\"""" if source else "")
+    user = f"""This is the FINAL voiceover script of a video titled "{title}". It is locked: the video
+says exactly this, word for word, and nothing you write can change it.
+
+Script:
+\"\"\"{narration}\"\"\"{extra}
+
+STEP 1 - DECIDE. Does this script PROMISE THE VIEWER A CONCRETE THING TO TAKE AWAY - a prompt, a
+prompt structure, a template, a checklist, a cheat sheet, a script, a worksheet, a settings list, a
+step-by-step recipe - whether it says the thing is "in the description", "linked below", "free to
+download", or simply hands it over ("here is the exact prompt structure we used")? Read the script
+literally: an offer is a promise of an ARTEFACT the viewer expects to receive.
+These are NOT offers: teaching a technique, explaining how something works, naming tips inside the
+narration with nothing to take away, "subscribe", "comment below", "watch the next one", "try it
+yourself", or mentioning that such a thing exists somewhere in the world. If you are not certain the
+script promises an artefact, it does not.
+
+STEP 2 - PRODUCE, only when STEP 1 found a promise. Write EXACTLY the thing that was promised,
+finished and usable as it stands:
+- THE THING NAMED, never a summary of the video. "The exact prompt structure" means that prompt
+  itself, written out in full and ready to paste. "The checklist" means boxes to tick. "The
+  template" means the fill-in template with its placeholders. "The steps" means the numbered steps.
+- Everything the script says about it must be true of it: every keyword, section, step, setting or
+  number the video names appears in it, in the same order and in the video's own wording wherever
+  the video spelled it out. Fill in the detail a viewer needs to use it; contradict the video nowhere.
+- It works WITHOUT the video: no "as I mentioned", no timestamps, no "see above", no links.
+- Plain Markdown, self-contained: one "# " title line, short "## " sections, bullet lists, numbered
+  steps, "- [ ] " checkboxes, and ``` fenced blocks around anything meant to be copied verbatim
+  (prompts, commands, code). No HTML, no images, no links, no tables - it is also read as plain text
+  and printed as a PDF.
+- Between 150 and {words} words and at most {max_chars} characters. Dense and usable: no
+  introduction about the video, no filler, no sign-off.
+- Name the tools, models and settings the video names, spelled the way the video spells them.
+  Never mention that the video is AI-generated.
+
+Return JSON with keys:
+- "promise": the sentence or two from the script that make the offer, COPIED WORD FOR WORD out of
+  the script above - never paraphrased, never reconstructed, never invented. "" if there is none.
+- "kind": what the promised thing is, 1-3 lowercase words, as the script calls it ("prompt
+  structure", "checklist", "template"). "" if there is none.
+- "title": the resource's own title, max 10 words, naming the thing it is. "" if there is none.
+- "resource": the complete Markdown of that thing. "" if there is none.
+
+If the script promises the viewer nothing, return exactly
+{{"promise": "", "kind": "", "title": "", "resource": ""}} and write no resource. That is the normal,
+correct answer for most videos: an unasked-for resource is waste, and a resource for a promise the
+video never made is a lie about what the viewer is getting."""
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+                 {"role": "user", "content": user}])
+    promise = str(out.get("promise") or "").strip()
+    body = str(out.get("resource") or "").strip()
+    if not promise or not body or not _quoted_from(narration, promise):
+        return {}     # nothing promised - or a promise the script never actually made
+    kind = re.sub(r"\s+", " ", str(out.get("kind") or "")).strip().lower().strip(".")[:40]
+    name = re.sub(r"\s+", " ", str(out.get("title") or "")).strip().strip(chr(34))[:120]
+    return {"promise": promise[:500], "kind": kind or "resource",
+            "title": name or f"The {kind or 'resource'} from this video", "markdown": body}
+
+
 _HASHTAG = re.compile(r"(?<!\w)#(\w+)")
 
 

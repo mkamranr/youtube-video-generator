@@ -178,6 +178,7 @@ MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
 SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
+YT_DESCRIPTION_LIMIT = 4900     # YouTube caps descriptions at 5000; uploads are cut here
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
 PUBLIC_BASE_URL = ""            # https://host users open the app with; "" = localhost OAuth redirect
 YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)

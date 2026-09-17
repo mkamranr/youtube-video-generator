@@ -12,8 +12,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (browser, cast, channels, comfy, llm, lyrics, repo, schedule, storyboard,
-                      transcript, tts, video)
+from services import (browser, cast, channels, comfy, llm, lyrics, repo, resource, schedule,
+                      storyboard, transcript, tts, video)
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -667,6 +667,28 @@ def _run(job: Job):
             job.add_log(f"seo title: {plan.get('seo_title', '')}")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"seo metadata failed ({e}); continuing without it")
+    # The video only owes the viewer something when the script promised it - decided from the final
+    # narration, never from the channel or the topic. Key PRESENCE is the guard, not truthiness:
+    # "promises nothing" is a legitimate falsy answer that must be remembered, or every resume
+    # re-decides (and _chat runs at temperature 0.7, so it could decide differently).
+    # "music" mode is skipped: what the viewer hears there is the song, and its lyrics are not
+    # written until further down.
+    if "resource" not in plan and mode != "music":
+        job.set("planning", "checking whether the script promises the viewer anything")
+        try:
+            res = llm.write_resource(
+                plan.get("title", ""), plan["narration"], source_text=text,
+                channel=job.channel, used=plan.get("cast_used"),
+                max_chars=resource.markdown_budget(plan.get("seo_description", "")))
+            plan["resource"], logs = resource.attach(
+                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job))
+            for line in logs:
+                job.add_log(line)
+        except Exception as e:  # noqa: BLE001 - a missing hand-out never costs a video
+            job.add_log(f"viewer resource failed ({e}); continuing without one")
+    elif resource.fold_into_description(plan):
+        # run 1 had SEO fail, so there was no description to append to; run 2 regenerated it
+        job.add_log("resource appended to the regenerated description")
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
     job.set(title=plan.get("title", ""))
     job.add_log(f"plan: '{plan.get('title')}', {len(plan['narration'].split())} story words")
@@ -1442,6 +1464,43 @@ class JobManager:
         except Exception as e:  # noqa: BLE001
             job.set(yt_status="failed", yt_error=str(e)[:200])
             job.add_log(f"YouTube upload failed: {e}")
+
+    def regen_resource(self, job_id: str) -> Job:
+        """Re-decide and rewrite the viewer resource of a finished job.
+
+        The pipeline only runs the check once per job, so a video made before this existed - or one
+        whose script was edited afterwards - never gets the hand-out it promised. This is the way
+        back. LLM + file writes only, so it runs in a side thread rather than the GPU queue."""
+        with self.lock:
+            job = self._maintenance_target(job_id)
+            job.set("planning", "rewriting the viewer resource")
+        threading.Thread(target=self._regen_resource, args=(job,), daemon=True).start()
+        return job
+
+    def _regen_resource(self, job: Job):
+        d = job.dir
+        try:
+            plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
+            # start from the writer's own description so the block is composed once, not twice
+            base = plan.pop("seo_description_base", None)
+            if base is not None:
+                plan["seo_description"] = base
+            plan.pop("resource", None)
+            tfile = d / "transcript.txt"
+            source = tfile.read_text(encoding="utf-8", errors="replace") if tfile.exists() else ""
+            res = llm.write_resource(
+                plan.get("title", ""), plan.get("narration", ""), source_text=source,
+                channel=job.channel, used=plan.get("cast_used"),
+                max_chars=resource.markdown_budget(plan.get("seo_description", "")))
+            plan["resource"], logs = resource.attach(
+                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job))
+            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            for line in logs:
+                job.add_log(line)
+            job.set("done", "viewer resource regenerated")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"viewer resource regeneration failed: {e}")
+            job.set("done", "viewer resource unchanged")
 
     def regen_thumbnail(self, job_id: str) -> Job:
         """Re-render the thumbnail with a fresh concept and seed. Runs in a side thread -
