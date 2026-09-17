@@ -264,8 +264,9 @@ class Plans(unittest.TestCase):
                                      json={"title": "Mine", "description": "I wrote this.",
                                            "actors": ["Nobody"], "hook": "Hi!", "thumbnail_idea": ""})
             self.assertEqual(r.json()["days"][0]["title"], "Mine")
-            # this channel has no cast, so free-text actor names are kept as typed
-            self.assertEqual(r.json()["days"][0]["actors"], ["Nobody"])
+            # this channel was created without a cast, so its videos have no characters at all
+            # (characters_enabled is derived from the cast) and a row never carries actors
+            self.assertEqual(r.json()["days"][0]["actors"], [])
             self.assertEqual(clients["alice"].put(f"/api/plans/{pid}/days/99", json={}).status_code, 404)
 
             # confirm two rows: paused jobs, nothing started

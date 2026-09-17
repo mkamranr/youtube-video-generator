@@ -28,8 +28,28 @@ def all_characters(channel: dict | None) -> list:
     return [c for c in ((channel or {}).get("cast") or []) if isinstance(c, dict) and c.get("name")]
 
 
+def enabled(channel: dict | None) -> bool:
+    """Do this channel's videos have characters at all?
+
+    Off = informative explainer: no protagonist, no recurring cast, only generic unnamed people on
+    screen. A channel record or job snapshot written before the flag existed falls back to "the
+    channel has a cast" - the same rule services.channels backfills the store with - so a job
+    queued before the flag keeps behaving exactly as it did."""
+    ch = channel or {}
+    if "characters_enabled" in ch:
+        return bool(ch["characters_enabled"])
+    return bool(all_characters(ch))
+
+
+def active(channel: dict | None) -> list:
+    """The cast the PROMPTS see: empty while characters are off, so a channel keeps its roster and
+    its portraits (the editor reads those through all_characters / channel["cast"]) while its
+    videos have no actors. Everything that writes a prompt comes through here."""
+    return all_characters(channel) if enabled(channel) else []
+
+
 def main_characters(channel: dict | None) -> list:
-    return [c for c in all_characters(channel) if c.get("role", "main") == "main"]
+    return [c for c in active(channel) if c.get("role", "main") == "main"]
 
 
 def names(chars: list) -> list:
@@ -43,7 +63,7 @@ def used_characters(channel: dict | None, *texts: str) -> list:
     "pip" are ordinary words that must not pull Penny, Daisy or Pip into a video."""
     blob = "\n".join(t or "" for t in texts)
     hits = []
-    for c in all_characters(channel):
+    for c in active(channel):
         m = re.search(rf"(?<![\w]){re.escape(c['name'])}(?![\w])", blob)
         if m:
             hits.append((m.start(), c))
@@ -52,7 +72,7 @@ def used_characters(channel: dict | None, *texts: str) -> list:
 
 def select_characters(channel: dict | None, used) -> list:
     """The cast entries whose names are in `used` (any case), in `used` order."""
-    by_name = {c["name"].lower(): c for c in all_characters(channel)}
+    by_name = {c["name"].lower(): c for c in active(channel)}
     out, seen = [], set()
     for n in used or []:
         c = by_name.get(str(n).strip().lower())
@@ -93,7 +113,7 @@ def sheet_text(channel: dict | None, used: list | None = None, spoken: bool = Fa
     spoken     -> the call writes words a voice reads out (narration, script review, song lyrics):
                   names, kinds and personalities, no looks at all. A writer that never sees the
                   look cannot recite it into the audio; the visual calls keep the full sheet."""
-    cast = all_characters(channel)
+    cast = active(channel)
     if not cast:
         return ""
     written = "names" if spoken else "names and looks"
@@ -124,7 +144,7 @@ def mentioned(channel: dict | None, text: str) -> list:
     """Cast entries whose name occurs in text (whole word, case-insensitive)."""
     out = []
     low = text or ""
-    for c in all_characters(channel):
+    for c in active(channel):
         if re.search(rf"(?<![\w]){re.escape(c['name'])}(?![\w])", low, flags=re.IGNORECASE):
             out.append(c)
     return out
@@ -210,6 +230,8 @@ def _generate(cid: str, char_id: str, count: int):
     st = _state[(cid, char_id)]
     try:
         ch = channels.get_channel(cid) or {}
+        # the RAW roster on purpose: the editor renders portraits even while characters are off,
+        # so the channel can be switched back on with its reference shots intact
         c = next((x for x in all_characters(ch) if x.get("id") == char_id), None)
         if c is None:
             return

@@ -44,7 +44,7 @@ class Job:
     topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
     owner: str = ""                 # user id of the job's owner (the channel's owner); "" only before the ownership migration
-    channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, ...}
+    channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, characters_enabled, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     script_approved: bool = False
     # weekly planner (services/planner.py): the plan row this job was created from. A planned job
@@ -576,8 +576,10 @@ def _run(job: Job):
                                    channel=job.channel)
         _fit_narration(job, plan, target_words)
     plan["audio_mode"] = mode
-    if "cast_used" not in plan and cast.all_characters(job.channel):   # URL jobs and pre-selection plans
+    if "cast_used" not in plan and cast.active(job.channel):   # URL jobs and pre-selection plans
         job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
+    else:
+        plan.setdefault("cast_used", [])   # never leave it unset: None means "legacy plan, all cast"
     if not plan.get("seo_title"):
         job.set("planning", "writing SEO title and description")
         try:
@@ -1244,13 +1246,15 @@ class JobManager:
             plan["audio_mode"] = job.audio_mode
             if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
                 plan["thumbnail_idea"] = job.thumb_idea
-            if cast.all_characters(job.channel):
+            if cast.active(job.channel):
                 used = _set_cast_used(job, plan)
                 job.add_log("cast in this story: " + (", ".join(used) or "none"))
                 missing = [n for n in cast.names(cast.used_characters(job.channel, job.topic)) if n not in used]
                 if missing:
                     job.add_log(f"note: the request named {', '.join(missing)} but the draft does not - "
                                 "edit the script or request a new draft")
+            else:
+                plan.setdefault("cast_used", [])
             job.dir.mkdir(parents=True, exist_ok=True)
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("awaiting_approval", "script ready - review and approve",
@@ -1274,7 +1278,7 @@ class JobManager:
                 plan["title"] = title.strip()
             if narration and narration.strip():
                 plan["narration"] = narration.strip()
-            if cast.all_characters(job.channel):   # the user may have written characters in or out
+            if cast.active(job.channel):   # the user may have written characters in or out
                 job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("queued", "script approved - waiting for video generation",

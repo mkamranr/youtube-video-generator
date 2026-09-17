@@ -66,7 +66,8 @@ def _clip(value, limit: int) -> str:
 def validate_day(row, day: int, week_start: str, channel: dict | None = None,
                  base: dict | None = None) -> dict:
     """One plan row, clamped. `actors` keeps only names the channel's cast really has, so a
-    hallucinated character never reaches the job. Unknown keys are dropped."""
+    hallucinated character never reaches the job - and stays empty altogether for a channel whose
+    videos have no characters. Unknown keys are dropped."""
     row = row if isinstance(row, dict) else {}
     base = base or {}
     out = {"day": day, "date": day_date(week_start, day)}
@@ -80,8 +81,12 @@ def validate_day(row, day: int, week_start: str, channel: dict | None = None,
     if not isinstance(actors, list):
         actors = []
     names = [str(a).strip() for a in actors if str(a).strip()]
-    out["actors"] = cast.names(cast.select_characters(channel, names))[:MAX_ACTORS] \
-        if cast.all_characters(channel) else names[:MAX_ACTORS]
+    if channel and not cast.enabled(channel):
+        out["actors"] = []      # this channel's videos have no characters: a row never carries any
+    elif cast.active(channel):
+        out["actors"] = cast.names(cast.select_characters(channel, names))[:MAX_ACTORS]
+    else:
+        out["actors"] = names[:MAX_ACTORS]   # no channel (orphaned plan): keep what was written
     out["job_id"] = str(row.get("job_id", base.get("job_id", "")) or "")
     return out
 

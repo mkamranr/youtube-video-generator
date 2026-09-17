@@ -12,10 +12,14 @@ services/
   transcript.py        YouTube captions via youtube-transcript-api with yt-dlp fallback; cue-tag cleaning;
                        caption coverage seconds for quality gating
   llm.py               All vLLM prompting: story plan, per-clip scenes, music caption/lyrics, SEO metadata,
+                       two content shapes - cast-driven stories, or informative explainers for a channel with
+                       characters off (no protagonist, second person, generic unnamed people only);
                        thumbnail prompt; the audience safety rules, channel purpose and branding live in the system prompt, built per job from its channel snapshot
   tts.py               Fish Speech synthesis (chunked <=TTS_CHUNK_CHARS/request, GPU-OOM aware,
                        optional reference-voice cloning), audio duration
-  cast.py              Channel cast: character sheet for the LLM system prompt (whole roster while the script is
+  cast.py              Channel cast: enabled()/active() gate the roster the PROMPTS see (a channel can
+                       switch characters off and keep its cast; all_characters() stays raw for the editor and
+                       the portrait renderer); character sheet for the LLM system prompt (whole roster while the script is
                        written, only this video's `cast_used` afterwards), detection of the characters a text
                        names, deterministic look prefix for ComfyUI prompts that name a character, portrait
                        candidate rendering/approval, and the "opening character" whose portrait seeds clip 1

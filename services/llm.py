@@ -56,6 +56,55 @@ SPOKEN_OVERRIDE = ("The channel rules and the character sheet above describe how
                    "they apply to image and video prompts only. What you write here is SPOKEN ALOUD, so it "
                    "must never contain appearance detail - name a character and move on. ")
 
+# ---- channels whose videos have no characters (cast.enabled() is False) ----
+# The cast machinery goes quiet on its own (services/cast.py active() returns []), but an empty
+# roster is not an instruction: with nothing said, the writer happily invents a protagonist. These
+# carry the positive brief instead.
+NO_CHARACTER_RULES = (
+    "THIS CHANNEL HAS NO CHARACTERS. Never invent a protagonist, a named person, a host or a mascot, "
+    "and never tell a story about someone - no 'Alex, a project manager drowning in email', no arc, "
+    "no cast. The video speaks straight to the viewer in the second person ('you', 'your'). Build "
+    "every video as HOOK (name the viewer's problem or the promise in one line) -> PROBLEM (why it "
+    "costs them time, money or nerves, concretely) -> STEPS (the actual specific things to do, or "
+    "the demo, in order, each one usable on its own) -> PAYOFF (what they can do now, and the one "
+    "next step). Generic unnamed people MAY appear ON SCREEN as illustration - a project manager at "
+    "a laptop, hands typing, a presenter gesturing at a screen - described only by role, rough age "
+    "and clothing. They are never named, never introduced, never given a backstory, never recur, "
+    "and the spoken words never refer to them. If the channel's style & rules text above carries "
+    "character rules, they describe a cast this channel does not use: ignore every instruction "
+    "there about characters, their looks or their consistency, and keep only its visual style, tone "
+    "and format guidance. ")
+
+SPOKEN_NO_CHARACTER_OVERRIDE = (
+    "The channel rules above describe how the video LOOKS: they apply to image and video prompts "
+    "only. What you write here is SPOKEN ALOUD, so it must never carry appearance detail and must "
+    "never describe the people shown on screen - the visuals carry that. ")
+
+NO_CHARACTER_SCENE_RULE = (
+    "\nPEOPLE: this video has no characters. The subject of every shot is the topic itself - the "
+    "screens, tools, objects, places and steps being shown. Generic unnamed people MAY appear where "
+    "they make a beat clearer: a project manager at a laptop, hands typing, a presenter gesturing "
+    "at a screen, an over-the-shoulder view of someone working. Describe them by role, rough age "
+    "and clothing only - never name them, never give them a backstory or a reaction arc, never "
+    "write dialogue for them, and never build the video around one recurring person. Continuity "
+    "between clips is carried by the setting, the screen content and the camera move, not by a "
+    "person.")
+
+NARRATION_CHARACTER_RULE = "Refer to any character by name only and never describe how they look."
+NARRATION_EXPLAINER_RULE = (
+    "Write it as an informative explainer spoken straight to the viewer in the second person "
+    "('you', 'your'): open on the hook, name the problem in their terms, walk through the concrete "
+    "steps or the demo in order - real actions, real settings, real numbers, one step at a time - "
+    "and close on the payoff and the one next step. No protagonist, no named person, no story, no "
+    "dialogue, no 'meet Alex': where an example helps keep it about 'you' or an unnamed role ('a "
+    "project manager', 'your team') and never give it a name or a backstory.")
+
+
+def _narration_rule(channel: dict | None) -> str:
+    """The clause keeping spoken words free of appearance detail (cast channels) or free of
+    invented people altogether (explainer channels)."""
+    return NARRATION_CHARACTER_RULE if cast.enabled(channel) else NARRATION_EXPLAINER_RULE
+
 
 def _system(channel: dict | None = None, used: list | None = None, rules: bool = True,
             spoken: bool = False) -> str:
@@ -70,13 +119,18 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
            cast sheet then carries no looks, and the override cancels the "repeat the look"
            instructions a channel's own rules text may contain."""
     ch = _channel(channel)
+    chars = cast.enabled(ch)
     kind = VIDEO_KIND.get(ch["video_type"], VIDEO_KIND["real"])
     purpose = (f'Channel purpose: "{ch["purpose"]}" - keep every video aligned with this purpose '
                "and tone. ") if ch["purpose"].strip() else ""
     rules_block = (f"CHANNEL STYLE & RULES (fixed reference for every story and scene):\n"
                    f"{ch['rules'].strip()}\n") if rules and ch["rules"].strip() else ""
-    return (f"You are a creative director turning source content into a short, original "
-            f"AI-generated {kind} video. "
+    opening = (f"You are a creative director turning source content into a short, original "
+               f"AI-generated {kind} video. ") if chars else (
+               f"You are an expert explainer turning source content into a short, original "
+               f"AI-generated {kind} video that teaches the viewer something they can use "
+               f"themselves. ")
+    return (opening
             + AUDIENCE_RULES[ch["audience"]]
             + (TECH_RULES if ch["video_type"] == "tech" else "")
             + purpose
@@ -86,8 +140,8 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
             "channel naturally only where it fits (intros, outros, sign-offs), without forcing it "
             "into every line. "
             + rules_block
-            + cast.sheet_text(ch, used=used, spoken=spoken)
-            + (SPOKEN_OVERRIDE if spoken else "")
+            + (cast.sheet_text(ch, used=used, spoken=spoken) if chars else NO_CHARACTER_RULES)
+            + ((SPOKEN_OVERRIDE if chars else SPOKEN_NO_CHARACTER_OVERRIDE) if spoken else "")
             + "Always answer with a single JSON object and nothing else.")
 
 
@@ -95,7 +149,7 @@ def _cast_selection_rule(channel: dict | None, request_text: str = "", verbatim:
     """Script-writing instruction for choosing this video's characters from the channel roster.
     Names the user wrote in the request (topic/description) are mandatory. verbatim=True is the
     pasted-transcript case: the words are fixed, the choice only decides who plays in the visuals."""
-    if not cast.all_characters(channel):
+    if not cast.active(channel):
         return ""
     forced = cast.names(cast.used_characters(channel, request_text))
     if verbatim:
@@ -111,6 +165,12 @@ def _cast_selection_rule(channel: dict | None, request_text: str = "", verbatim:
         rule += (f" The request names {', '.join(forced)}: these exactly must be used, in the roles the "
                  "request gives them (e.g. main / supporting).")
     return rule + ' Also return "characters": the list of cast names used in this video (may be empty). '
+
+
+def _faithful_keys(channel: dict | None) -> str:
+    """What a pasted description must be kept faithful to; an explainer channel has no characters
+    to preserve, and naming them here invites the writer to invent some."""
+    return "content, characters, structure and intent" if cast.enabled(channel)         else "content, structure and intent"
 
 
 def _chosen(channel: dict | None, value) -> list:
@@ -197,7 +257,7 @@ def write_narration(transcript: str, words: int | None = None, art_style: str = 
 
 Create a new short video inspired by this content.{_cast_selection_rule(channel)} Return JSON with keys:
 - "title": short title.
-- "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice, so refer to any character by name only and never describe how they look. Stay close to {words} words.
+- "narration": a voiceover script of about {words} words, plain spoken English, no headings, no stage directions, no emojis. It will be read aloud by a TTS voice. {_narration_rule(channel)} Stay close to {words} words.
 - "style": {style_rule}
 """
     plan = _chat([{"role": "system", "content": _system(channel, spoken=True)}, {"role": "user", "content": user}])
@@ -229,7 +289,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
         style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
     narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
                       f'no headings, no stage directions, no emojis. It will drive the whole video. '
-                      f'Refer to any character by name only and never describe how they look. '
+                      f'{_narration_rule(channel)} '
                       f'Stay close to {words} words.')
     if source_kind == "transcript":
         text = text[: config.MAX_TRANSCRIPT_CHARS]
@@ -243,10 +303,13 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
                           'no emojis. It will be read aloud by a TTS voice and drive the whole video.')
     elif source_kind == "description":
         task = ('The user wrote the following description / short script for a video. Build the video '
-                'script from it, staying FAITHFUL to their content, characters, structure and intent - '
+                f'script from it, staying FAITHFUL to their {_faithful_keys(channel)} - '
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
-    else:
+    elif cast.enabled(channel):
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
+    else:
+        task = ('Create an original INFORMATIVE video script for this channel that teaches this topic '
+                'to someone who is not technical, step by step: "' + text + '"')
     # a pasted transcript is kept verbatim; the selection then only decides who plays in the visuals
     task += _cast_selection_rule(channel, text, verbatim=source_kind == "transcript")
     if hook.strip() and source_kind != "transcript":
@@ -294,8 +357,8 @@ def extend_narration(narration: str, words: int, channel: dict | None = None) ->
 Rewrite it LONGER, to about {words} words. Keep the same story, the same order and the same ending -
 expand what is already there: more detail on each beat, more examples, more explanation. Do not add a
 new topic, do not repeat yourself, and do not pad with filler. It will be read aloud by a TTS voice,
-so keep it plain spoken English with no headings, no stage directions and no emojis; refer to any
-character by name only and never describe how they look.
+so keep it plain spoken English with no headings, no stage directions and no emojis.
+{_narration_rule(channel)}
 Return JSON with one key:
 - "narration": the longer script.
 """
@@ -348,8 +411,9 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     timelines = (list(timelines or []) + [""] * n)[:n]
     clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds()] * n)[:n]
     cast_rule = ""
-    if cast.all_characters(channel):
-        in_video = cast.names(cast.all_characters(channel)) if used is None else list(used)
+    roster = cast.active(channel)
+    if roster:
+        in_video = cast.names(roster) if used is None else list(used)
         if in_video:
             cast_rule = (f"\nCAST: only {', '.join(in_video)} appear in this video. Whenever one of them is on "
                          "screen, name them and describe them exactly as in the cast sheet (species/age, "
@@ -357,7 +421,10 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
         else:
             cast_rule = ("\nCAST: none of the channel's recurring characters appear in this video - do not "
                          "add them.")
-    first = "This is the FIRST clip of the video: establish the world."
+    elif not cast.enabled(channel):
+        cast_rule = NO_CHARACTER_SCENE_RULE
+    first = ("This is the FIRST clip of the video: establish the world." if cast.enabled(channel)
+             else "This is the FIRST clip of the video: establish the subject and the setting.")
     if opening:
         first = (f"This is the FIRST clip of the video. Its first frame is a fixed reference image of "
                  f"{opening['name']} alone, standing centered and facing the viewer in a simple soft "
@@ -478,13 +545,17 @@ This scene's [0s] beat must directly continue that scene's ending (same camera a
 the same positions, same setting); it must NOT open with a cut, a new shot, a different angle or location.
 Reframing may only happen through continuous camera motion within the clip."""
     safety = SAFETY_CHECKS[_channel(channel)["audience"]]
-    if cast.all_characters(channel):
+    if cast.active(channel):
         safety += (" Cast characters keep their canonical name and look from the cast sheet; no unnamed "
                    "substitute animals or kids where a cast character fits")
         if used is not None:
             safety += (f"; no cast members other than {', '.join(used)}" if used
                        else "; none of the channel's cast members appear in this video")
         safety += "."
+    elif not cast.enabled(channel):
+        safety += (" This channel has no characters: no named person, no protagonist and no story arc - "
+                   "anyone on screen is generic and unnamed (role, rough age and clothing only), and "
+                   "the subject of the shot is the topic itself.")
     user = f"""You are reviewing a scene prompt for clip {i} of {n} of a video before it is rendered.
 Global visual style: {style}
 
@@ -525,12 +596,18 @@ def review_script(narration: str, context: str = "", channel: dict | None = None
               "general": "anything violating YouTube community or advertiser guidelines"}[
         _channel(channel)["audience"]]
     cast_checks = ", stray cast names (only the characters that belong to this story appear)" \
-        if cast.all_characters(channel) else ""
+        if cast.active(channel) else ""
     if cast_checks and not verbatim:
         cast_checks += (", character looks in the spoken words (the script names a character and never "
                         "describes them: strip any fur, colour, clothing, accessory or marking detail "
                         'hung on a name - "Piko, a small round panda in a yellow T-shirt, is worried" '
                         'becomes "Piko is worried" - and change nothing else)')
+    elif not cast.enabled(channel) and not verbatim:
+        cast_checks = (", invented characters (this channel has none: no named person, no protagonist, "
+                       "no 'meet Alex' - rewrite any such passage to address the viewer as 'you' or to "
+                       "name an unnamed role, keeping the same information), and explainer shape (hook, "
+                       "the viewer's problem, the concrete steps in order, then the payoff - all in the "
+                       "second person)")
     user = f"""You are reviewing the final voiceover script of a video before production.{ctx}
 
 Script:
@@ -550,6 +627,13 @@ Return JSON: {{"issues": ["each issue found, empty list if none"], "narration": 
     return fixed, issues
 
 
+def _storyboard_subjects(channel: dict | None) -> str:
+    """What a story-board card's still image may show."""
+    return ("an object, device, place, abstract scene or one of the channel's cast characters"
+            if cast.enabled(channel) else
+            "an object, device, place, screen, diagram or abstract scene, never a named character")
+
+
 def write_storyboard(title: str, narration: str, segments: list, n: int,
                      channel: dict | None = None, max_images: int | None = None,
                      clip_seconds: float | None = None, used: list | None = None) -> list:
@@ -564,7 +648,7 @@ def write_storyboard(title: str, narration: str, segments: list, n: int,
                          for i, seg in enumerate(segs))
     img_rule = (f'- "image_prompt": for AT MOST {max_images} cards (the ones where a picture adds the '
                 f'most), a prompt for ONE photorealistic still image that illustrates the card\'s fact '
-                f'(an object, device, place, abstract scene or one of the channel\'s cast characters - never '
+                f'({_storyboard_subjects(channel)} - never '
                 f'a real person\'s face). The image generator '
                 f'CANNOT render writing: the prompt must not ask for any words, labels, captions, UI text, '
                 f'code on screens or lettering of any kind. Empty string "" for the other cards.'
@@ -610,17 +694,52 @@ PLAN_ROW_KEYS = ('- "actors": the cast characters of this video, by name, as a l
                  'story\'s own voice.')
 
 
+PLAN_ROW_KEYS_NO_CHARACTERS = (
+    '- "title": the video title a viewer would click, max 12 words.\n'
+    '- "description": 2-4 sentences describing the whole video from beginning to end - what the '
+    'viewer learns, the concrete steps, settings or demo it walks through, in order, and what they '
+    'can do at the end. This becomes the brief the script is written from: it is an informative '
+    'explainer addressed to "you", so never invent a person, a name, a protagonist or a story - '
+    'never "Alex, a project manager who is overwhelmed by 50 unread emails".\n'
+    '- "thumbnail_idea": one sentence describing the thumbnail picture - the object, screen or moment '
+    'it shows and the feeling it gives (an unnamed person may be in frame, never the point).\n'
+    '- "hook": the spoken opening line of the video, max 15 words, in quotation marks, spoken '
+    'straight to the viewer.')
+
+
+def _plan_row_keys(channel: dict | None) -> str:
+    return PLAN_ROW_KEYS if cast.enabled(channel) else PLAN_ROW_KEYS_NO_CHARACTERS
+
+
+def _plan_shape(channel: dict | None, day_value: str) -> str:
+    """The JSON row shape asked for. "actors" is dropped entirely for a channel with no characters,
+    so the writer is never shown a slot to fill."""
+    actors = '"actors": ["..."], ' if cast.enabled(channel) else ""
+    return ('{"day": ' + day_value + ', ' + actors + '"title": "...", "description": "...", '
+            '"thumbnail_idea": "...", "hook": "..."}')
+
+
 def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, avoid) -> str:
     """The shared part of the weekly-plan prompts: what a good week looks like."""
     avoid = [str(a).strip() for a in (avoid or []) if str(a).strip()]
     parts = [f"Plan {days} videos for this channel, one per day"
              + (f", starting {week_start}." if week_start else ".")]
-    parts.append("Every video stands on its own (a viewer may watch only one) but the week as a whole "
-                 "has variety: different settings, different problems to solve, different characters in "
-                 "the lead. Never plan the same story twice.")
-    if cast.all_characters(channel):
-        parts.append("Cast the videos from the channel roster above - usually 1-3 characters each, and "
-                     "not the same lead every day. Use their names exactly as written.")
+    if cast.enabled(channel):
+        parts.append("Every video stands on its own (a viewer may watch only one) but the week as a "
+                     "whole has variety: different settings, different problems to solve, different "
+                     "characters in the lead. Never plan the same story twice.")
+        if cast.active(channel):
+            parts.append("Cast the videos from the channel roster above - usually 1-3 characters each, "
+                         "and not the same lead every day. Use their names exactly as written.")
+    else:
+        parts.append("Every video stands on its own (a viewer may watch only one) but the week as a "
+                     "whole has variety: a different concrete problem, a different tool or workflow, a "
+                     "different angle on the channel's subject each day. Never plan the same video "
+                     "twice.")
+        parts.append("This channel has NO characters and tells NO stories: every video is an "
+                     "informative explainer spoken to the viewer in the second person. Do not invent "
+                     "people, names, protagonists or narratives - plan the skills, problems, tools, "
+                     "workflows and step-by-step demos a viewer can follow themselves.")
     if notes.strip():
         parts.append(f'The user asks for this week: "{notes.strip()}"')
     if avoid:
@@ -638,8 +757,8 @@ def write_week_plan(channel: dict | None = None, days: int = 7, week_start: str 
     must not carry the characters' looks."""
     user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}
 
-Return JSON: {{"plan": [{{"day": 1, "actors": ["..."], "title": "...", "description": "...", "thumbnail_idea": "...", "hook": "..."}}, ...]}} with exactly {days} entries, "day" running 1 to {days}, where:
-{PLAN_ROW_KEYS}
+Return JSON: {{"plan": [{_plan_shape(channel, '1')}, ...]}} with exactly {days} entries, "day" running 1 to {days}, where:
+{_plan_row_keys(channel)}
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
                  {"role": "user", "content": user}])
@@ -661,8 +780,8 @@ def write_plan_day(channel: dict | None = None, day: int = 1, others: list | Non
     user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}{context}{wish}
 
 Rewrite DAY {day} only, as one fresh idea.
-Return JSON: {{"day": {{"day": {day}, "actors": ["..."], "title": "...", "description": "...", "thumbnail_idea": "...", "hook": "..."}}}} where:
-{PLAN_ROW_KEYS}
+Return JSON: {{"day": {_plan_shape(channel, str(day))}}} where:
+{_plan_row_keys(channel)}
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
                  {"role": "user", "content": user}])
@@ -716,7 +835,12 @@ def write_thumbnail(title: str, narration: str, style: str, channel: dict | None
             if idea.strip() else "")
     featured = cast.names(cast.main_characters(channel)) if used is None else list(used)
     subject = "the main character(s) and the key objects of the story"
-    if featured:
+    if not cast.enabled(channel):
+        emotion = "strong, clear visual energy"
+        subject = ("the topic itself - the screen, tool, object or moment the video is about, big and "
+                   "unmistakable; an unnamed person (hands on a keyboard, someone at a laptop, a "
+                   "presenter) may share the frame but is never named and never the point")
+    elif featured:
         subject = (f"the video's cast character(s) {', '.join(featured)} - named and "
                    "described exactly as in the cast sheet - with the key objects of the story")
     user = f"""We produced a short video titled "{title}".
@@ -904,10 +1028,15 @@ def write_music(title: str, narration: str, transcript: str,
                 "gentle, soft, unobtrusive instrumentation with low intensity and smooth dynamics, "
                 "and state clearly in the caption's Vocal Details that the track is instrumental "
                 "with no vocals.")
-    lyrics_rule = ("song lyrics using section tags like [Intro], [Verse], [Chorus], [Instrumental], [Outro]. "
-                   "The lyrics are sung aloud: name any character, never describe how they look."
-                   if standalone else
-                   'exactly the string "[Instrumental]" - this background track has no words.')
+    if standalone:
+        lyrics_rule = ("song lyrics using section tags like [Intro], [Verse], [Chorus], "
+                       "[Instrumental], [Outro]. "
+                       + ("The lyrics are sung aloud: name any character, never describe how they "
+                          "look." if cast.enabled(channel) else
+                          "This channel has no characters: the lyrics carry the video's information, "
+                          "sung to the viewer as 'you' - never invent a person, a name or a story."))
+    else:
+        lyrics_rule = 'exactly the string "[Instrumental]" - this background track has no words.'
     user = f"""We are scoring a short video titled "{title}".
 Story of the video, in order:
 \"\"\"{narration}\"\"\"

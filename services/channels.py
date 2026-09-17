@@ -3,7 +3,8 @@ defaults, an optional logo and its own YouTube OAuth token.
 
 The channel decides how content is generated (tone/safety rules via the audience preset,
 animated / realistic / tech look via video_type, prompt framing via the purpose text and the
-fixed style & rules text, the recurring cast, the story-board overlay default) and which
+fixed style & rules text, whether its videos have characters at all via characters_enabled -
+off means informative explainers with no cast - the recurring cast, the story-board overlay default) and which
 YouTube account the finished video is uploaded to. Index: channels/channels.json;
 per-channel files: channels/<id>_logo.png, channels/<id>_yt_token.json and the cast
 portraits channels/<id>_cast_<char>.png (see services/cast.py).
@@ -42,6 +43,7 @@ def _read_index() -> dict:
                     c["defaults"].setdefault("song_voice", default_song_voice(c.get("audience")))
                     c.setdefault("cast", [])
                     c.setdefault("cast_opening", True)
+                    c.setdefault("characters_enabled", bool(c.get("cast")))
                     c.setdefault("rules", "")
                     c.setdefault("owner", "")   # user id; assigned by services.ownership when empty
             return data
@@ -112,7 +114,8 @@ def snapshot(rec: dict) -> dict:
             "audience": rec["audience"], "video_type": rec["video_type"],
             "made_for_kids": rec.get("made_for_kids", rec["audience"] == "kids"),
             "cast": [dict(c) for c in rec.get("cast") or []],
-            "cast_opening": bool(rec.get("cast_opening", True))}
+            "cast_opening": bool(rec.get("cast_opening", True)),
+            "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast"))))}
 
 
 def _validate_cast(items, base_cast: list) -> list:
@@ -153,13 +156,14 @@ def _validate_cast(items, base_cast: list) -> list:
 def _validate(data: dict, base: dict | None = None) -> dict:
     """Merge data over base (or built-in defaults) and validate every field."""
     rec = {"name": "", "purpose": "", "rules": "", "audience": "general", "video_type": "animated",
-           "made_for_kids": False, "cast": [], "cast_opening": True,
+           "made_for_kids": False, "cast": [], "cast_opening": True, "characters_enabled": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
                         "song_voice": ""}}
     if base:
-        for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast", "cast_opening"):
+        for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
+                  "cast_opening", "characters_enabled"):
             if k in base:
                 rec[k] = base[k]
         rec["defaults"].update(base.get("defaults") or {})
@@ -174,6 +178,10 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         rec["cast_opening"] = bool(data["cast_opening"])
     if "cast" in data:
         rec["cast"] = _validate_cast(data["cast"], (base or {}).get("cast") or [])
+    if "characters_enabled" in data:
+        rec["characters_enabled"] = bool(data["characters_enabled"])
+    elif base is None:   # a new channel follows the migration rule: characters only if a cast was given
+        rec["characters_enabled"] = bool(rec["cast"])
     d = data.get("defaults") or {}
     for k in DEFAULT_KEYS:
         if k in d:
