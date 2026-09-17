@@ -12,10 +12,13 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import cast, channels, comfy, llm, lyrics, schedule, storyboard, transcript, tts, video
+from services import (browser, cast, channels, comfy, llm, lyrics, repo, schedule, storyboard,
+                      transcript, tts, video)
 
 
-PROMPT_SOURCES = ("topic", "description", "transcript")   # user text drafted by the LLM, then approved
+PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
+REPO_SOURCE = "repo"                    # a GitHub / Hugging Face URL: README + page screenshot
+DRAFT_SOURCES = PROMPT_SOURCES + (REPO_SOURCE,)   # every source that drafts a script for approval   # user text drafted by the LLM, then approved
 
 
 # statuses that are real pipeline work; `planned`, `queued`, `awaiting_approval`, `done`, `failed`
@@ -46,6 +49,7 @@ class Job:
     owner: str = ""                 # user id of the job's owner (the channel's owner); "" only before the ownership migration
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, characters_enabled, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
+    page_scroll: bool = False       # repo jobs: scroll the page screenshot as a panel over the video
     script_approved: bool = False
     # weekly planner (services/planner.py): the plan row this job was created from. A planned job
     # rests at status "planned" until the user sets its parameters on the job page.
@@ -381,6 +385,51 @@ def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should
     return tw, th
 
 
+def _repo_source_text(job: Job) -> str:
+    """README + facts of the job's GitHub / Hugging Face URL, cached on disk.
+
+    Runs in the draft thread, so the user reviews the script before any GPU time is spent. The
+    cache is not just a speed-up: redraft_script re-enters the same draft, and a transient 403
+    there must not throw away a good draft."""
+    d = job.dir
+    d.mkdir(parents=True, exist_ok=True)
+    tfile, rfile = d / "transcript.txt", d / "repo.json"
+    if tfile.exists() and tfile.stat().st_size > 50:
+        job.add_log("reusing the fetched README")
+        return tfile.read_text(encoding="utf-8")
+    job.set("drafting", "fetching the repository page")
+    info = repo.fetch(job.url or job.topic)
+    tfile.write_text(info["text"], encoding="utf-8")
+    rfile.write_text(json.dumps(info["meta"], indent=2), encoding="utf-8")
+    job.add_log(f"{info['kind']}: {info['id']} - {info['words']} words of README and facts")
+    return info["text"]
+
+
+def _page_screenshot(job: Job) -> int:
+    """Screenshot the repo / model page for the scrolling panel; returns where its README starts.
+
+    Non-fatal by design: without page.png the video is finished from the README text alone."""
+    png = job.dir / "page.png"
+    if png.exists() and png.stat().st_size > 5000:
+        job.add_log("resume: reusing the page screenshot")
+        return 0
+    url = job.url
+    rfile = job.dir / "repo.json"
+    if rfile.exists():
+        try:
+            url = json.loads(rfile.read_text(encoding="utf-8")).get("page_url") or url
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        job.set("drafting", "screenshotting the page")
+        w, h, content_y = browser.screenshot(url, png)
+        job.add_log(f"page screenshot: {w}x{h}")
+        return content_y
+    except Exception as e:  # noqa: BLE001 - the video is made from the README alone
+        job.add_log(f"page screenshot failed ({e}); the video will have no page overlay")
+        return 0
+
+
 def _storyboard_assets(job: Job, plan: dict, n: int):
     """Plan the story board cards (LLM) and render their related images (ComfyUI).
     Non-fatal: on failure the job continues without the overlay for this assembly."""
@@ -443,17 +492,41 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     joined = video.concat_clips(clips, d / "clips_joined.mp4")
     bounds = video.clip_boundaries(clips)
     joined = _upscale_joined(job, joined)
-    source = joined
+    # Both overlays go into ONE encode: a second full-size libx264 pass costs as much as the
+    # first (~190 s for a 3-minute 4K video) and leaves another copy on disk.
+    cards, layers = [], []
     if job.storyboard and isinstance(plan.get("storyboard"), list):
         job.set("assembling", "drawing the story board cards")
         try:
             cards = storyboard.render_all(d, plan, clips, video.frame_size(joined),
                                           accent=config.STORYBOARD_ACCENT)
-            job.set("assembling", f"overlaying {len(cards)} story board cards")
-            source = video.overlay_cards(joined, cards, d / "clips_cards.mp4")
-            job.add_log(f"story board: {len(cards)} cards overlaid")
+            layers += [{"png": p, "start": s, "end": e} for p, s, e in cards]
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"story board overlay failed ({e}); assembling without it")
+            cards = []
+    page = d / "page.png"
+    if job.page_scroll and page.exists():
+        try:
+            win = video.scroll_window(bounds[-1] if bounds else video.duration(joined),
+                                      busy=[(s, e) for _, s, e in cards])
+            if win:
+                # first in the list = composited first = the fact cards draw on top of it
+                layers.insert(0, video.scroll_layer(joined, page, win[0], win[1],
+                                                    content_y=int(plan.get("page_content_y") or 0)))
+                job.add_log(f"page scroll {win[0]:.1f}s-{win[1]:.1f}s")
+            else:
+                job.add_log("video too short for the page overlay; skipped")
+        except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
+            job.add_log(f"page scroll overlay failed ({e}); assembling without it")
+    source = joined
+    if layers:
+        job.set("assembling", f"overlaying {len(layers)} layers")
+        try:
+            source = video.composite(joined, layers, d / "clips_overlay.mp4")
+            job.add_log(f"overlays: {len(cards)} story board cards"
+                        + (" + page scroll" if len(layers) > len(cards) else ""))
+        except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
+            job.add_log(f"overlay failed ({e}); assembling without it")
             source = joined
     job.set("assembling", "mixing audio")
     mode = job.audio_mode or "narration+music"
@@ -537,6 +610,12 @@ def _run(job: Job):
     tfile = d / "transcript.txt"
     if job.source in PROMPT_SOURCES:
         text = job.topic
+    elif job.source == REPO_SOURCE:
+        # written by the draft thread; a non-YouTube job must never reach get_transcript_info
+        if not tfile.exists() or tfile.stat().st_size <= 50:
+            raise RuntimeError("the repository README was not fetched - resume the job to retry")
+        text = tfile.read_text(encoding="utf-8")
+        job.add_log("reusing the fetched README")
     elif tfile.exists() and tfile.stat().st_size > 50:
         text = tfile.read_text(encoding="utf-8")
         job.add_log("resume: reusing transcript")
@@ -1134,7 +1213,7 @@ class JobManager:
                         error="", archived=False)
                 job.add_log("restored by user - waiting to be set up")
                 return job
-            restart_draft = job.source in PROMPT_SOURCES and not job.script_approved
+            restart_draft = job.source in DRAFT_SOURCES and not job.script_approved
             if restart_draft:
                 job.set("drafting", "resumed - writing script with the LLM", error="", archived=False)
                 job.add_log("resumed by user - restarting the script draft")
@@ -1152,21 +1231,30 @@ class JobManager:
                       audio_mode: str = "", voice_id: str = "",
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
                       owner: str = "", resolution: str = "", song_voice: str = "",
-                      start: bool = True, title: str = "", plan: dict | None = None) -> Job:
+                      start: bool = True, title: str = "", plan: dict | None = None,
+                      page_scroll=None) -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
         text = (text or "").strip()
-        if len(text) < 3:
-            raise ValueError("topic/description/transcript is too short")
-        if source_kind not in PROMPT_SOURCES:
+        if source_kind not in DRAFT_SOURCES:
             raise ValueError("invalid source kind")
+        if source_kind == REPO_SOURCE:
+            if (channel or {}).get("video_type") != "tech":
+                raise ValueError("repository videos are only available on Tech channels")
+            text = repo.normalize_url(text)      # ValueError here becomes a 400 at submit time
+        elif len(text) < 3:
+            raise ValueError("topic/description/transcript is too short")
+        # only a repo job ever produces a page.png to scroll
+        page_scroll = bool(source_kind == REPO_SOURCE
+                           and (True if page_scroll is None else page_scroll))
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
         plan = plan or {}
-        job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url="",
-                  source=source_kind, topic=text, title=title.strip(),
+        job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
+                  url=text if source_kind == REPO_SOURCE else "",
+                  source=source_kind, topic=text, title=title.strip(), page_scroll=page_scroll,
                   status="drafting" if start else "planned",
                   detail=("writing script with the LLM" if start else
                           "needs setup - open the job to choose length and resolution"),
@@ -1238,12 +1326,20 @@ class JobManager:
                 except Exception:  # noqa: BLE001
                     previous = None
             target_words = _length_params(job)[0]
+            source_text, content_y = job.topic, 0
+            if job.source == REPO_SOURCE:
+                source_text = _repo_source_text(job)
+                if job.page_scroll:
+                    content_y = _page_screenshot(job)
+                job.set("drafting", "writing script with the LLM")
             plan = llm.write_script_from_prompt(
-                job.topic, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
+                source_text, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
                 words=target_words, feedback=feedback, previous=previous,
                 channel=job.channel, hook=job.hook)
             _fit_narration(job, plan, target_words)   # still pre-approval: the user reviews the result
             plan["audio_mode"] = job.audio_mode
+            if content_y:
+                plan["page_content_y"] = content_y   # where the README starts in page.png
             if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
                 plan["thumbnail_idea"] = job.thumb_idea
             if cast.active(job.channel):

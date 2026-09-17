@@ -146,35 +146,130 @@ def concat_clips(clips: list, out_mp4: Path) -> Path:
     return out_mp4
 
 
-def overlay_cards(video: Path, cards: list, out_mp4: Path, fade: float = 0.5) -> Path:
-    """Composite timed full-frame RGBA cards over the video.
+def fps(path: Path) -> float:
+    """Frame rate of the first video stream (25.0 when it cannot be read)."""
+    out = _probe(path, "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",
+                 "-of", "csv=p=0")
+    try:
+        num, den = (out.split("/") + ["1"])[:2]
+        return float(num) / float(den or 1) or 25.0
+    except (ValueError, ZeroDivisionError):
+        return 25.0
 
-    cards: [(png_path, start_s, end_s), ...] - each PNG must match the video frame size.
-    Every card fades in at start and out at end (alpha only); the audio is copied as is."""
+
+def _even(v) -> int:
+    return max(2, int(round(float(v) / 2)) * 2)
+
+
+def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5) -> Path:
+    """Composite timed RGBA image layers over the video in ONE encode.
+
+    layers: [{png, start, end, x, y, pre}] - `pre` is extra filter steps applied to the image
+    stream before the alpha fades (the scrolling panel uses it for its scale+crop); x/y default
+    to 0, which is the full-frame story-board card case. The audio is copied as is.
+
+    One pass matters: at 4K a libx264 re-encode of a 3-minute video costs about 190 s, so a
+    second overlay stage would nearly double the assembly time and leave another full-size
+    intermediate on disk."""
     out_mp4 = Path(out_mp4)
-    cards = [(Path(p), float(s), float(e)) for p, s, e in cards if float(e) > float(s)]
-    if not cards:
+    layers = [dict(lyr) for lyr in layers if float(lyr["end"]) > float(lyr["start"])]
+    if not layers:
         _run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-c", "copy", str(out_mp4)])
         return out_mp4
-    total = duration(video) or max(e for _, _, e in cards)
+    total = duration(video) or max(float(lyr["end"]) for lyr in layers)
+    rate = fps(video)
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video)]
     parts, prev = [], "[0:v]"
-    for i, (png, start, end) in enumerate(cards, 1):
-        end = min(end, total)
+    for i, lyr in enumerate(layers, 1):
+        start, end = float(lyr["start"]), min(float(lyr["end"]), total)
         f = max(0.05, min(fade, (end - start) / 2))
-        cmd += ["-loop", "1", "-t", f"{total:.3f}", "-i", str(png)]
-        parts.append(f"[{i}:v]format=rgba,fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
+        pre = lyr.get("pre") or ""
+        x, y = int(lyr.get("x", 0)), int(lyr.get("y", 0))
+        # -framerate: a looped image decodes at 25 fps by default, which makes a moving crop
+        # step in 25 Hz jumps no matter what the video itself runs at
+        cmd += ["-loop", "1", "-framerate", f"{rate:.4f}", "-t", f"{total:.3f}",
+                "-i", str(Path(lyr["png"]))]
+        parts.append(f"[{i}:v]format=rgba{pre},fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
                      f"fade=t=out:st={end - f:.3f}:d={f:.3f}:alpha=1[c{i}]")
-        parts.append(f"{prev}[c{i}]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
+        parts.append(f"{prev}[c{i}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
         prev = f"[v{i}]"
-    filt = ";".join(parts)
-    cmd += ["-filter_complex", filt, "-map", prev, "-c:v", "libx264", "-crf", "18",
-            "-preset", "medium", "-pix_fmt", "yuv420p"]
+    cmd += ["-filter_complex", ";".join(parts), "-map", prev,
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
     if has_audio(video):
         cmd += ["-map", "0:a", "-c:a", "copy"]
     cmd += ["-t", f"{total:.3f}", str(out_mp4)]
     _run(cmd)
     return out_mp4
+
+
+def overlay_cards(video: Path, cards: list, out_mp4: Path, fade: float = 0.5) -> Path:
+    """Composite timed full-frame RGBA cards over the video.
+
+    cards: [(png_path, start_s, end_s), ...] - each PNG must match the video frame size."""
+    return composite(video, [{"png": p, "start": s, "end": e} for p, s, e in cards],
+                     out_mp4, fade=fade)
+
+
+SCROLL_PANEL = 0.70       # picture-in-picture panel: this much of each frame dimension, centred
+SCROLL_SPEED = 55.0       # panel-scale pixels per second; above about 60 the text smears
+SCROLL_MIN_TOTAL = 20.0   # shorter videos have no middle worth giving up
+SCROLL_MIN_WINDOW = 6.0
+
+
+def scroll_window(total: float, busy: list = None, lead: float = 0.22, tail: float = 0.22):
+    """(start, end) for the page panel: the middle of the video, leaving the opening and the
+    ending clear. `busy` is [(start, end), ...] of story-board cards - the window goes in the
+    largest gap between them, because on a tech channel both overlays are on by default.
+    None when the video is too short to give up a middle."""
+    total = float(total or 0.0)
+    if total < SCROLL_MIN_TOTAL:
+        return None
+    lo, hi = round(total * lead, 3), round(total * (1.0 - tail), 3)
+    if hi - lo < SCROLL_MIN_WINDOW:
+        return None
+    gaps = [(lo, hi)]
+    for bs, be in sorted((float(s), float(e)) for s, e in (busy or [])):
+        nxt = []
+        for gs, ge in gaps:
+            if be <= gs or bs >= ge:
+                nxt.append((gs, ge))
+                continue
+            if bs - gs >= SCROLL_MIN_WINDOW:
+                nxt.append((gs, bs))
+            if ge - be >= SCROLL_MIN_WINDOW:
+                nxt.append((be, ge))
+        gaps = nxt
+    if not gaps:
+        return None
+    start, end = max(gaps, key=lambda g: g[1] - g[0])
+    return (round(start, 3), round(end, 3))
+
+
+def scroll_layer(video: Path, page_png: Path, start: float, end: float, content_y: int = 0,
+                 panel: float = SCROLL_PANEL) -> dict:
+    """A `composite` layer that slowly scrolls a tall page screenshot inside a centred panel.
+
+    content_y: where the README starts in the screenshot - GitHub stacks a branch picker and the
+    whole file tree above it, and scrolling through directory listings is not the point."""
+    from PIL import Image
+    fw, fh = frame_size(video)
+    pw, ph = _even(fw * panel), _even(fh * panel)
+    with Image.open(page_png) as im:
+        ow, oh = im.width, im.height
+    sh = _even(oh * pw / ow)                       # the page scaled to the panel width
+    top = max(0, min(int(content_y * sh / oh), max(0, sh - ph)))
+    dur = max(0.1, float(end) - float(start))
+    travel = int(min(max(0, sh - ph - top), SCROLL_SPEED * dur))
+    # crop's x/y are per-frame expressions (ffmpeg -h filter=crop marks them T), so the panel
+    # moves without any extra option - this build has no `eval` option on crop at all.
+    # `t` on a looped image input is the output timeline, so the expression is written relative
+    # to the window. Commas survive inside single quotes because _run passes a list and never
+    # goes through a shell.
+    ypos = (f"'{top}+{travel}*clip((t-{float(start):.3f})/{dur:.3f},0,1)'" if travel else str(top))
+    pre = (f",scale={pw}:{sh}:flags=lanczos"
+           f",crop=w={pw}:h={ph}:x=0:y={ypos}")
+    return {"png": page_png, "start": float(start), "end": float(end),
+            "x": (fw - pw) // 2, "y": (fh - ph) // 2, "pre": pre}
 
 
 def _dip_expr(boundaries: list, width: float = 0.35) -> str:

@@ -67,7 +67,9 @@ function orderFor(j) {
   const mid = j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
             : j.audio_mode === "narration" ? ["tts", "scenes", "thumbnail"]
             : ["tts", "scenes", "thumbnail", "music"];
-  const head = (j.source === "topic" || j.source === "description")
+  // every source that drafts a script for approval; without this they get the URL stepper,
+  // pct() returns 0 for the whole script phase and no step is highlighted
+  const head = ["topic", "description", "transcript", "repo"].includes(j.source)
             ? [...(j.plan_id ? ["planned"] : []), "drafting", "awaiting_approval", "queued", "planning"]
             : ["queued", "transcript", "planning"];
   if (j.storyboard) mid.push("storyboard");

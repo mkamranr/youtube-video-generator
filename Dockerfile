@@ -5,8 +5,13 @@ WORKDIR /app
 # Install dependencies first (better layer caching), then pre-fetch the pinned
 # ffmpeg/ffprobe binaries so the container needs no download at runtime.
 # DejaVu fonts render the story board cards (Pillow falls back to a plain built-in face without them);
-# tzdata lets TZ=Region/City set the local clock the GPU schedule window is compared against
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core tzdata \
+# tzdata lets TZ=Region/City set the local clock the GPU schedule window is compared against.
+# chromium screenshots the repo / model page for the scrolling overlay (services/browser.py); the
+# Liberation and Noto emoji faces matter because a README is full of emoji and CJK, and DejaVu
+# alone renders those as empty boxes - which would then be what the overlay shows. Drop the
+# chromium line to save ~400 MB: repository videos still work, only the page overlay is skipped.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      fonts-dejavu-core tzdata chromium fonts-liberation fonts-noto-color-emoji \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -11,6 +11,11 @@ config.py              Defaults + runtime-editable settings (EDITABLE_SETTINGS, 
 services/
   transcript.py        YouTube captions via youtube-transcript-api with yt-dlp fallback; cue-tag cleaning;
                        caption coverage seconds for quality gating
+  repo.py              GitHub repos and Hugging Face models/datasets/spaces: URL parsing, the two REST
+                       APIs, a stdlib markdown stripper and the fact block that becomes the script source
+  browser.py           Locates a local Chrome/Chromium (like ffbin.py locates ffmpeg) and drives it over
+                       the DevTools protocol to screenshot a page at a phone-width viewport, plus the
+                       offset where its README starts
   llm.py               All vLLM prompting: story plan, per-clip scenes, music caption/lyrics, SEO metadata,
                        two content shapes - cast-driven stories, or informative explainers for a channel with
                        characters off (no protagonist, second person, generic unnamed people only);

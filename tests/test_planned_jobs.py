@@ -91,10 +91,10 @@ class PlannedJobs(unittest.TestCase):
     def test_blank_fields_keep_what_the_job_had(self):
         job = _planned(self.mgr)
         before = (job.aspect_ratio, job.video_length, job.audio_mode, job.megapixels,
-                  job.resolution, job.song_voice, job.storyboard)
+                  job.resolution, job.song_voice, job.storyboard, job.page_scroll)
         out = self.mgr.setup_planned(job.id)
         self.assertEqual((out.aspect_ratio, out.video_length, out.audio_mode, out.megapixels,
-                          out.resolution, out.song_voice, out.storyboard), before)
+                          out.resolution, out.song_voice, out.storyboard, out.page_scroll), before)
 
     def test_a_bad_value_leaves_the_job_untouched(self):
         job = _planned(self.mgr)

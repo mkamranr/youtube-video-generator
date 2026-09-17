@@ -71,6 +71,7 @@
     <a id="srcUrl" href="#" target="_blank" rel="noopener">source video</a>
     <span id="artStyleLabel"></span>
     <span id="sbLabel"></span>
+    <span id="psLabel"></span>
     <span id="vlenLabel"></span>
     <span id="aspect"></span>
     <span id="mp"></span>
@@ -495,6 +496,7 @@ function update(j) {
   }
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
+  $("#psLabel").textContent = j.page_scroll ? "page scroll" : "";
   $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";

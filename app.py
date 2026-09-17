@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, bible, cast, channels, llm, ownership, planner, schedule, users, voices
+from services import auth, bible, browser, cast, channels, llm, ownership, planner, schedule, users, voices
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -93,6 +93,8 @@ class Submit(BaseModel):
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
     song_voice: str = ""       # singer of a generated song (config.SONG_VOICES); "" -> channel default
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
+    repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
+    page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
 
 
 def _queued_detail(job) -> str:
@@ -157,14 +159,18 @@ def _visible_channels(user: dict) -> list:
 def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
     urls = [u.strip() for u in body.urls if u.strip()]
     prompt_kind = ("topic" if body.topic.strip() else "description" if body.description.strip()
-                   else "transcript" if body.transcript.strip() else "")
+                   else "transcript" if body.transcript.strip()
+                   else "repo" if body.repo_url.strip() else "")
     if not urls and not prompt_kind:
-        raise HTTPException(400, "provide urls, a topic, a description, or a transcript")
+        raise HTTPException(400, "provide urls, a topic, a description, a transcript or a repository URL")
     if not body.channel_id:
         raise HTTPException(400, "no channel selected - create a channel first (Settings > Channels)")
     ch = channels.get_channel(body.channel_id)
     if not ch or not auth.can_access(user, ch.get("owner", "")):
         raise HTTPException(400, "unknown channel")
+    # hiding the option in the UI is not enough: /jobs is a public API
+    if prompt_kind == "repo" and ch.get("video_type") != "tech":
+        raise HTTPException(400, "repository videos are only available on Tech channels")
     owner = ch.get("owner") or user["id"]   # the video belongs to the channel's owner
     vid = body.voice_id.strip()
     if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
@@ -172,14 +178,15 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
     try:
         if prompt_kind:
             text = {"topic": body.topic, "description": body.description,
-                    "transcript": body.transcript}[prompt_kind]
+                    "transcript": body.transcript, "repo": body.repo_url}[prompt_kind]
             return [_job_json(manager.submit_prompt(text, prompt_kind, body.aspect_ratio,
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,
                                                     storyboard_flag=body.storyboard,
                                                     megapixels=body.megapixels, owner=owner,
                                                     resolution=body.resolution,
-                                                    song_voice=body.song_voice))]
+                                                    song_voice=body.song_voice,
+                                                    page_scroll=body.page_scroll))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
@@ -1246,6 +1253,11 @@ def health(admin: dict = Depends(auth.require_admin)):
 
     with ThreadPoolExecutor(len(targets)) as ex:
         results = dict(zip(targets, ex.map(ping, targets.values())))
+    # local, not a service: without it repository videos still work, they just get no page overlay
+    binary = browser.resolve()
+    results["browser"] = {"ok": bool(binary), "ms": None,
+                          "error": None if binary else "no Chrome/Chromium found (page scroll overlay "
+                                                       "disabled); set CHROME_BIN or install chromium"}
     return results
 
 

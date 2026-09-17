@@ -94,6 +94,11 @@
           <label class="switch"><input type="checkbox" id="storyboard"><span class="track"></span> Add story board cards</label>
           <div class="hint">Styled fact cards (key facts, numbers, takeaways) with related images are drawn over the video, timed to what is being said. On by default for Tech channels.</div>
         </div>
+        <div class="msec" id="pageScrollBlock" hidden>
+          <div class="msec-title">Page scroll overlay</div>
+          <label class="switch"><input type="checkbox" id="pageScroll" checked><span class="track"></span> Scroll the real page over the video</label>
+          <div class="hint">A screenshot of the repository / model page scrolls slowly as a large panel over the middle of the video; the opening and the ending stay clear. If the page cannot be captured, the video is still made from the README.</div>
+        </div>
         <div id="artstyleBlock" class="msec">
           <div class="msec-title">Art style</div>
           <div class="stylerow">
@@ -139,6 +144,9 @@ const SOURCE_UI = {
                  sub: "Write a description or short script for one video. The LLM builds the full script from it; you review and approve it, then video generation starts." },
   transcript: { label: "Transcript / lyrics", ph: "Paste the full transcript or song lyrics...",
                 sub: "Paste a complete transcript or song lyrics for one video. The LLM keeps your text as the script and only fixes issues; you review and approve it, then video generation starts." },
+  repo: { label: "GitHub / Hugging Face URL",
+          ph: "https://github.com/owner/repo   or   https://huggingface.co/owner/model",
+          sub: "Paste one GitHub repository or Hugging Face model / dataset / space URL. Its README and real facts become the script (you review and approve it), and the live page is screenshotted and scrolled over the middle of the video." },
 };
 const SOURCE_PREFIX = { topic: "topic: ", description: "description: ", transcript: "transcript: " };
 
@@ -163,6 +171,16 @@ function applyChannel() {
   $("#artstyleBlock").hidden = real;
   if (!real && d.art_style) $("#artstyle").value = d.art_style;
   $("#storyboard").checked = d.storyboard != null ? !!d.storyboard : ch.video_type === "tech";
+  // repository videos are a Tech-channel feature (the server enforces it too). The option is
+  // added and removed rather than hidden: a hidden <option> that is selected still shows.
+  const sel = $("#source"), opt = sel.querySelector('option[value="repo"]');
+  if (ch.video_type === "tech" && !opt) {
+    sel.insertAdjacentHTML("beforeend", '<option value="repo">GitHub / Hugging Face URL</option>');
+  } else if (ch.video_type !== "tech" && opt) {
+    if (sel.value === "repo") sel.value = "url";
+    opt.remove();
+  }
+  applySource();
   updateStylePreview();
 }
 
@@ -185,10 +203,13 @@ function audioLabel(j) {
 }
 
 function applySource() {
-  const ui = SOURCE_UI[$("#source").value];
+  const sel = $("#source");
+  if (!SOURCE_UI[sel.value]) sel.value = "url";   // the repo option can be removed under us
+  const mode = sel.value, ui = SOURCE_UI[mode];
   $("#inputLabel").textContent = ui.label;
   $("#urls").placeholder = ui.ph;
   $("#subText").textContent = ui.sub;
+  $("#pageScrollBlock").hidden = mode !== "repo";   // only a repo job has a page to scroll
 }
 
 async function submit() {
@@ -211,6 +232,7 @@ async function submit() {
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
   else if (mode === "topic") body.topic = raw;
   else if (mode === "transcript") body.transcript = raw;
+  else if (mode === "repo") { body.repo_url = raw; body.page_scroll = $("#pageScroll").checked; }
   else body.description = raw;
   $("#go").disabled = true;
   try {
@@ -282,6 +304,7 @@ function jobCard(j) {
         <span>${audioLabel(j)}</span>
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
         ${j.storyboard ? `<span>Story board</span>` : ""}
+        ${j.page_scroll ? `<span>Page scroll</span>` : ""}
         <span>${j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}

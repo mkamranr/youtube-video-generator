@@ -305,13 +305,34 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
         task = ('The user wrote the following description / short script for a video. Build the video '
                 f'script from it, staying FAITHFUL to their {_faithful_keys(channel)} - '
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
+    elif source_kind == "repo":
+        text = text[: config.MAX_TRANSCRIPT_CHARS]
+        task = ('Below are the facts and the README / model card of a real open-source project - a '
+                'GitHub repository or a Hugging Face model, dataset or space. Write an INFORMATIVE '
+                'explainer video about THIS project for a viewer who has never seen it. Everything '
+                'you say must come from the text below: never invent features, numbers, benchmarks, '
+                'licences, authors or release dates that are not there, and never guess what the '
+                'project does from its name. Cover, in this order and only as far as the text '
+                'supports it: what the project is and the ONE problem it solves; who it is for, and '
+                'when to reach for it instead of the obvious alternative; how it actually works - '
+                'the real API, command, model size, architecture or training data the README names; '
+                'what it takes to run it (install, hardware, dependencies, licence); and the one '
+                'concrete thing the viewer should do with it first. Name the project by its real '
+                'name. Use the numbers the facts give (stars, downloads, likes, parameter count, '
+                'dataset size) once each, where they mean something - never read the fact list out. '
+                'Skip the README furniture: badges, tables of contents, contribution guidelines, '
+                'codes of conduct, sponsor sections and changelogs are not the story. Turn code into '
+                'plain spoken English - say "one pip install and three lines of Python", never '
+                'dictate a snippet, a flag or a file path character by character, because a TTS '
+                'voice reads this aloud:\n"""' + text + '"""')
     elif cast.enabled(channel):
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
     else:
         task = ('Create an original INFORMATIVE video script for this channel that teaches this topic '
                 'to someone who is not technical, step by step: "' + text + '"')
     # a pasted transcript is kept verbatim; the selection then only decides who plays in the visuals
-    task += _cast_selection_rule(channel, text, verbatim=source_kind == "transcript")
+    task += _cast_selection_rule(channel, text[:600] if source_kind == "repo" else text,
+                                 verbatim=source_kind == "transcript")
     if hook.strip() and source_kind != "transcript":
         task += ('\nThe video opens on this hook - use it as the first spoken line, word for word: '
                  f'"{hook.strip()}"')
