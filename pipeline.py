@@ -235,6 +235,40 @@ def _logo_for(job: Job):
     return config.LOGO_FILE if config.LOGO_FILE.exists() else None
 
 
+def _repo_page_url(job_dir) -> str:
+    """The project page the README was fetched from, off repo.json - "" if there is none.
+
+    Only used to point the guide back at its source, so any failure to read it is silent."""
+    try:
+        meta = json.loads((Path(job_dir) / "repo.json").read_text(encoding="utf-8"))
+        return str(meta.get("page_url") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _viewer_document(job: Job, plan: dict, source: str) -> tuple:
+    """The document that goes out with this video: (res, origin, source_url).
+
+    Two reasons a video owes the viewer something, in priority order:
+      1. the final narration PROMISED an artefact - write exactly that (services.llm.write_resource);
+      2. failing that, the video was made from a repository or a model page, and those always ship
+         the setup guide for the project (services.llm.write_repo_guide).
+    A promised resource wins, so a job never produces two documents."""
+    res = llm.write_resource(
+        plan.get("title", ""), plan.get("narration", ""), source_text=source,
+        channel=job.channel, used=plan.get("cast_used"),
+        max_chars=resource.markdown_budget(plan.get("seo_description", "")))
+    if res or job.source != REPO_SOURCE:
+        return res, resource.PROMISE, ""
+    job.set("planning", "writing the setup guide from the README")
+    url = _repo_page_url(job.dir)
+    res = llm.write_repo_guide(
+        plan.get("title", ""), plan.get("narration", ""), source, source_url=url,
+        channel=job.channel, used=plan.get("cast_used"),
+        max_chars=resource.GUIDE_MAX_CHARS)
+    return res, resource.GUIDE, url
+
+
 def _progress(job: Job, status: str):
     """Progress callback that also honors a pending cancel request."""
     def cb(msg):
@@ -676,12 +710,10 @@ def _run(job: Job):
     if "resource" not in plan and mode != "music":
         job.set("planning", "checking whether the script promises the viewer anything")
         try:
-            res = llm.write_resource(
-                plan.get("title", ""), plan["narration"], source_text=text,
-                channel=job.channel, used=plan.get("cast_used"),
-                max_chars=resource.markdown_budget(plan.get("seo_description", "")))
+            res, origin, url = _viewer_document(job, plan, text)
             plan["resource"], logs = resource.attach(
-                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job))
+                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job),
+                origin=origin, source_url=url)
             for line in logs:
                 job.add_log(line)
         except Exception as e:  # noqa: BLE001 - a missing hand-out never costs a video
@@ -1488,12 +1520,10 @@ class JobManager:
             plan.pop("resource", None)
             tfile = d / "transcript.txt"
             source = tfile.read_text(encoding="utf-8", errors="replace") if tfile.exists() else ""
-            res = llm.write_resource(
-                plan.get("title", ""), plan.get("narration", ""), source_text=source,
-                channel=job.channel, used=plan.get("cast_used"),
-                max_chars=resource.markdown_budget(plan.get("seo_description", "")))
+            res, origin, url = _viewer_document(job, plan, source)
             plan["resource"], logs = resource.attach(
-                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job))
+                d, plan, res, channel=(job.channel or {}).get("name", ""), logo=_logo_for(job),
+                origin=origin, source_url=url)
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             for line in logs:
                 job.add_log(line)

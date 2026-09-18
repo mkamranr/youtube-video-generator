@@ -355,5 +355,66 @@ class TechOnly(unittest.TestCase):
             mgr.submit_prompt("https://youtube.com/watch?v=x", "repo", channel=TECH, owner="u1")
 
 
+class ViewerDocument(unittest.TestCase):
+    """Which document a repo video ships, and which one everything else ships.
+
+    A promised resource always wins; the guide is the fallback, and only for a repo job."""
+
+    GUIDE = {"kind": "setup guide", "title": "Run It", "markdown": "# Run It\n\nbody"}
+    PROMISED = {"promise": "check the description", "kind": "checklist", "title": "C",
+                "markdown": "# C\n\nbody"}
+
+    def setUp(self):
+        config.OUTPUT_DIR = TMP / "output"
+        self.job = Job(id="20260101-000000-doc001", url="https://github.com/a/b",
+                       source="repo", channel=TECH)
+        self.job.dir.mkdir(parents=True, exist_ok=True)
+        (self.job.dir / "repo.json").write_text(
+            json.dumps({"page_url": "https://github.com/a/b"}), encoding="utf-8")
+        self.plan = {"title": "T", "narration": "the script", "seo_description": "Body.\n\n#ai"}
+
+    def _run(self, promised, guide=None):
+        with mock.patch.object(pipeline.llm, "write_resource", return_value=promised) as wr, \
+             mock.patch.object(pipeline.llm, "write_repo_guide",
+                               return_value=guide or self.GUIDE) as wg:
+            out = pipeline._viewer_document(self.job, self.plan, "README text")
+        return out, wr, wg
+
+    def test_a_repo_video_with_no_promise_gets_the_guide(self):
+        (res, origin, url), _, wg = self._run({})
+        self.assertEqual(res, self.GUIDE)
+        self.assertEqual(origin, pipeline.resource.GUIDE)
+        self.assertEqual(url, "https://github.com/a/b")          # read back off repo.json
+        self.assertEqual(wg.call_args.args[2], "README text")    # written from the README
+        self.assertEqual(wg.call_args.kwargs["source_url"], "https://github.com/a/b")
+
+    def test_a_promise_wins_so_there_is_never_a_second_document(self):
+        (res, origin, url), _, wg = self._run(self.PROMISED)
+        self.assertEqual(res, self.PROMISED)
+        self.assertEqual(origin, pipeline.resource.PROMISE)
+        self.assertEqual(url, "")
+        wg.assert_not_called()
+
+    def test_a_non_repo_video_never_gets_a_guide(self):
+        self.job.source = "topic"
+        (res, origin, _), _, wg = self._run({})
+        self.assertEqual(res, {})
+        self.assertEqual(origin, pipeline.resource.PROMISE)
+        wg.assert_not_called()
+
+    def test_a_missing_repo_json_costs_only_the_link(self):
+        (self.job.dir / "repo.json").unlink()
+        (res, origin, url), _, _ = self._run({})
+        self.assertEqual(res, self.GUIDE)                        # still written
+        self.assertEqual(origin, pipeline.resource.GUIDE)
+        self.assertEqual(url, "")
+
+    def test_the_guide_is_not_squeezed_into_the_description_budget(self):
+        """write_resource is capped by what is left of the description; a guide is a download."""
+        _, wr, wg = self._run({})
+        self.assertLess(wr.call_args.kwargs["max_chars"], pipeline.resource.GUIDE_MAX_CHARS)
+        self.assertEqual(wg.call_args.kwargs["max_chars"], pipeline.resource.GUIDE_MAX_CHARS)
+
+
 if __name__ == "__main__":
     unittest.main()

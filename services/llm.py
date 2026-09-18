@@ -936,6 +936,77 @@ video never made is a lie about what the viewer is getting."""
             "title": name or f"The {kind or 'resource'} from this video", "markdown": body}
 
 
+def write_repo_guide(title: str, narration: str, source_text: str, source_url: str = "",
+                     channel: dict | None = None, used: list | None = None,
+                     max_chars: int = 7000) -> dict:
+    """The hands-on guide that ships with every repo / Hugging Face video.
+
+    Unlike write_resource this asks no question and keeps no promise. A video built from a README
+    always hands its viewer the setup guide for that project: the README it was written from
+    already holds the install and quickstart material, and the video is the walkthrough. Nobody was
+    told to look in the description for it, so the guide is a download only.
+
+    The narration is supplied for wording and ordering - the guide must never contradict what the
+    viewer just heard - but every command, flag and version comes from source_text. The model's own
+    memory of a project is exactly the thing that invents a pip package that does not exist, so the
+    prompt forbids it, the same way the repo arm of write_script_from_prompt does.
+
+    Returns {"kind", "title", "markdown"}, or {} when nothing usable came back - a missing guide is
+    never worth failing a video for."""
+    words = max(300, min(1000, max_chars // 7))
+    source = (source_text or "")[: config.MAX_TRANSCRIPT_CHARS]
+    if not source.strip():
+        return {}
+    page = f'\nThe project page is {source_url} .' if source_url else ""
+    user = f"""Below is the README and the project facts of the project a video titled "{title}" was
+made from, and the video's FINAL voiceover script. Write the hands-on guide that goes out with that
+video - the thing a viewer keeps open in a second window while they follow along.{page}
+
+SOURCE - the ONLY source of facts. Never use anything you remember about this project:
+\"\"\"{source}\"\"\"
+
+The video's script, for wording and ordering only:
+\"\"\"{narration}\"\"\"
+
+Write a guide someone can follow start to finish WITHOUT the video:
+- A "# " title naming the project and what the guide gets done.
+- One short paragraph, at most two sentences, saying what the project is.
+- "## Requirements" - the hardware, OS, language and library versions, accounts, tokens or system
+  packages the source names.
+- "## Install" - the commands in order, in ``` fenced blocks, spelled exactly as the source spells
+  them.
+- "## First run" - the quickstart: the command that starts it, the flags that matter, and what the
+  user should see, including any address or port.
+- "## Settings worth knowing" - the flags, environment variables and options the source or the
+  script calls out, each with one line on what it does.
+- "## If it does not work" - three to six concrete problems and their fixes, taken from the source.
+
+RULES:
+- Every command, flag, path, package name, URL, port and version number is COPIED FROM THE SOURCE.
+  If the source does not give one, leave it out. Never guess a command, a version or a package name.
+- Anything the script spells out appears here too, in the script's own wording and order, and the
+  guide contradicts the video nowhere.
+- It works WITHOUT the video: no "as I mentioned", no timestamps, no "see above".
+- Plain Markdown, self-contained: one "# " title line, short "## " sections, bullet lists, numbered
+  steps, "- [ ] " checkboxes where something is worth ticking off, and ``` fenced blocks around
+  everything meant to be copied verbatim. No HTML, no images, no tables - it is also read as plain
+  text and printed as a PDF.
+- At most {words} words and {max_chars} characters. Dense and usable: no introduction about the
+  video, no filler, no sign-off. Never mention that the video is AI-generated.
+
+Return JSON with keys:
+- "title": the guide's own title, max 10 words, naming the project and what it gets done.
+- "guide": the complete Markdown of the guide."""
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+                 {"role": "user", "content": user}])
+    body = str(out.get("guide") or "").strip()
+    if len(body) < 200:          # an empty or one-line answer is not a guide
+        return {}
+    name = re.sub(r"\s+", " ", str(out.get("title") or "")).strip().strip(chr(34))[:120]
+    return {"kind": "setup guide", "title": name or f"The setup guide for {title}"[:120],
+            "markdown": body[:max_chars]}
+
+
 _HASHTAG = re.compile(r"(?<!\w)#(\w+)")
 
 

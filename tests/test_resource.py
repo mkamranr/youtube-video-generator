@@ -1,8 +1,13 @@
-"""The thing a video promised its viewer.
+"""The document that goes out with a video.
 
-A script that says "the exact prompt structure is in the description" has to hand that prompt over.
-These cover the three halves that can go wrong: deciding whether a promise was really made, turning
-the answer into files, and folding it into the YouTube description exactly once.
+Two of them exist and they arrive for different reasons: a PROMISE KEPT, when a script says "the
+exact prompt structure is in the description" and has to hand that prompt over, and a SETUP GUIDE,
+which every video made from a GitHub repo or a Hugging Face page ships whether or not the script
+promised anything.
+
+These cover what can go wrong in each: deciding whether a promise was really made, writing a guide
+only from the README it was given, turning either answer into files, and folding a promised
+resource into the YouTube description exactly once - while never folding a guide into it at all.
 
 Run with  python -m unittest discover -s tests -t .  from the repo root."""
 import tempfile
@@ -222,6 +227,146 @@ class Files(unittest.TestCase):
 
     def test_a_long_unbroken_token_is_wrapped(self):
         self.assertIn("\n", resource._hard_wrap("a" * 300, 110))
+
+
+GUIDE_MD = ("# Run PersonaPlex locally\n\n"
+            "PersonaPlex is a speech-to-speech persona model.\n\n"
+            "## Requirements\n\n- An NVIDIA GPU with 24 GB of VRAM\n- The libopus system package\n\n"
+            "## Install\n\n```\ngit clone https://github.com/NVIDIA/personaplex\n"
+            "pip install -r requirements.txt\n```\n\n"
+            "## First run\n\n```\npython -m personaplex.server --port 8998 --cpu-offload\n```\n")
+GUIDE = {"kind": "setup guide", "title": "Run PersonaPlex Locally", "markdown": GUIDE_MD}
+README = ("GitHub repository NVIDIA/personaplex. 4200 stars. Apache-2.0.\n\n"
+          "README / MODEL CARD\n\nInstall with pip install -r requirements.txt and start the "
+          "server on port 8998. Use --cpu-offload when the model does not fit the card.")
+
+
+class Guide(unittest.TestCase):
+    """A repo video always ships a guide - and it is written from the README, never from memory."""
+
+    def test_a_guide_needs_no_promise(self):
+        _, fake = _capture({"title": "Run PersonaPlex Locally", "guide": GUIDE_MD})
+        with mock.patch.object(llm, "_chat", fake):
+            out = llm.write_repo_guide("t", "A script that offers the viewer nothing.", README)
+        self.assertEqual(out["kind"], "setup guide")
+        self.assertEqual(out["title"], "Run PersonaPlex Locally")
+        self.assertIn("--cpu-offload", out["markdown"])
+
+    def test_no_readme_no_guide(self):
+        """Without the source the model would invent the install commands, so it is never asked."""
+        calls, fake = _capture({"title": "T", "guide": GUIDE_MD})
+        with mock.patch.object(llm, "_chat", fake):
+            self.assertEqual(llm.write_repo_guide("t", "narration", "   "), {})
+        self.assertEqual(calls, [])
+
+    def test_an_empty_answer_is_not_a_guide(self):
+        for reply in ({"title": "T", "guide": ""}, {"title": "T", "guide": "# T\n\ntoo short"}):
+            _, fake = _capture(reply)
+            with mock.patch.object(llm, "_chat", fake):
+                self.assertEqual(llm.write_repo_guide("t", "n", README), {})
+
+    def test_the_readme_and_the_page_reach_the_writer(self):
+        calls, fake = _capture({"title": "T", "guide": GUIDE_MD})
+        with mock.patch.object(llm, "_chat", fake):
+            llm.write_repo_guide("t", "the narration", README,
+                                 source_url="https://github.com/NVIDIA/personaplex")
+        blob = "\n".join(m["content"] for c in calls for m in c)
+        self.assertIn("--cpu-offload", blob)                 # the README itself
+        self.assertIn("the narration", blob)                 # the script, for wording
+        self.assertIn("https://github.com/NVIDIA/personaplex", blob)
+        self.assertIn("COPIED FROM THE SOURCE", blob)        # the never-invent rule
+
+    def test_the_guide_is_never_sent_to_the_description(self):
+        """It is a download. Telling the writer otherwise would put a promise in the wrong place."""
+        calls, fake = _capture({"title": "T", "guide": GUIDE_MD})
+        with mock.patch.object(llm, "_chat", fake):
+            llm.write_repo_guide("t", "n", README)
+        blob = "\n".join(m["content"] for c in calls for m in c)
+        for banned in ("in the description", "link below", "linked below", "free to download"):
+            self.assertNotIn(banned, blob)
+
+    def test_it_is_capped(self):
+        _, fake = _capture({"title": "T", "guide": "# T\n\n" + "word " * 4000})
+        with mock.patch.object(llm, "_chat", fake):
+            out = llm.write_repo_guide("t", "n", README, max_chars=900)
+        self.assertLessEqual(len(out["markdown"]), 900)
+
+
+class GuideFiles(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(dir=TMP))
+
+    def _attach(self, desc="Body text here.\n\n#ai #tools"):
+        plan = {"seo_description": desc, "title": "The video", "seo_title": "Run PersonaPlex"}
+        record, logs = resource.attach(self.dir, plan, dict(GUIDE), channel="Daily Tech Talks",
+                                       origin=resource.GUIDE,
+                                       source_url="https://github.com/NVIDIA/personaplex")
+        return plan, record, logs
+
+    def test_the_files_are_written_and_the_origin_recorded(self):
+        _, record, logs = self._attach()
+        self.assertTrue(record["offered"])
+        self.assertEqual(record["origin"], resource.GUIDE)
+        self.assertNotIn("promise", record)                  # nothing was promised
+        self.assertEqual(record["source_url"], "https://github.com/NVIDIA/personaplex")
+        for name in ("resource.md", "resource.txt"):
+            self.assertIn(name, record["files"])
+            self.assertTrue((self.dir / name).exists())
+        self.assertTrue(any("written from the README" in line for line in logs))
+
+    def test_the_description_is_left_alone(self):
+        """The regression that matters: nobody was sent to the description to find a guide."""
+        plan, record, logs = self._attach()
+        self.assertEqual(plan["seo_description"], "Body text here.\n\n#ai #tools")
+        self.assertNotIn(resource.DIVIDER, plan["seo_description"])
+        self.assertNotIn("seo_description_base", plan)       # nothing to undo on a re-run
+        self.assertFalse(record["in_description"])
+        self.assertFalse(resource.fold_into_description(plan))
+        self.assertEqual(plan["seo_description"], "Body text here.\n\n#ai #tools")
+        self.assertTrue(any("download only" in line for line in logs))
+
+    def test_a_promised_resource_still_reaches_the_description(self):
+        """The contrast: the guide rule must not have switched the promised path off."""
+        plan = {"seo_description": "Body.\n\n#ai", "title": "The video"}
+        resource.attach(self.dir, plan, dict(RES), channel="Daily Tech Talks")
+        self.assertIn(resource.DIVIDER, plan["seo_description"])
+        self.assertEqual(plan["resource"]["origin"], resource.PROMISE)
+        self.assertTrue(plan["resource"]["in_description"])
+
+    def test_the_channel_signs_the_text_versions_only(self):
+        _, record, _ = self._attach()
+        for name in ("resource.md", "resource.txt"):
+            head = (self.dir / name).read_text(encoding="utf-8")
+            self.assertTrue(head.startswith("Daily Tech Talks"), name)
+            self.assertIn("From the video: Run PersonaPlex", head)
+            self.assertIn("Project page: https://github.com/NVIDIA/personaplex", head)
+            self.assertIn("--cpu-offload", head)             # the guide itself is still all there
+        # ...but the stored markdown stays the document, so the description block never repeats it
+        self.assertFalse(record["markdown"].startswith("Daily Tech Talks"))
+        self.assertEqual(record["markdown"], GUIDE_MD)
+
+    def test_the_masthead_is_dropped_when_there_is_nothing_to_say(self):
+        self.assertEqual(resource.masthead("", "", ""), "")
+
+    @unittest.skipUnless(resource.pdf_available(), "fpdf2 or a usable TTF is missing")
+    def test_the_pdf_carries_the_channel_and_the_project_page(self):
+        warn = resource.to_pdf(GUIDE_MD, self.dir / "g.pdf", title="Run PersonaPlex Locally",
+                               channel="Daily Tech Talks", video_title="Run PersonaPlex",
+                               source_url="https://github.com/NVIDIA/personaplex")
+        self.assertEqual(warn, "")
+        data = (self.dir / "g.pdf").read_bytes()
+        self.assertTrue(data.startswith(b"%PDF-"))
+        self.assertGreater(len(data), 1500)
+
+    @unittest.skipUnless(resource.pdf_available(), "fpdf2 or a usable TTF is missing")
+    def test_a_hard_wrapped_paragraph_is_not_broken_mid_sentence(self):
+        """Markdown wraps a paragraph across source lines; the PDF must reflow it into one."""
+        md = "# T\n\nThe first half of a sentence\nand the second half of it.\n"
+        rendered = []
+        with mock.patch.object(resource, "_pdf_line",
+                               lambda pdf, raw: rendered.append(raw)):
+            resource.to_pdf(md, self.dir / "w.pdf", title="T", channel="C")
+        self.assertIn("The first half of a sentence and the second half of it.", rendered)
 
 
 if __name__ == "__main__":

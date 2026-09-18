@@ -28,8 +28,10 @@ services/
                        written, only this video's `cast_used` afterwards), detection of the characters a text
                        names, deterministic look prefix for ComfyUI prompts that name a character, portrait
                        candidate rendering/approval, and the "opening character" whose portrait seeds clip 1
-  resource.py          The thing a video promised its viewer: markdown -> plain text, the branded PDF
-                       (channel logo, header, footer) and the once-only fold into the YouTube description
+  resource.py          The document that ships with a video - the thing the script promised, or the
+                       setup guide every repo/Hugging Face video gets: markdown -> plain text, the
+                       branded PDF (channel logo, headings, code blocks, footer) and the once-only
+                       fold into the YouTube description, which a guide never takes
   bible.py             Character-bible import: parses a markdown bible into cast entries + the channel's
                        style & rules text (pure text processing, previewed via POST /api/channels/parse-bible)
   ownership.py         Who owns channels and jobs: startup migration of unowned records to the oldest
@@ -112,7 +114,7 @@ output/<job_id>/
   plan.json           music.mp3           narration.wav
   clip_01..NN.mp4     frame_NN.jpg        thumbnail.jpg      thumb_raw.mp4
   sbimg_NN.jpg        card_NN.png         clips_joined.mp4   clips_overlay.mp4  final.mp4
-  resource.md         resource.txt        resource.pdf       (only when the script promised one)
+  resource.md         resource.txt        resource.pdf       (the promised thing, or a repo setup guide)
 users/
   users.json          login accounts (scrypt hashes)     session_secret   cookie signing key
 ```
