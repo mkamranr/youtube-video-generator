@@ -11,7 +11,7 @@ import sys
 from openai import OpenAI
 
 import config
-from services import cast
+from services import cast, lyrics
 
 AUDIENCE_RULES = {
     "kids": ("All content must be family-friendly, gentle and safe for young kids: no violence, "
@@ -1131,7 +1131,7 @@ def write_music(title: str, narration: str, transcript: str,
                 seconds_range: tuple | None = None,
                 channel: dict | None = None, used: list | None = None,
                 song_voice: str = "auto", slow_down: dict | None = None,
-                lengthen: dict | None = None) -> dict:
+                lengthen: dict | None = None, given_lyrics: str = "") -> dict:
     """Caption + lyrics for the MiniMax Music3 model, derived from the video content.
 
     standalone=True: the song IS the only audio of the video - the lyrics must tell the
@@ -1141,8 +1141,13 @@ def write_music(title: str, narration: str, transcript: str,
     fast - the lyrics are rewritten shorter and the pace instructions are stressed.
     lengthen: {"measured", "low", "target", "previous_lyrics"} when a first render ended
     before the job's target length range - the lyrics are rewritten longer at the same
-    pace. Never passed together with slow_down."""
+    pace. Never passed together with slow_down.
+    given_lyrics: the user's own lyrics (kids channels). They are sung VERBATIM: the LLM only
+    writes the caption and adds section tags, and a deterministic guard puts the user's words
+    back if it changed any. The returned dict then carries "lyrics_kept"."""
     transcript = transcript[:8000]
+    given = (given_lyrics or "").strip() if standalone else ""   # the user's words: never rewritten
+    given_words = len(clean_lyrics(given).split()) if given else 0
     kids = _channel(channel)["audience"] == "kids"
     voice = resolve_song_voice(song_voice, kids)
     voice_desc = SONG_VOICE_DESCRIPTIONS[voice]
@@ -1155,15 +1160,23 @@ def write_music(title: str, narration: str, transcript: str,
                  "ukulele, glockenspiel, light hand percussion, warm pads), low dynamics, no busy or loud "
                  "arrangements, no dense drums, no fast rhythms. "
                  + (f"Vocals: slow, clear sing-along delivery - one sung word per beat, a breath-length pause "
-                    f"between lines, about {wps:g} sung words per second, short simple lines of 4-6 words, a "
-                    "simple repeating melody, notes held long at the end of each line, so every word is "
+                    f"between lines, about {wps:g} sung words per second, "
+                    + ("" if given else "short simple lines of 4-6 words, ")     # the lines are the user's
+                    + "a simple repeating melody, notes held long at the end of each line, so every word is "
                     "understood; keep instrumental gaps short. " if standalone else
                     "It sits far in the background so every narrated word stays clear. ")
                  + f"State the tempo ({bpm} BPM), the soft instruments and the gentle mood explicitly in the caption.")
     voice_rule = (f' The Vocal Details section of the caption MUST describe the singer as: "{voice_desc}".'
                   if standalone and voice_desc else "")
     slow_rule = ""
-    if standalone and slow_down:
+    if standalone and slow_down and given:
+        slow_rule = (f"\n\nIMPORTANT: a previous render of these exact lyrics was sung TOO FAST - "
+                     f"{float(slow_down.get('measured') or 0):.1f} words per second where the limit is "
+                     f"{float(slow_down.get('budget') or wps):.1f}. The WORDS CANNOT CHANGE. Slow the MUSIC "
+                     "down instead: a slower tempo, longer notes held at the end of every line, a clear "
+                     "breath-length pause between lines, and say in the caption that every word is "
+                     "enunciated slowly and unhurried.")
+    elif standalone and slow_down:
         prev = str(slow_down.get("previous_lyrics") or "")
         prev_words = len(clean_lyrics(prev).split())
         slow_rule = (f"\n\nIMPORTANT: a previous version of this song was sung TOO FAST - "
@@ -1173,7 +1186,7 @@ def write_music(title: str, narration: str, transcript: str,
                      "pauses between lines, keeping the same story order and ending. Previous lyrics:\n"
                      f'"""{prev}"""')
     long_rule = ""
-    if standalone and lengthen and not slow_down:
+    if standalone and lengthen and not slow_down and not given:
         prev = str(lengthen.get("previous_lyrics") or "")
         prev_words = len(clean_lyrics(prev).split())
         measured = float(lengthen.get("measured") or 0)
@@ -1189,7 +1202,13 @@ def write_music(title: str, narration: str, transcript: str,
                      f'"""{prev}"""')
     if standalone:
         ceiling = int(max_seconds or ((seconds or 90) * 2))
-        if seconds_range:
+        if given:
+            length_rule = (f"The lyrics are FIXED: {given_words} sung words, about "
+                           f"{int(seconds or given_words / max(0.1, wps))} seconds of singing at {wps:g} words "
+                           "per second. Do NOT add or remove words to reach a length - shape the ARRANGEMENT "
+                           "so every one of them is sung unhurried and the song reaches its END well before "
+                           f"the {ceiling}-second hard cut.")
+        elif seconds_range:
             lo, hi = int(seconds_range[0]), int(seconds_range[1])
             target = (lo + hi) // 2
             length_rule = (f"Aim for a song BETWEEN {lo} and {hi} seconds; the recording is HARD-CUT at "
@@ -1209,18 +1228,30 @@ def write_music(title: str, narration: str, transcript: str,
                            f"compress or summarize the content (no skipping ahead). The recording is HARD-CUT "
                            f"at {ceiling} seconds, so the song must still reach its ENDING before that "
                            f"(budget roughly {wps:g} sung words per second when sizing the lyrics).")
-        role = ("This track is the ONLY audio of the video - there is no narration. "
-                "The song must TELL THE VIDEO'S STORY IN ORDER: the lyrics follow the story beats "
-                "from beginning to end, so that whatever is being sung at any moment is what the "
-                f"video shows at that moment. {length_rule} Prefer clear, intelligible "
-                "vocals and keep instrumental-only sections short.")
+        role = (("This track is the ONLY audio of the video - there is no narration. The lyrics are "
+                 "ALREADY WRITTEN by the user and are FINAL: return them EXACTLY as given - same words, "
+                 f"same order, nothing added, removed, reworded or translated. {length_rule} Your real "
+                 "work is the CAPTION: pick the genre, tempo, key, mood and instrumentation that suit "
+                 "THESE lyrics and this video. Prefer clear, intelligible vocals and keep "
+                 "instrumental-only sections short.") if given else
+                ("This track is the ONLY audio of the video - there is no narration. "
+                 "The song must TELL THE VIDEO'S STORY IN ORDER: the lyrics follow the story beats "
+                 "from beginning to end, so that whatever is being sung at any moment is what the "
+                 f"video shows at that moment. {length_rule} Prefer clear, intelligible "
+                 "vocals and keep instrumental-only sections short."))
     else:
         role = ("The track plays quietly UNDER a spoken narration as a background bed: it MUST be "
                 "fully INSTRUMENTAL - no vocals, no singing, no lyrics, no spoken words. Choose "
                 "gentle, soft, unobtrusive instrumentation with low intensity and smooth dynamics, "
                 "and state clearly in the caption's Vocal Details that the track is instrumental "
                 "with no vocals.")
-    if standalone:
+    if given:
+        lyrics_rule = ("the user's lyrics above, copied VERBATIM - not one sung word added, removed, "
+                       "reordered or respelled. The ONLY edit allowed: if they carry no section tags, put "
+                       "[Verse] / [Chorus] / [Bridge] / [Outro] tags on their own lines between the existing "
+                       "lines (a pasted paragraph may also be broken into short sung lines). Never add an "
+                       "intro line, an outro line, an ad-lib or a repeat.")
+    elif standalone:
         lyrics_rule = ("song lyrics using section tags like [Intro], [Verse], [Chorus], "
                        "[Instrumental], [Outro]. "
                        + ("The lyrics are sung aloud: name any character, never describe how they "
@@ -1229,13 +1260,15 @@ def write_music(title: str, narration: str, transcript: str,
                           "sung to the viewer as 'you' - never invent a person, a name or a story."))
     else:
         lyrics_rule = 'exactly the string "[Instrumental]" - this background track has no words.'
+    given_block = (f'\nThe FINAL lyrics, written by the user - return these words unchanged:\n'
+                   f'\"\"\"{given}\"\"\"\n' if given else "")
     user = f"""We are scoring a short video titled "{title}".
 Story of the video, in order:
 \"\"\"{narration}\"\"\"
 
 Original transcript excerpt (for flavor and vocabulary):
 \"\"\"{transcript}\"\"\"
-
+{given_block}
 Design one music track for this video. {role}{kids_rule}{voice_rule}{slow_rule}{long_rule}
 Return JSON with keys:
 - "caption": a detailed music description in this exact three-part format (Global Metadata / Vocal Details / Arrangement), similar in structure to: "{MUSIC_CAPTION_EXAMPLE}" - but with genre, BPM, key, mood and instrumentation that FIT this video's content and tone.
@@ -1246,6 +1279,11 @@ Never mention real people's names or brands."""
     if not out.get("caption"):
         raise RuntimeError("vLLM returned no music caption")
     out.setdefault("lyrics", "")
+    if given:
+        # the words are the user's: an LLM that edited them (or returned none) loses its version
+        out["lyrics_kept"] = "verbatim" if lyrics.same_words(out["lyrics"], given) else "verbatim-fallback"
+        if out["lyrics_kept"] == "verbatim-fallback":
+            out["lyrics"] = lyrics.ensure_sections(given)
     out["caption"] = finalize_caption(str(out["caption"]), bpm=bpm,
                                       voice_desc=voice_desc if standalone else None)
     out["song_voice"] = voice

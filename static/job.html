@@ -107,6 +107,11 @@
       <div class="grow" style="min-width:140px"><label for="suMp">Resolution (megapixels)</label><select id="suMp"></select></div>
       <div class="grow" style="min-width:160px"><label for="suRes">Output resolution</label><select id="suRes"></select></div>
     </div>
+    <div id="suLyricsBlock" style="margin-top:12px" hidden>
+      <label for="suLyrics">Song lyrics (optional)</label>
+      <textarea id="suLyrics" maxlength="2000" placeholder="[Verse]&#10;Twinkle, twinkle, little star..."></textarea>
+      <div class="hint">Leave empty and the LLM writes the song. Paste lyrics and they are sung exactly as written, and they set the video length.</div>
+    </div>
     <div id="suStyleBlock" style="margin-top:12px">
       <label for="suStyle">Art style</label>
       <div class="row" style="align-items:center;gap:12px">
@@ -234,7 +239,7 @@
   <section class="card" id="musicSec" hidden>
     <h2>Music track</h2>
     <audio id="musicAudio" controls preload="none"></audio>
-    <details style="border:0;padding-top:10px"><summary>caption &amp; lyrics</summary>
+    <details style="border:0;padding-top:10px"><summary>caption &amp; lyrics <span class="count" id="lyricsOwn" hidden>your lyrics</span></summary>
       <pre class="box" id="musicCaption" style="margin-top:8px"></pre>
       <pre class="box" id="musicLyrics" style="margin-top:8px"></pre>
     </details>
@@ -356,6 +361,7 @@ async function loadDetails(j) {
     if (d.plan.music) {
       $("#musicCaption").textContent = d.plan.music.caption || "";
       $("#musicLyrics").textContent = d.plan.music.lyrics || "";
+      $("#lyricsOwn").hidden = !d.lyrics;
     }
     if (Array.isArray(d.plan.scenes) && d.plan.scenes.length) {
       $("#scenesSec").hidden = false;
@@ -516,7 +522,8 @@ function update(j) {
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#psLabel").textContent = j.page_scroll ? "page scroll" : "";
-  $("#vlenLabel").textContent = (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
+  $("#vlenLabel").textContent = j.has_lyrics ? "length from your lyrics"
+      : (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
   $("#resLabel").textContent = resolutionLabel(j);
@@ -794,9 +801,26 @@ async function fillSetup(j) {
     fillVoiceSelect($("#suVoice"), d.voices, j.voice_id);
   } catch (e) { /* the built-in voice options stay */ }
   $("#suVoiceField").hidden = $("#suAudio").value === "music";
+  suKids = ((j.channel || {}).audience === "kids");     // the snapshot frozen at plan time
+  $("#suLyrics").value = "";        // a planned job never carries lyrics: they are chosen here
+  applySuLyrics();
 }
 
-$("#suAudio").onchange = () => { $("#suVoiceField").hidden = $("#suAudio").value === "music"; };
+let suKids = false;
+function suLyricsOn() { return !$("#suLyricsBlock").hidden && $("#suLyrics").value.trim().length > 0; }
+
+function applySuLyrics() {
+  const show = suKids && $("#suAudio").value === "music";
+  if (!show && !$("#suLyricsBlock").hidden) $("#suLyrics").value = "";
+  $("#suLyricsBlock").hidden = !show;
+  $("#suVlen").disabled = suLyricsOn();      // the lyrics decide the length
+}
+
+$("#suLyrics").oninput = applySuLyrics;
+$("#suAudio").onchange = () => {
+  $("#suVoiceField").hidden = $("#suAudio").value === "music";
+  applySuLyrics();
+};
 $("#suStyle").onchange = suStylePreview;
 
 $("#startBtn").onclick = async () => {
@@ -804,10 +828,12 @@ $("#startBtn").onclick = async () => {
   $("#startBtn").disabled = true;
   try {
     await api(`/jobs/${jobId}/setup`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ aspect_ratio: $("#suAr").value, video_length: $("#suVlen").value,
+      body: JSON.stringify({ aspect_ratio: $("#suAr").value,
+        video_length: suLyricsOn() ? "" : $("#suVlen").value,
         megapixels: Number($("#suMp").value), resolution: $("#suRes").value,
         art_style: real ? "" : $("#suStyle").value, audio_mode: $("#suAudio").value,
         voice_id: $("#suAudio").value === "music" ? "" : $("#suVoice").value,
+        lyrics: suLyricsOn() ? $("#suLyrics").value.trim() : "",
         storyboard: $("#suSb").checked }) });
     toast("Video started - the script is being written");
     startPolling(); refresh();

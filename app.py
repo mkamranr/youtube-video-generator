@@ -92,6 +92,7 @@ class Submit(BaseModel):
     audio_mode: str = ""       # "" -> channel/global default; music = song, narration(+music) = voiceover
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
     song_voice: str = ""       # singer of a generated song (config.SONG_VOICES); "" -> channel default
+    lyrics: str = ""           # kids channels + audio_mode "music": sung verbatim, and they set the length
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
@@ -125,6 +126,7 @@ def _owner_names() -> dict:
 def _job_json(job, names: dict | None = None):
     d = asdict(job)
     d["log"] = d["log"][-40:]
+    d["has_lyrics"] = bool(d.pop("lyrics", ""))   # the text itself comes from /jobs/{id}/details
     d["files"] = [f.name for f in sorted(job.dir.glob("*"))
                   if f.is_file() and f.name not in ("job.json", "bundle.zip") and not f.name.startswith(".")
                   and not f.name.startswith("music_try")]   # song candidates; the chosen one is music.mp3
@@ -171,6 +173,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
     # hiding the option in the UI is not enough: /jobs is a public API
     if prompt_kind == "repo" and ch.get("video_type") != "tech":
         raise HTTPException(400, "repository videos are only available on Tech channels")
+    if body.lyrics.strip() and len(urls) > 1:
+        raise HTTPException(400, "song lyrics apply to one video - submit one URL at a time")
     owner = ch.get("owner") or user["id"]   # the video belongs to the channel's owner
     vid = body.voice_id.strip()
     if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
@@ -186,13 +190,15 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     megapixels=body.megapixels, owner=owner,
                                                     resolution=body.resolution,
                                                     song_voice=body.song_voice,
+                                                    lyrics=body.lyrics,
                                                     page_scroll=body.page_scroll))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
                                          megapixels=body.megapixels, owner=owner,
                                          resolution=body.resolution,
-                                         song_voice=body.song_voice)) for u in urls]
+                                         song_voice=body.song_voice,
+                                         lyrics=body.lyrics)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -236,6 +242,7 @@ class JobSetup(BaseModel):
     audio_mode: str = ""
     voice_id: str = ""
     song_voice: str = ""
+    lyrics: str = ""           # kids channels + Generate Song; "" means none (clearing the box removes them)
     storyboard: bool | None = None
 
 
@@ -252,7 +259,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                storyboard_flag=body.storyboard,
                                                megapixels=body.megapixels,
                                                resolution=body.resolution,
-                                               song_voice=body.song_voice))
+                                               song_voice=body.song_voice,
+                                               lyrics=body.lyrics))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -409,7 +417,7 @@ def cancel_job(job_id: str, user: dict = Depends(auth.require_user)):
 def job_details(job_id: str, user: dict = Depends(auth.require_user)):
     """Transcript text, LLM plan and full log for the detail page."""
     job = _owned_job(job_id, user)
-    d = {"transcript": None, "plan": None, "log": job.log}
+    d = {"transcript": None, "plan": None, "log": job.log, "lyrics": job.lyrics}
     t = job.dir / "transcript.txt"
     if t.exists():
         d["transcript"] = t.read_text(encoding="utf-8", errors="replace")

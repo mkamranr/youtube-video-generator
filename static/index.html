@@ -48,7 +48,7 @@
                 <option value="url" selected>YouTube URLs</option>
                 <option value="topic">Topic</option>
                 <option value="description">Description / short script</option>
-                <option value="transcript">Transcript / lyrics</option>
+                <option value="transcript">Transcript / script</option>
               </select>
             </div>
           </div>
@@ -74,6 +74,7 @@
             <div class="grow" style="min-width:160px">
               <label for="vlen">Video length</label>
               <select id="vlen"></select>
+              <div class="hint" id="vlenHint" hidden>Set by your lyrics.</div>
             </div>
             <div class="grow" style="min-width:180px">
               <label for="ar">Aspect ratio</label>
@@ -88,6 +89,12 @@
               <select id="res"></select>
             </div>
           </div>
+        </div>
+        <div class="msec" id="lyricsBlock" hidden>
+          <div class="msec-title">Song lyrics</div>
+          <label for="lyrics">Your lyrics (optional)</label>
+          <textarea id="lyrics" maxlength="2000" placeholder="[Verse]&#10;Twinkle, twinkle, little star..."></textarea>
+          <div class="hint" id="lyricsHint">Leave this empty and the LLM writes the song. Paste lyrics and they are sung exactly as written &mdash; and they, not the Video length, decide how long the video is.</div>
         </div>
         <div class="msec">
           <div class="msec-title">On-screen story board</div>
@@ -142,15 +149,37 @@ const SOURCE_UI = {
            sub: "Enter one topic. The LLM writes the script immediately (without using the video queue); you review and approve it, then video generation starts." },
   description: { label: "Description / short script", ph: "Describe the video, or paste your own short script...",
                  sub: "Write a description or short script for one video. The LLM builds the full script from it; you review and approve it, then video generation starts." },
-  transcript: { label: "Transcript / lyrics", ph: "Paste the full transcript or song lyrics...",
-                sub: "Paste a complete transcript or song lyrics for one video. The LLM keeps your text as the script and only fixes issues; you review and approve it, then video generation starts." },
+  transcript: { label: "Transcript / script", ph: "Paste the full transcript or script...",
+                sub: "Paste a complete transcript or script for one video. The LLM keeps your text as the script and only fixes issues; you review and approve it, then video generation starts. (To choose the words that are SUNG, use Song lyrics below instead.)" },
   repo: { label: "GitHub / Hugging Face URL",
           ph: "https://github.com/owner/repo   or   https://huggingface.co/owner/model",
           sub: "Paste one GitHub repository or Hugging Face model / dataset / space URL. Its README and real facts become the script (you review and approve it), and the live page is screenshotted and scrolled over the middle of the video." },
 };
 const SOURCE_PREFIX = { topic: "topic: ", description: "description: ", transcript: "transcript: " };
 
-function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; }
+const MAX_LYRIC_WORDS = 250;      // mirrors config.MAX_LYRIC_WORDS (the server rejects beyond it)
+const KIDS_SONG_WPS = 0.9;        // mirrors config.KIDS_SONG_WPS
+
+function isKids(ch) { return !!ch && ch.audience === "kids"; }
+function lyricsOn() { return !$("#lyricsBlock").hidden && $("#lyrics").value.trim().length > 0; }
+
+function applyLyrics() {
+  // only kids channels singing a song; hiding it also clears it, so nothing invisible is ever posted
+  const show = isKids(currentChannel()) && $("#audio").value === "music";
+  if (!show && !$("#lyricsBlock").hidden) $("#lyrics").value = "";
+  $("#lyricsBlock").hidden = !show;
+  const on = lyricsOn();
+  $("#vlen").disabled = on;         // the lyrics decide the length
+  $("#vlenHint").hidden = !on;
+  const words = $("#lyrics").value.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").split(/\s+/).filter(Boolean).length;
+  const secs = Math.round(words / KIDS_SONG_WPS);
+  $("#lyricsHint").innerHTML = !on
+    ? "Leave this empty and the LLM writes the song. Paste lyrics and they are sung exactly as written &mdash; and they, not the Video length, decide how long the video is."
+    : `~${words} sung words &asymp; ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of singing.`
+      + (words > MAX_LYRIC_WORDS ? ` <b>Too long &mdash; at most ${MAX_LYRIC_WORDS} sung words.</b>` : "");
+}
+
+function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; applyLyrics(); }
 
 let channelsList = [];
 let admin = false;                  // admins see every user's channels and jobs, tagged with the owner
@@ -226,9 +255,10 @@ async function submit() {
                aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
                resolution: $("#res").value,
                art_style: real ? "" : $("#artstyle").value,
-               video_length: $("#vlen").value, audio_mode: $("#audio").value,
+               video_length: lyricsOn() ? "" : $("#vlen").value, audio_mode: $("#audio").value,
                voice_id: $("#audio").value === "music" ? "" : $("#voice").value,
                storyboard: $("#storyboard").checked };
+  if (lyricsOn()) body.lyrics = $("#lyrics").value.trim();
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
   else if (mode === "topic") body.topic = raw;
   else if (mode === "transcript") body.transcript = raw;
@@ -239,6 +269,8 @@ async function submit() {
     const jobs = await api("/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
     $("#urls").value = "";
+    $("#lyrics").value = "";
+    applyLyrics();
     closeCreate();
     toast(mode === "url" ? `${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`
                          : "Job created - the script is being written");
@@ -305,7 +337,8 @@ function jobCard(j) {
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
         ${j.storyboard ? `<span>Story board</span>` : ""}
         ${j.page_scroll ? `<span>Page scroll</span>` : ""}
-        <span>${j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
+        <span>${j.has_lyrics ? "Length from lyrics"
+                : j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
         ${resolutionBadge(j)}
@@ -525,6 +558,7 @@ document.addEventListener("keydown", ev => {
 $("#go").onclick = submit;
 $("#source").onchange = applySource;
 $("#audio").onchange = applyAudio;
+$("#lyrics").oninput = applyLyrics;
 $("#channel").onchange = applyChannel;
 $("#artstyle").addEventListener("focus", () => renderStyleList(""));
 $("#artstyle").addEventListener("input", () => { renderStyleList($("#artstyle").value); updateStylePreview(); });

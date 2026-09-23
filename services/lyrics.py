@@ -62,6 +62,18 @@ def lyric_tokens(lyrics: str) -> list:
     return out
 
 
+def same_words(a: str, b: str) -> bool:
+    """True when two lyric sheets sing the same word sequence (section tags, parentheticals, line
+    breaks, case and punctuation ignored) - the guard behind "the user's words, verbatim"."""
+    return [n for n, _, _ in lyric_tokens(a)] == [n for n, _, _ in lyric_tokens(b)]
+
+
+def ensure_sections(text: str) -> str:
+    """Lyrics the singer model can structure: a [Verse] tag is prepended when the user wrote none."""
+    t = (text or "").strip()
+    return t if re.search(r"^\s*\[[^\]]+\]", t, re.M) else "[Verse]\n" + t
+
+
 def _text(w: dict) -> str:
     return w.get("text") or w.get("word") or ""
 

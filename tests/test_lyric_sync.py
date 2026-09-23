@@ -313,5 +313,133 @@ class ChannelSongVoice(unittest.TestCase):
             pipeline.JobManager._resolve_choices("", "", "", "", "", None, song_voice="robot")
 
 
+USER_LYRICS = "[Verse]\nTwinkle twinkle little star\nHow I wonder what you are\nUp above the world so high"
+
+
+class GivenLyrics(unittest.TestCase):
+    """The user's own song sheet: sung verbatim, and it - not the preset - sets the length."""
+
+    def test_same_words_ignores_tags_case_and_punctuation(self):
+        self.assertTrue(lyrics.same_words(USER_LYRICS,
+                                          "[Chorus]\nTWINKLE, twinkle, little star!\n(oh oh)\nhow i wonder "
+                                          "what you are\nup above the world so high"))
+        self.assertFalse(lyrics.same_words(USER_LYRICS, USER_LYRICS + "\nand one more line here"))
+        self.assertFalse(lyrics.same_words(USER_LYRICS, USER_LYRICS.replace("little star", "star little")))
+        self.assertFalse(lyrics.same_words(USER_LYRICS, USER_LYRICS.replace("Twinkle twinkle", "Twinkle")))
+        self.assertFalse(lyrics.same_words(USER_LYRICS, ""))
+
+    def test_ensure_sections_only_tags_an_untagged_sheet(self):
+        self.assertEqual(lyrics.ensure_sections("a b\nc d"), "[Verse]\na b\nc d")
+        self.assertEqual(lyrics.ensure_sections(USER_LYRICS), USER_LYRICS)
+        self.assertEqual(lyrics.ensure_sections("  [Intro]\nla  "), "[Intro]\nla")
+
+    def test_clip_seconds_follow_the_measured_song(self):
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(config.clip_seconds_for_duration(20), 5)      # under every band: the global default
+            self.assertEqual(config.clip_seconds_for_duration(45), 5)
+            self.assertEqual(config.clip_seconds_for_duration(150), 6)
+            self.assertEqual(config.clip_seconds_for_duration(200), 8)
+            self.assertEqual(config.clip_seconds_for_duration(278), 10)
+            self.assertEqual(config.clip_seconds_for_duration(400), 10)    # past the ladder: the longest rung
+            # the ~25-30 clip invariant holds across the whole legal lyric range
+            for secs in (150, 200, 278):
+                n = len(config.clip_durations(secs, config.clip_seconds_for_duration(secs)))
+                self.assertTrue(22 <= n <= 30, f"{secs}s gave {n} clips")
+
+    def _job(self, lyric_text=USER_LYRICS, audience="kids"):
+        import pipeline
+        return pipeline.Job(id="t", url="", channel=_channel(audience), lyrics=lyric_text)
+
+    def test_length_comes_from_the_lyrics_and_has_no_range(self):
+        import pipeline
+        with mock.patch.object(config, "KIDS_SONG_WPS", 0.9):
+            words, target, ceiling, rng = pipeline._length_params(self._job())
+            self.assertIsNone(rng)                      # no range: the "too short" rewrite can never fire
+            self.assertAlmostEqual(target, 16 / 0.9, places=3)
+            self.assertAlmostEqual(ceiling, target * 2 + 20, places=3)
+            self.assertEqual(words, int(target * 2.5))
+            self.assertIsNone(pipeline._length_params(self._job(""))[3])     # no lyrics, Auto job
+            self.assertEqual(pipeline._length_params(self._job("la " * 400))[2], config.MAX_SONG_SECONDS)
+        self.assertTrue(pipeline._truncated({"duration": 99.5}, 100.0))
+        self.assertFalse(pipeline._truncated({"duration": 60.0}, 100.0))
+
+    def test_clip_seconds_helper_prefers_the_measured_duration(self):
+        import pipeline
+        self.assertEqual(pipeline._clip_seconds(self._job(), 200.0), 8)
+        self.assertEqual(pipeline._clip_seconds(self._job()), config.video_length_clip_seconds("Auto"))
+        plain = pipeline.Job(id="t", url="", channel=_channel(), video_length="4-5 minutes")
+        self.assertEqual(pipeline._clip_seconds(plain, 45.0), 10)   # no lyrics: the preset still wins
+
+    def test_resolve_lyrics_rejects_rather_than_trims(self):
+        import pipeline
+        kids, gen = _channel(), _channel("general")
+        self.assertEqual(pipeline._resolve_lyrics("  " + USER_LYRICS + " ", kids, "music"), USER_LYRICS)
+        self.assertEqual(pipeline._resolve_lyrics("   ", gen, "narration+music"), "")
+        for text, ch, mode, needle in [
+                (USER_LYRICS, gen, "music", "kids channels"),
+                (USER_LYRICS, kids, "narration+music", "Generate Song"),
+                ("la la la", kids, "music", "too short"),
+                ("la " * 400, kids, "music", "250"),
+                ("la " * 1200, kids, "music", "characters")]:
+            with self.assertRaises(ValueError) as cm:
+                pipeline._resolve_lyrics(text, ch, mode)
+            self.assertIn(needle, str(cm.exception))
+
+    def test_resolve_choices_signature_is_untouched(self):
+        import pipeline
+        r = pipeline.JobManager._resolve_choices("", "", "", "", "", {"audience": "kids", "defaults": {}})
+        self.assertEqual(len(r), 11)
+        self.assertEqual(r[5], "child")
+
+    def _music(self, reply, **kw):
+        calls = []
+
+        def fake(messages, max_tokens=8000):
+            calls.append(messages[-1]["content"])
+            return dict(reply)
+        with mock.patch.object(llm, "_chat", fake):
+            out = llm.write_music("T", "story", "", standalone=True, seconds=18, max_seconds=56,
+                                  channel=_channel(), given_lyrics=USER_LYRICS, **kw)
+        return out, calls
+
+    def test_the_prompt_asks_for_the_words_back_unchanged(self):
+        tagged = ("[Verse]\nTwinkle, twinkle, little star!\n[Chorus]\nHow I wonder what you are\n"
+                  "Up above the world so high")
+        out, calls = self._music({"caption": "Global Metadata: Pop. 120 BPM.", "lyrics": tagged})
+        p = calls[0]
+        self.assertIn("VERBATIM", p)
+        self.assertIn("The lyrics are FIXED: 16 sung words", p)
+        self.assertIn("return these words unchanged", p)
+        self.assertNotIn("words of lyrics in total", p)          # no word budget for words already fixed
+        self.assertNotIn("short simple lines of 4-6 words", p)   # that would be writing the lines for them
+        self.assertNotIn("TELL THE VIDEO", p)
+        self.assertEqual(out["lyrics_kept"], "verbatim")
+        self.assertEqual(out["lyrics"], tagged)                  # tags and punctuation may be added
+        self.assertIn("66 BPM", out["caption"])                  # the kids rules still apply
+        self.assertIn("young child", out["caption"])
+
+    def test_an_llm_that_edits_the_words_loses_its_version(self):
+        out, _ = self._music({"caption": "Global Metadata: Pop.", "lyrics": "Some entirely different words here"})
+        self.assertEqual(out["lyrics_kept"], "verbatim-fallback")
+        self.assertEqual(out["lyrics"], USER_LYRICS)
+        out, _ = self._music({"caption": "Global Metadata: Pop.", "lyrics": ""})
+        self.assertEqual(out["lyrics"], USER_LYRICS)             # an empty reply falls back too
+
+    def test_a_fast_song_is_slowed_by_the_music_not_by_cutting_words(self):
+        out, calls = self._music({"caption": "Global Metadata: Pop.", "lyrics": USER_LYRICS},
+                                 slow_down={"measured": 1.6, "budget": 0.9, "previous_lyrics": USER_LYRICS})
+        p = calls[0]
+        self.assertIn("TOO FAST", p)
+        self.assertIn("WORDS CANNOT CHANGE", p)
+        self.assertNotIn("FEWER words", p)
+        self.assertEqual(out["lyrics"], USER_LYRICS)
+
+    def test_lengthen_is_never_asked_for_when_the_words_are_fixed(self):
+        _out, calls = self._music({"caption": "Global Metadata: Pop.", "lyrics": USER_LYRICS},
+                                  lengthen={"measured": 20.0, "low": 60, "target": 70,
+                                            "previous_lyrics": USER_LYRICS})
+        self.assertNotIn("TOO SHORT", calls[0])
+
+
 if __name__ == "__main__":
     unittest.main()

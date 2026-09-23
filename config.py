@@ -200,6 +200,12 @@ COMFY_TIMEOUT = 60 * 60         # seconds to wait for a single clip
 LYRIC_ALIGN_MIN_RATIO = 0.55    # below this whisper/lyrics token match ratio the raw whisper words are kept
 SONG_PACE_TOLERANCE = 1.4       # a song measured faster than budget * this is re-rendered once, slower
 SONG_SHORT_TOLERANCE = 0.9      # a song shorter than the target range's low bound * this is re-rendered once, longer
+# User-supplied song lyrics (kids channels): the sheet is sung verbatim, so it is rejected rather
+# than trimmed - a clamped sheet would lose a verse while the feature promises the user's own words.
+MAX_SONG_SECONDS = 360.0        # MiniMax Music3 max_duration ceiling (mirrors services/comfy.py)
+MAX_LYRICS_CHARS = 2000         # outer sanity guard on the request body
+MIN_LYRIC_WORDS = 8             # fewer sung words than this is not a song
+MAX_LYRIC_WORDS = 250           # ~278 s at KIDS_SONG_WPS: 1.3x headroom under the hard cut
 
 # ---- clip length as the video model really renders it ----------------------
 # The MiniMax H3 workflow (node 140:132) quantises the requested seconds to a frame count
@@ -237,6 +243,18 @@ def clip_durations(total_seconds: float, clip_seconds: float | None = None) -> l
         return [full] * (n - 1)
     last = actual_clip_seconds(max(MIN_LAST_CLIP_SECONDS, rem))
     return [full] * (n - 1) + [last]
+
+
+def clip_seconds_for_duration(seconds: float) -> float:
+    """Full-clip length for a track whose length was NOT picked from VIDEO_LENGTHS (a song sung
+    from the user's own lyrics): the same ladder as video_length_clip_seconds, selected by the
+    measured duration, so the clip count stays around 25-30 however long the song came out.
+
+    A pure function of `seconds` and the ladder - a resume recomputes the same value, so
+    plan["clip_seconds"] does not change and the scene prompts are not rewritten."""
+    hit = [float(v[2]) for v in VIDEO_LENGTHS.values()
+           if v and len(v) > 2 and float(seconds or 0.0) >= v[0]]
+    return max(hit) if hit else float(CLIP_SECONDS)
 
 
 def boundaries(durations: list) -> list:

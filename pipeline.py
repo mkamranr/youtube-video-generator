@@ -43,6 +43,8 @@ class Job:
     song_voice: str = ""            # singer of a generated song (config.SONG_VOICES); "" = legacy job, auto
     art_style: str = ""
     video_length: str = "Auto"
+    lyrics: str = ""                # kids + Generate Song: the user's own song lyrics, sung verbatim
+                                    # (they set the length, so video_length is forced to Auto)
     source: str = "youtube"         # youtube | topic | description | transcript
     topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
@@ -178,9 +180,32 @@ def _cleanup_warn(job: Job):
     return cb
 
 
+def _song_budget(job: Job) -> float:
+    """Sung words per second the lyrics of this job are sized for (and paced against)."""
+    return config.KIDS_SONG_WPS if (job.channel or {}).get("audience") == "kids" else 2.0
+
+
+def _lyric_seconds(job: Job) -> float:
+    """How long the user's own lyrics take to sing at this channel's pace."""
+    words = len(llm.clean_lyrics(job.lyrics).split())
+    return max(15.0, words / max(0.1, _song_budget(job)))
+
+
+def _lyric_ceiling(seconds: float) -> float:
+    """Hard cut handed to the music model for a lyric-driven song. Generous on purpose: the
+    ceiling only ever truncates, so cutting the user's last verse is far worse than a little
+    extra render time. 2x+20 matches what the presets effectively allow (mid target, high bound)."""
+    return min(config.MAX_SONG_SECONDS, seconds * 2 + 20)
+
+
 def _length_params(job: Job):
     """Per-job soft length targets: (words, target_seconds, max_seconds, seconds_range).
-    All None for Auto - the global settings apply."""
+    All None for Auto - the global settings apply. A job with the user's own lyrics is sized
+    by those lyrics and has NO range: a range is what triggers the "too short" rewrite, and
+    the user's words must never be rewritten."""
+    if getattr(job, "lyrics", ""):
+        secs = _lyric_seconds(job)
+        return int(secs * 2.5), secs, _lyric_ceiling(secs), None
     rng = config.video_length_range(job.video_length or "Auto")
     if not rng:
         return None, None, None, None
@@ -189,10 +214,18 @@ def _length_params(job: Job):
     return int(mid * 2.5), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
 
 
-def _clip_seconds(job: Job) -> float:
+def _clip_seconds(job: Job, duration: float | None = None) -> float:
     """Clip length this job renders: longer targets use longer clips so a 5-minute video is
-    ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS)."""
+    ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS). A lyric-driven song has no
+    preset, so its measured length picks the rung instead."""
+    if getattr(job, "lyrics", "") and duration:
+        return config.clip_seconds_for_duration(duration)
     return config.video_length_clip_seconds(job.video_length or "Auto")
+
+
+def _truncated(t: dict, l_max: float) -> bool:
+    """A song render that ran into the model's hard cut - its last lines are missing."""
+    return float(t.get("duration") or 0.0) >= float(l_max) - 1.0
 
 
 def _range_miss(t: dict, rng) -> float:
@@ -203,6 +236,34 @@ def _range_miss(t: dict, rng) -> float:
     lo, hi = rng
     d = float(t.get("duration") or 0.0)
     return max(0.0, lo - d, d - hi)
+
+
+def _resolve_lyrics(lyrics: str, channel: dict | None, audio_mode: str) -> str:
+    """The user's own song lyrics, validated. Hiding the field in the UI is not enough - /jobs is
+    a public API. Rejected rather than trimmed: a clamped sheet would lose a verse while the whole
+    promise of the field is that these exact words are sung.
+
+    Deliberately not a parameter of _resolve_choices - that signature is called positionally by
+    tests/test_lyric_sync.py and tests/test_resolution.py."""
+    text = (lyrics or "").strip()
+    if not text:
+        return ""
+    if (channel or {}).get("audience") != "kids":
+        raise ValueError("song lyrics are only available on kids channels")
+    if audio_mode != "music":
+        raise ValueError("song lyrics need the Generate Song audio mode")
+    if len(text) > config.MAX_LYRICS_CHARS:
+        raise ValueError(f"song lyrics are too long ({len(text)} characters, "
+                         f"at most {config.MAX_LYRICS_CHARS})")
+    words = len(llm.clean_lyrics(text).split())
+    if words < config.MIN_LYRIC_WORDS:
+        raise ValueError(f"song lyrics are too short ({words} sung words, "
+                         f"at least {config.MIN_LYRIC_WORDS})")
+    if words > config.MAX_LYRIC_WORDS:
+        # beyond this the song runs into the model's hard cut and the last lines are never sung
+        raise ValueError(f"song lyrics are too long ({words} sung words, "
+                         f"at most {config.MAX_LYRIC_WORDS})")
+    return text
 
 
 def _fit_narration(job: Job, plan: dict, words: int | None):
@@ -732,13 +793,25 @@ def _run(job: Job):
         # 3. music first: the actual track length drives the clip count, and the
         #    lyrics drive the per-clip scenes so the song matches each clip.
         _check_cancel(job)
+        budget = _song_budget(job)          # sung words per second the lyrics were sized for
+        given = (job.lyrics or "").strip()  # the user's own words: sung verbatim, and they set the length
         _lw, l_target, l_max, l_range = _length_params(job)
-        if not l_range:
+        if given:
+            # frozen on the first pass: KIDS_SONG_WPS is editable at runtime, so a resume after a
+            # Settings change must not hand the model a different ceiling than try 1 got
+            fz = plan.get("lyric_length")
+            if not fz:
+                fz = {"words": len(llm.clean_lyrics(given).split()), "wps": budget,
+                      "target": round(l_target, 2), "max": round(l_max, 2)}
+                plan["lyric_length"] = fz
+                _save_plan(job, plan)
+            l_target, l_max, l_range = float(fz["target"]), float(fz["max"]), None
+            job.add_log(f"song length from your lyrics: {fz['words']} sung words, "
+                        f"about {l_target:.0f}s (hard cut {l_max:.0f}s)")
+        elif not l_range:
             l_target = config.TARGET_VIDEO_SECONDS
             l_max = (min(360.0, config.TARGET_VIDEO_SECONDS * 2 + 30)
                      if config.TARGET_VIDEO_SECONDS else 360.0)
-        kids = (job.channel or {}).get("audience") == "kids"
-        budget = config.KIDS_SONG_WPS if kids else 2.0     # sung words per second the lyrics were sized for
         # song candidates (resume-safe; each is rendered, whisper-timed and paced at most once):
         # [{caption, lyrics, file, reason, duration, words, ratio, wps}]; the chosen one is copied
         # to music.mp3. try 2 exists when try 1 was sung too fast or ended short of the target range.
@@ -760,7 +833,8 @@ def _run(job: Job):
                     if k == 1 and (plan.get("music") or {}).get("caption"):
                         mp = plan["music"]
                     else:
-                        job.set("music", "writing music caption and lyrics with vLLM" if k == 1 else
+                        job.set("music", ("writing the music for your lyrics with vLLM" if given else
+                                          "writing music caption and lyrics with vLLM") if k == 1 else
                                 "song too fast - writing a slower version with vLLM" if why == "fast" else
                                 "song too short - writing a longer version with vLLM")
                         slow = ({"measured": tries[0]["wps"], "budget": budget,
@@ -773,7 +847,9 @@ def _run(job: Job):
                                              max_seconds=l_max, seconds_range=l_range,
                                              channel=job.channel, used=plan.get("cast_used"),
                                              song_voice=job.song_voice, slow_down=slow,
-                                             lengthen=longer)
+                                             lengthen=longer, given_lyrics=given)
+                        if mp.get("lyrics_kept") == "verbatim-fallback":
+                            job.add_log("the LLM altered your lyrics; your own words are used instead")
                         plan["music"] = mp
                     tries.append({"caption": mp["caption"], "lyrics": mp.get("lyrics", ""),
                                   "file": f"music_try{k}.mp3", "reason": why or "first"})
@@ -804,8 +880,10 @@ def _run(job: Job):
                     job.add_log(f"song try {k}: {t['duration']:.1f}s, {t['wps']:.2f} sung words/s "
                                 f"(budget {budget:g}), lyric match {ratio:.0%}")
                 if k == 2:
-                    job.add_log("song too fast: re-rendered once with a slower caption and fewer words"
-                                if why == "fast" else
+                    job.add_log(("song too fast: re-rendered once with the same words, sung slower"
+                                 if given else
+                                 "song too fast: re-rendered once with a slower caption and fewer words")
+                                if why == "fast" or not l_range else
                                 f"song too short: re-rendered once with longer lyrics (try 1 was "
                                 f"{tries[0]['duration']:.1f}s, target {l_range[0]:g}-{l_range[1]:g}s)")
             best = tries[0]
@@ -816,7 +894,9 @@ def _run(job: Job):
                     if (_range_miss(tries[1], l_range) < _range_miss(tries[0], l_range)
                             and not llm.needs_slowdown(tries[1]["wps"], budget)):
                         best = tries[1]
-                elif 0 < tries[1]["wps"] < tries[0].get("wps", 0.0):
+                elif (0 < tries[1]["wps"] < tries[0].get("wps", 0.0)
+                        and not (given and _truncated(tries[1], l_max))):
+                    # same words sung slower runs longer, so try 2 is the one that can hit the cut
                     best = tries[1]
             shutil.copyfile(d / best["file"], music_file)
             plan["music"] = {"caption": best["caption"], "lyrics": best["lyrics"]}
@@ -825,11 +905,13 @@ def _run(job: Job):
             _save_plan(job, plan)
             if len(tries) > 1:
                 job.add_log(f"song: keeping try {tries.index(best) + 1} "
-                            + ("(slowest singing)" if why == "fast"
+                            + ("(slowest singing)" if why == "fast" or not l_range
                                else f"(closest to {l_range[0]:g}-{l_range[1]:g}s)"))
         duration = tts.audio_duration(music_file)
         job.add_log(f"music track: {duration:.1f}s")
-        durs = config.clip_durations(duration, _clip_seconds(job))
+        if given and duration >= l_max - 1.0:
+            job.add_log(f"the song hit the {l_max:.0f}s ceiling - its last lines may be missing")
+        durs = config.clip_durations(duration, _clip_seconds(job, duration))
         n = len(durs)
         music_plan = plan.get("music") or {}
         final = plan.get("music_final") or {}
@@ -1180,14 +1262,18 @@ class JobManager:
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
-               owner: str = "", resolution: str = "", song_voice: str = "") -> Job:
+               owner: str = "", resolution: str = "", song_voice: str = "",
+               lyrics: str = "") -> Job:
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
+        lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
+        if lyrics:
+            video_length = "Auto"      # the lyrics set the length: keep no preset that is never applied
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
-                  storyboard=sb, owner=owner or (channel or {}).get("owner", ""))
+                  storyboard=sb, lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""))
         job.save()
         with self.lock:
             self.jobs[job.id] = job
@@ -1286,7 +1372,7 @@ class JobManager:
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
                       owner: str = "", resolution: str = "", song_voice: str = "",
                       start: bool = True, title: str = "", plan: dict | None = None,
-                      page_scroll=None) -> Job:
+                      page_scroll=None, lyrics: str = "") -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -1305,6 +1391,9 @@ class JobManager:
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
+        lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
+        if lyrics:
+            video_length = "Auto"      # the lyrics set the length: keep no preset that is never applied
         plan = plan or {}
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
                   url=text if source_kind == REPO_SOURCE else "",
@@ -1316,7 +1405,7 @@ class JobManager:
                   resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
-                  owner=owner or (channel or {}).get("owner", ""),
+                  lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
                   plan_id=str(plan.get("plan_id", "")), planned_day=int(plan.get("day", 0) or 0),
                   planned_for=str(plan.get("date", "")), hook=str(plan.get("hook", "")),
                   thumb_idea=str(plan.get("thumb_idea", "")))
@@ -1333,7 +1422,7 @@ class JobManager:
     def setup_planned(self, job_id: str, aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "", audio_mode: str = "", voice_id: str = "",
                       storyboard_flag=None, megapixels=None, resolution: str = "",
-                      song_voice: str = "") -> Job:
+                      song_voice: str = "", lyrics: str = "") -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -1357,10 +1446,15 @@ class JobManager:
                 megapixels if megapixels not in (None, "", 0) else job.megapixels,
                 resolution or job.resolution, song_voice)
             # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
+            # lyrics are the one field a blank does NOT inherit from the job: an empty box means
+            # the user cleared it (and switching to a voiceover clears it in the form too)
+            words = _resolve_lyrics(lyrics, ch, mode)
+            if words:
+                vlen = "Auto"          # the lyrics set the length: keep no preset that is never applied
             job.set("drafting", "writing script with the LLM", aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
-                    storyboard=sb, megapixels=mp, resolution=res, setup_done=True)
-            job.add_log(f"setup confirmed ({vlen}, {ar}, {mp} MP, {res}, "
+                    storyboard=sb, megapixels=mp, resolution=res, lyrics=words, setup_done=True)
+            job.add_log(f"setup confirmed ({'your lyrics' if words else vlen}, {ar}, {mp} MP, {res}, "
                         f"{'song' if mode == 'music' else 'voiceover'}) - writing the script")
         self._start_draft(job)
         return job
@@ -1381,6 +1475,11 @@ class JobManager:
                     previous = None
             target_words = _length_params(job)[0]
             source_text, content_y = job.topic, 0
+            if job.lyrics:
+                # the story seeds the title, SEO, thumbnail and story board cards, while the visuals
+                # follow the sung words - without this they can end up about different things
+                source_text = (f"{source_text}\n\nThe song's lyrics (the video IS this song):\n"
+                               f'\"\"\"{job.lyrics}\"\"\"').strip()
             if job.source == REPO_SOURCE:
                 source_text = _repo_source_text(job)
                 if job.page_scroll:
