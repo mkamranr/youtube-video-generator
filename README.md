@@ -7,6 +7,7 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 ## Features
 
 - **Four ways to create a video** — a YouTube URL (transcript-driven), a **topic** (the LLM invents the script), your own **description / short script** (the LLM builds on it faithfully), or a pasted **transcript / script** (used as the script as-is; the LLM only fixes typos, cue tags and the like). Kids-channel song videos can additionally take your own **song lyrics**, sung verbatim. Topic/description/transcript jobs draft their script immediately — outside the video queue — and wait for your **approval** before any video generation starts.
+- **Bring your own music** — on a song video, upload a track (10 seconds to 6 minutes) instead of having one generated. It is used as the soundtrack exactly as you recorded it, no song is written or rendered, and **the video comes out the same length as your music**: the track's measured duration decides how many clips are made. Any vocals are transcribed once so the scenes follow what is sung; a purely instrumental track gets scenes that follow the script instead. Available on any channel.
 - **30 selectable art styles** — Anime, Western Cartoon, Pixar-like 3D, Claymation, Watercolor, and more; each drives the visual direction of every generated shot and the thumbnail. A **preview image** of each style (rendered once by your own video model via Settings → "Generate style previews") is shown while picking.
 - **Multiple channels** — manage any number of channels in Settings, each with its own name, purpose, logo, audience (Kids / Family / General), video type (Animated / Real / Tech) and per-video defaults. Every video is generated to match the channel picked in the New Video dialog, and uploads go to that channel's own connected YouTube account. Real and Tech channels skip the art-style picker and use a built-in realistic live-action look; **Tech** channels additionally get concrete, technically accurate scripts (devices, screens, code, data-centre visuals) and the on-screen story board switched on by default.
 - **On-screen story board** — an optional overlay (per video, default on for Tech channels) of styled fact cards: the LLM plans a kicker (KEY FACT, HOW IT WORKS, BY THE NUMBERS…), a headline and a one-line body for the right moments of the narration, some with a **related still image** rendered by the video model in a shape matching the video (square for portrait, 4:3 for square, 16:9 for landscape); the cards are drawn with Pillow (rounded lower-third panel, accent bar, framed picture — layouts for landscape, portrait and square) and composited over the clips with fades, timed to the actual clip cuts. Toggle or regenerate it on any finished job, then reassemble.
@@ -201,7 +202,9 @@ transcript.txt      cleaned source captions (URL jobs) or the pasted transcript 
 plan.json           title, story, style, scenes, per-clip audio segments, music caption/lyrics, SEO,
                     lyric_length (frozen target/ceiling when you supplied the lyrics),
                     story board cards (kicker/headline/body, clip range, image prompt)
-music.mp3           generated song            narration.wav   TTS voiceover (narration modes)
+music.mp3           generated song, or the track you uploaded
+                    (staged uploads wait in output/_uploads/ until a job claims one)
+narration.wav       TTS voiceover (narration modes)
 clip_01..NN.mp4     generated clips           frame_NN.jpg    chaining frames
 thumbnail.jpg       YouTube thumbnail matching the video aspect (channel logo overlaid if uploaded)
 sbimg_NN.jpg        story board related images   card_NN.png   rendered story board overlays

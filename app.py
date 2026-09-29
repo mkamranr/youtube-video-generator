@@ -16,11 +16,13 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager
-from services import auth, bible, browser, cast, channels, llm, ownership, planner, schedule, users, voices
+from services import (auth, bible, browser, cast, channels, llm, music_upload, ownership, planner,
+                      schedule, users, voices)
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
 manager = JobManager()
+music_upload.sweep()                # drop staged music nobody turned into a video
 # channels/jobs written before ownership existed go to the oldest admin (no-op until one exists,
 # then repeated right after the first admin is created in /api/auth/setup)
 _migrated = ownership.migrate_unowned(manager.jobs.values())
@@ -93,6 +95,8 @@ class Submit(BaseModel):
     voice_id: str = ""         # reference voice for the voiceover ("" = default voice)
     song_voice: str = ""       # singer of a generated song (config.SONG_VOICES); "" -> channel default
     lyrics: str = ""           # kids channels + audio_mode "music": sung verbatim, and they set the length
+    music_upload_id: str = ""  # id from POST /api/music-uploads: the user's own track is used instead of
+                               # a generated song and sets the video length (audio_mode "music" only)
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
@@ -145,6 +149,16 @@ def _owned_job(job_id: str, user: dict):
     return job
 
 
+def _owned_upload(upload_id: str, user: dict) -> dict:
+    """A staged music track the caller may use. Checked here, not in the pipeline: the uploader
+    is the caller while the job's owner is the channel's owner, and an admin may submit to
+    another user's channel. Unknown and foreign ids answer alike so ids cannot be probed."""
+    rec = music_upload.get(upload_id)
+    if not rec or not auth.can_access(user, rec.get("owner", "")):
+        raise HTTPException(400, "unknown or expired music upload")
+    return rec
+
+
 def _owned_channel(cid: str, user: dict) -> dict:
     ch = channels.get_channel(cid)
     if not ch or not auth.can_access(user, ch.get("owner", "")):
@@ -179,6 +193,11 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
     vid = body.voice_id.strip()
     if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
         raise HTTPException(400, "unknown reference voice")
+    if body.music_upload_id.strip():
+        if len(urls) > 1:
+            raise HTTPException(400, "an uploaded music track applies to one video - "
+                                     "submit one URL at a time")
+        _owned_upload(body.music_upload_id, user)
     try:
         if prompt_kind:
             text = {"topic": body.topic, "description": body.description,
@@ -191,6 +210,7 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     resolution=body.resolution,
                                                     song_voice=body.song_voice,
                                                     lyrics=body.lyrics,
+                                                    music_upload_id=body.music_upload_id,
                                                     page_scroll=body.page_scroll))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
@@ -198,7 +218,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                          megapixels=body.megapixels, owner=owner,
                                          resolution=body.resolution,
                                          song_voice=body.song_voice,
-                                         lyrics=body.lyrics)) for u in urls]
+                                         lyrics=body.lyrics,
+                                         music_upload_id=body.music_upload_id)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -243,6 +264,7 @@ class JobSetup(BaseModel):
     voice_id: str = ""
     song_voice: str = ""
     lyrics: str = ""           # kids channels + Generate Song; "" means none (clearing the box removes them)
+    music_upload_id: str = ""  # the user's own track for this video; "" means none (never inherited)
     storyboard: bool | None = None
 
 
@@ -253,6 +275,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
     vid = body.voice_id.strip()
     if vid and vid != voices.RANDOM_VOICE and not voices.get_voice(vid):
         raise HTTPException(400, "unknown reference voice")
+    if body.music_upload_id.strip():
+        _owned_upload(body.music_upload_id, user)
     try:
         return _job_json(manager.setup_planned(job_id, body.aspect_ratio, body.art_style,
                                                body.video_length, body.audio_mode, vid,
@@ -260,7 +284,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                megapixels=body.megapixels,
                                                resolution=body.resolution,
                                                song_voice=body.song_voice,
-                                               lyrics=body.lyrics))
+                                               lyrics=body.lyrics,
+                                               music_upload_id=body.music_upload_id))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -1082,6 +1107,30 @@ def voice_audio(voice_id: str, user: dict = Depends(auth.require_user)):
     if not path.exists():
         raise HTTPException(404, "unknown reference voice")
     return FileResponse(path, media_type="audio/wav")
+
+
+# ---- uploaded music tracks -------------------------------------------------
+# Per-user staging for ONE video: the id returned here goes into POST /jobs (or /setup), which
+# copies the track to that job's music.mp3 and consumes the upload. Unlike the shared reference
+# voices this is not an admin library - anyone may bring their own soundtrack for their own video.
+@app.post("/api/music-uploads")
+async def create_music_upload(file: UploadFile, user: dict = Depends(auth.require_user)):
+    """Validate and stage a music track to use instead of a generated song."""
+    data = await file.read()
+    if len(data) > music_upload.MAX_BYTES:
+        raise HTTPException(400, f"music file too large (max {music_upload.MAX_BYTES // (1024 * 1024)} MB)")
+    try:
+        return music_upload.stage(data, user["id"], file.filename or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/music-uploads/{upload_id}")
+def delete_music_upload(upload_id: str, user: dict = Depends(auth.require_user)):
+    """Drop a staged track the user decided not to use."""
+    _owned_upload(upload_id, user)
+    music_upload.discard(upload_id)
+    return {"ok": True}
 
 
 @app.post("/jobs/{job_id}/regen-resource")

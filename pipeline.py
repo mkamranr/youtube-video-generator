@@ -12,8 +12,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (browser, cast, channels, comfy, llm, lyrics, repo, resource, schedule,
-                      storyboard, transcript, tts, video)
+from services import (browser, cast, channels, comfy, llm, lyrics, music_upload, repo, resource,
+                      schedule, storyboard, transcript, tts, video)
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -45,6 +45,12 @@ class Job:
     video_length: str = "Auto"
     lyrics: str = ""                # kids + Generate Song: the user's own song lyrics, sung verbatim
                                     # (they set the length, so video_length is forced to Auto)
+    music_upload: str = ""          # Generate Song: the user's own music track instead of a generated
+                                    # song - the uploaded file's name (its audio was copied to music.mp3
+                                    # when the job was created, and it sets the length, so video_length
+                                    # is forced to Auto). "" = the song is written and generated for you.
+    music_seconds: float = 0.0      # measured length of that track, so the clip-length rung and the
+                                    # story's word target need no disk access
     source: str = "youtube"         # youtube | topic | description | transcript
     topic: str = ""                 # the topic, description or pasted transcript text
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
@@ -144,6 +150,19 @@ class Job:
 
 
 # ---------------------------------------------------------------------------
+def _install_upload(job: Job, up):
+    """Copy the user's staged track into the fresh job folder as music.mp3 and consume the
+    upload. Called between job.save() and the queue, so a failure leaves nothing registered."""
+    if not up:
+        return
+    try:
+        music_upload.install(up["id"], job.dir / "music.mp3")
+    except Exception as e:  # noqa: BLE001 - the job is not registered yet; surface this as a 400
+        shutil.rmtree(job.dir, ignore_errors=True)
+        raise ValueError(f"the uploaded music track could not be saved ({e})")
+    job.add_log(f"your uploaded music track: {up['name']} ({up['seconds']:.0f}s)")
+
+
 class JobCancelled(Exception):
     pass
 
@@ -203,6 +222,11 @@ def _length_params(job: Job):
     All None for Auto - the global settings apply. A job with the user's own lyrics is sized
     by those lyrics and has NO range: a range is what triggers the "too short" rewrite, and
     the user's words must never be rewritten."""
+    if getattr(job, "music_upload", "") and getattr(job, "music_seconds", 0.0):
+        # the recording IS the length: nothing is written or rendered to fit a target, so only
+        # the word count (the story the scenes are drawn from) is meaningful here
+        secs = float(job.music_seconds)
+        return int(secs * 2.5), secs, secs, None
     if getattr(job, "lyrics", ""):
         secs = _lyric_seconds(job)
         return int(secs * 2.5), secs, _lyric_ceiling(secs), None
@@ -216,10 +240,11 @@ def _length_params(job: Job):
 
 def _clip_seconds(job: Job, duration: float | None = None) -> float:
     """Clip length this job renders: longer targets use longer clips so a 5-minute video is
-    ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS). A lyric-driven song has no
-    preset, so its measured length picks the rung instead."""
-    if getattr(job, "lyrics", "") and duration:
-        return config.clip_seconds_for_duration(duration)
+    ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS). A lyric-driven song and an
+    uploaded music track have no preset, so their measured length picks the rung instead."""
+    secs = duration or float(getattr(job, "music_seconds", 0.0) or 0.0)
+    if (getattr(job, "lyrics", "") or getattr(job, "music_upload", "")) and secs:
+        return config.clip_seconds_for_duration(secs)
     return config.video_length_clip_seconds(job.video_length or "Auto")
 
 
@@ -264,6 +289,30 @@ def _resolve_lyrics(lyrics: str, channel: dict | None, audio_mode: str) -> str:
         raise ValueError(f"song lyrics are too long ({words} sung words, "
                          f"at most {config.MAX_LYRIC_WORDS})")
     return text
+
+
+def _resolve_music_upload(upload_id: str, audio_mode: str, lyrics: str):
+    """The staged music track this job will use, validated; None when there is none. Hiding the
+    control in the UI is not enough - /jobs is a public API. Rejected rather than repaired: a
+    track that is not the song the user picked is worse than no video.
+
+    Not gated to kids channels the way lyrics are - anyone may bring their own soundtrack.
+
+    Deliberately not a parameter of _resolve_choices - that signature is called positionally by
+    tests/test_lyric_sync.py and tests/test_resolution.py."""
+    uid = (upload_id or "").strip()
+    if not uid:
+        return None
+    if audio_mode != "music":
+        raise ValueError("an uploaded music track needs the Generate Song audio mode")
+    if lyrics:
+        # lyrics are an instruction to the singer model; an uploaded recording has no singer
+        raise ValueError("song lyrics cannot be combined with an uploaded music track - "
+                         "the track you uploaded is the song")
+    rec = music_upload.get(uid)
+    if not rec or not music_upload.path(uid).exists():
+        raise ValueError("that uploaded music track is no longer available - upload it again")
+    return rec
 
 
 def _fit_narration(job: Job, plan: dict, words: int | None):
@@ -817,7 +866,14 @@ def _run(job: Job):
         # to music.mp3. try 2 exists when try 1 was sung too fast or ended short of the target range.
         tries = plan.setdefault("music_tries", [])
         music_file = d / "music.mp3"
-        if music_file.exists() and music_file.stat().st_size > 1000 and (plan.get("music_final") or not tries):
+        if job.music_upload:
+            # the user's own track, copied to music.mp3 when the job was created. Nothing is
+            # written, rendered or paced: the recording is the song and it is the length.
+            if not (music_file.exists() and music_file.stat().st_size > 1000):
+                raise RuntimeError("the uploaded music track is missing from the job folder - "
+                                   "create the video again with the track uploaded")
+            job.add_log(f"music: your uploaded track ({job.music_upload})")
+        elif music_file.exists() and music_file.stat().st_size > 1000 and (plan.get("music_final") or not tries):
             job.add_log("resume: reusing music track")
         else:
             why = ""        # why try 2 exists: "fast" | "short" | "" (one try only)
@@ -909,8 +965,15 @@ def _run(job: Job):
                                else f"(closest to {l_range[0]:g}-{l_range[1]:g}s)"))
         duration = tts.audio_duration(music_file)
         job.add_log(f"music track: {duration:.1f}s")
-        if given and duration >= l_max - 1.0:
+        if not job.music_upload and given and duration >= l_max - 1.0:
             job.add_log(f"the song hit the {l_max:.0f}s ceiling - its last lines may be missing")
+        if job.music_upload and not plan.get("music_final"):
+            # try 0 on purpose: `chosen` below stays None, so the track is transcribed with no
+            # reference lyrics - there are none, the user brought a finished recording
+            plan["music"] = {"caption": "", "lyrics": "", "uploaded": job.music_upload}
+            plan["music_final"] = {"try": 0, "wps": 0.0, "duration": round(duration, 3),
+                                   "reason": "upload"}
+            _save_plan(job, plan)
         durs = config.clip_durations(duration, _clip_seconds(job, duration))
         n = len(durs)
         music_plan = plan.get("music") or {}
@@ -918,11 +981,20 @@ def _run(job: Job):
         chosen = tries[final["try"] - 1] if final.get("try") and final["try"] <= len(tries) else None
         if chosen is not None and "words" in chosen:
             words, ratio = chosen["words"], chosen.get("ratio", 0.0)
-        else:   # legacy job: music.mp3 without cached timing
-            job.set("music", "timing the sung lyrics (whisper)")
+        elif plan.get("music_words"):   # an uploaded track (or a legacy job) timed on an earlier pass
+            words = plan["music_words"]["words"]
+            ratio = plan["music_words"].get("ratio", 0.0)
+            job.add_log("resume: reusing the word timing of the track")
+        else:   # an uploaded track, or a legacy job: music.mp3 without cached timing
+            job.set("music", "timing the words in your track (whisper)" if job.music_upload
+                    else "timing the sung lyrics (whisper)")
             heard = lyrics.transcribe_words(music_file, initial_prompt=llm.clean_lyrics(music_plan.get("lyrics", ""))[:600],
                                             on_progress=_progress(job, "music"))
             words, ratio = lyrics.align_to_lyrics(heard, music_plan.get("lyrics", ""))
+            # cached so a resume never pays for whisper twice
+            plan["music_words"] = {"words": words, "ratio": round(ratio, 3),
+                                   "whisper_model": config.WHISPER_MODEL}
+            _save_plan(job, plan)
         timed = lyrics.timeline(words, config.boundaries(durs))
         segments = [t["text"] for t in timed]
         timelines = [lyrics.format_timeline(t) for t in timed]
@@ -931,12 +1003,24 @@ def _run(job: Job):
         plan["lyric_align"] = {"ratio": round(ratio, 3), "aligned": aligned, "words": len(words),
                                "inferred": sum(1 for w in words if w.get("src") == "inferred"),
                                "wps": lyrics.words_per_second(words), "whisper_model": config.WHISPER_MODEL,
-                               "try": final.get("try", 1)}
-        sung = sum(1 for s in segments if s.strip())
-        job.add_log(f"lyrics timed: words heard in {sung}/{n} clip windows"
-                    + ("" if aligned else " (whisper words only - they did not match the written lyrics)"))
+                               "try": final.get("try", 1),
+                               "source": "upload" if job.music_upload else "generated"}
         sync_text = llm.clean_lyrics(music_plan.get("lyrics", "")) or plan["narration"]
         kind = "song being played"
+        if job.music_upload and len(words) < config.MIN_HEARD_WORDS:
+            # An instrumental upload. Empty segments would hand every clip the "no words are
+            # heard" prompt and the story would never reach a single scene, so the story is
+            # split across the clips instead (llm.write_scenes does that when segments is None).
+            # The threshold is not `not words`: whisper hallucinates a stray word or two over music.
+            segments, timelines, aligned = None, None, True
+            kind = "instrumental music track"
+            job.add_log(f"no singing heard in your track - the {n} scenes follow the story instead")
+        else:
+            sung = sum(1 for s in segments if s.strip())
+            job.add_log(f"words timed from your track: heard in {sung}/{n} clip windows"
+                        if job.music_upload else
+                        f"lyrics timed: words heard in {sung}/{n} clip windows"
+                        + ("" if aligned else " (whisper words only - they did not match the written lyrics)"))
     else:
         # 3. narration voiceover
         _check_cancel(job)
@@ -1263,18 +1347,22 @@ class JobManager:
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
-               lyrics: str = "") -> Job:
+               lyrics: str = "", music_upload_id: str = "") -> Job:
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
-        if lyrics:
-            video_length = "Auto"      # the lyrics set the length: keep no preset that is never applied
+        up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
+        if lyrics or up:
+            video_length = "Auto"      # the lyrics / the track set the length: keep no unused preset
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
-                  storyboard=sb, lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""))
+                  storyboard=sb, lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
+                  music_upload=(up or {}).get("name", ""),
+                  music_seconds=float((up or {}).get("seconds", 0.0)))
         job.save()
+        _install_upload(job, up)
         with self.lock:
             self.jobs[job.id] = job
             self.queue.append(job.id)
@@ -1372,7 +1460,7 @@ class JobManager:
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
                       owner: str = "", resolution: str = "", song_voice: str = "",
                       start: bool = True, title: str = "", plan: dict | None = None,
-                      page_scroll=None, lyrics: str = "") -> Job:
+                      page_scroll=None, lyrics: str = "", music_upload_id: str = "") -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -1392,8 +1480,9 @@ class JobManager:
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
-        if lyrics:
-            video_length = "Auto"      # the lyrics set the length: keep no preset that is never applied
+        up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
+        if lyrics or up:
+            video_length = "Auto"      # the lyrics / the track set the length: keep no unused preset
         plan = plan or {}
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
                   url=text if source_kind == REPO_SOURCE else "",
@@ -1406,10 +1495,13 @@ class JobManager:
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
                   lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
+                  music_upload=(up or {}).get("name", ""),
+                  music_seconds=float((up or {}).get("seconds", 0.0)),
                   plan_id=str(plan.get("plan_id", "")), planned_day=int(plan.get("day", 0) or 0),
                   planned_for=str(plan.get("date", "")), hook=str(plan.get("hook", "")),
                   thumb_idea=str(plan.get("thumb_idea", "")))
         job.save()
+        _install_upload(job, up)
         if source_kind == "transcript":   # shown by the job page's Transcript card
             job.dir.mkdir(parents=True, exist_ok=True)
             (job.dir / "transcript.txt").write_text(text, encoding="utf-8")
@@ -1422,7 +1514,8 @@ class JobManager:
     def setup_planned(self, job_id: str, aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "", audio_mode: str = "", voice_id: str = "",
                       storyboard_flag=None, megapixels=None, resolution: str = "",
-                      song_voice: str = "", lyrics: str = "") -> Job:
+                      song_voice: str = "", lyrics: str = "",
+                      music_upload_id: str = "") -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -1449,12 +1542,19 @@ class JobManager:
             # lyrics are the one field a blank does NOT inherit from the job: an empty box means
             # the user cleared it (and switching to a voiceover clears it in the form too)
             words = _resolve_lyrics(lyrics, ch, mode)
-            if words:
-                vlen = "Auto"          # the lyrics set the length: keep no preset that is never applied
+            # a blank music_upload_id means no upload, not "inherit": a planned job never carries one
+            up = _resolve_music_upload(music_upload_id, mode, words)
+            if words or up:
+                vlen = "Auto"          # the lyrics / the track set the length: keep no unused preset
+            if up:      # the job folder exists since plan time; nothing was mutated before this
+                music_upload.install(up["id"], job.dir / "music.mp3")
             job.set("drafting", "writing script with the LLM", aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
-                    storyboard=sb, megapixels=mp, resolution=res, lyrics=words, setup_done=True)
-            job.add_log(f"setup confirmed ({'your lyrics' if words else vlen}, {ar}, {mp} MP, {res}, "
+                    storyboard=sb, megapixels=mp, resolution=res, lyrics=words, setup_done=True,
+                    music_upload=(up or {}).get("name", ""),
+                    music_seconds=float((up or {}).get("seconds", 0.0)))
+            job.add_log(f"setup confirmed ({'your uploaded track' if up else 'your lyrics' if words else vlen}, "
+                        f"{ar}, {mp} MP, {res}, "
                         f"{'song' if mode == 'music' else 'voiceover'}) - writing the script")
         self._start_draft(job)
         return job

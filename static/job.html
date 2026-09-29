@@ -102,10 +102,20 @@
         <label for="suVoice">Voice</label>
         <select id="suVoice"></select>
       </div>
-      <div class="grow" style="min-width:160px"><label for="suVlen">Video length</label><select id="suVlen"></select></div>
+      <div class="grow" style="min-width:160px"><label for="suVlen">Video length</label><select id="suVlen"></select>
+        <div class="hint" id="suVlenHint" hidden></div></div>
       <div class="grow" style="min-width:180px"><label for="suAr">Aspect ratio</label><select id="suAr"></select></div>
       <div class="grow" style="min-width:140px"><label for="suMp">Resolution (megapixels)</label><select id="suMp"></select></div>
       <div class="grow" style="min-width:160px"><label for="suRes">Output resolution</label><select id="suRes"></select></div>
+    </div>
+    <div id="suMusicBlock" style="margin-top:12px" hidden>
+      <label for="suMusicFile">Your own music (optional)</label>
+      <div class="row" style="align-items:center;gap:10px">
+        <input type="file" id="suMusicFile" accept="audio/*" style="max-width:280px">
+        <button class="btn secondary" id="suMusicClear" type="button" hidden>Remove</button>
+        <span class="hint" id="suMusicStatus"></span>
+      </div>
+      <div class="hint">Upload a track and it becomes the soundtrack as-is &mdash; no song is generated, and it, not the Video length, decides how long the video is (10 seconds to 6 minutes).</div>
     </div>
     <div id="suLyricsBlock" style="margin-top:12px" hidden>
       <label for="suLyrics">Song lyrics (optional)</label>
@@ -239,7 +249,7 @@
   <section class="card" id="musicSec" hidden>
     <h2>Music track</h2>
     <audio id="musicAudio" controls preload="none"></audio>
-    <details style="border:0;padding-top:10px"><summary>caption &amp; lyrics <span class="count" id="lyricsOwn" hidden>your lyrics</span></summary>
+    <details style="border:0;padding-top:10px"><summary>caption &amp; lyrics <span class="count" id="lyricsOwn" hidden>your lyrics</span><span class="count" id="musicUploaded" hidden>your upload</span></summary>
       <pre class="box" id="musicCaption" style="margin-top:8px"></pre>
       <pre class="box" id="musicLyrics" style="margin-top:8px"></pre>
     </details>
@@ -359,9 +369,11 @@ async function loadDetails(j) {
     if (d.plan.narration) { $("#narrSec").hidden = false; $("#narrText").textContent = d.plan.narration; }
     if (d.plan.style) { $("#styleSec").hidden = false; $("#styleText").textContent = d.plan.style; }
     if (d.plan.music) {
-      $("#musicCaption").textContent = d.plan.music.caption || "";
-      $("#musicLyrics").textContent = d.plan.music.lyrics || "";
-      $("#lyricsOwn").hidden = !d.lyrics;
+      const up = d.plan.music.uploaded || "";
+      $("#musicCaption").textContent = up ? `Your uploaded track: ${up}` : (d.plan.music.caption || "");
+      $("#musicLyrics").textContent = up ? "" : (d.plan.music.lyrics || "");
+      $("#lyricsOwn").hidden = !d.lyrics || !!up;
+      $("#musicUploaded").hidden = !up;
     }
     if (Array.isArray(d.plan.scenes) && d.plan.scenes.length) {
       $("#scenesSec").hidden = false;
@@ -414,9 +426,12 @@ function renderScenes(scenes, timed, align) {
   if (align && typeof align.ratio === "number") {
     const b = document.createElement("span");
     b.id = "alignBadge"; b.className = "badge-align";
-    b.textContent = align.aligned
-      ? `lyrics aligned ${Math.round(align.ratio * 100)}% · ${align.wps || 0} words/s`
-      : `whisper words only (lyrics matched ${Math.round(align.ratio * 100)}%)`;
+    b.textContent = align.source === "upload"
+      ? (align.words ? `words heard in your track · ${align.words} words, ${align.wps || 0} words/s`
+                     : "instrumental track - scenes follow the story")
+      : align.aligned
+        ? `lyrics aligned ${Math.round(align.ratio * 100)}% · ${align.wps || 0} words/s`
+        : `whisper words only (lyrics matched ${Math.round(align.ratio * 100)}%)`;
     $("#sceneCount").after(b);
   }
   $("#sceneList").innerHTML = "";
@@ -522,7 +537,8 @@ function update(j) {
   $("#artStyleLabel").textContent = j.art_style || "";
   $("#sbLabel").textContent = j.storyboard ? "story board" : "";
   $("#psLabel").textContent = j.page_scroll ? "page scroll" : "";
-  $("#vlenLabel").textContent = j.has_lyrics ? "length from your lyrics"
+  $("#vlenLabel").textContent = j.music_upload ? "length from your music track"
+      : j.has_lyrics ? "length from your lyrics"
       : (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
@@ -803,22 +819,69 @@ async function fillSetup(j) {
   $("#suVoiceField").hidden = $("#suAudio").value === "music";
   suKids = ((j.channel || {}).audience === "kids");     // the snapshot frozen at plan time
   $("#suLyrics").value = "";        // a planned job never carries lyrics: they are chosen here
+  suMusicUp = null;                 // nor an uploaded track
+  $("#suMusicFile").value = "";
+  $("#suMusicStatus").textContent = "";
+  $("#suMusicClear").hidden = true;
   applySuLyrics();
 }
 
 let suKids = false;
+let suMusicUp = null;             // the staged track for this video: {id, name, seconds} or null
 function suLyricsOn() { return !$("#suLyricsBlock").hidden && $("#suLyrics").value.trim().length > 0; }
+function suMusicOn() { return !$("#suMusicBlock").hidden && !!suMusicUp; }
+function suMmss(s) { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+async function uploadSuMusic() {
+  const f = $("#suMusicFile").files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  $("#suMusicFile").disabled = true;
+  $("#suMusicStatus").textContent = "Uploading…";
+  try {
+    const r = await fetch("/api/music-uploads", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "upload failed");
+    suMusicUp = await r.json();
+    $("#suMusicStatus").innerHTML = `<b>${esc(suMusicUp.name)}</b> &mdash; ${suMmss(suMusicUp.seconds)}`;
+    $("#suMusicClear").hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+    suMusicUp = null; $("#suMusicFile").value = ""; $("#suMusicStatus").textContent = "";
+  } finally {
+    $("#suMusicFile").disabled = false;
+    applySuLyrics();
+  }
+}
+
+function clearSuMusic() {
+  if (suMusicUp) fetch(`/api/music-uploads/${suMusicUp.id}`, { method: "DELETE" }).catch(() => {});
+  suMusicUp = null;
+  $("#suMusicFile").value = "";
+  $("#suMusicStatus").textContent = "";
+  $("#suMusicClear").hidden = true;
+  applySuLyrics();
+}
 
 function applySuLyrics() {
-  const show = suKids && $("#suAudio").value === "music";
+  // lyrics and an uploaded track are mutually exclusive (the server rejects the combination)
+  const song = $("#suAudio").value === "music";
+  const show = suKids && song && !suMusicOn();
   if (!show && !$("#suLyricsBlock").hidden) $("#suLyrics").value = "";
   $("#suLyricsBlock").hidden = !show;
-  $("#suVlen").disabled = suLyricsOn();      // the lyrics decide the length
+  $("#suMusicBlock").hidden = !song;
+  $("#suMusicFile").disabled = suLyricsOn();
+  $("#suVlen").disabled = suLyricsOn() || suMusicOn();    // the lyrics / the track decide the length
+  $("#suVlenHint").textContent = suMusicOn() ? "Set by your music." : "Set by your lyrics.";
+  $("#suVlenHint").hidden = !(suLyricsOn() || suMusicOn());
 }
 
 $("#suLyrics").oninput = applySuLyrics;
+$("#suMusicFile").onchange = uploadSuMusic;
+$("#suMusicClear").onclick = clearSuMusic;
 $("#suAudio").onchange = () => {
   $("#suVoiceField").hidden = $("#suAudio").value === "music";
+  if ($("#suAudio").value !== "music" && suMusicUp) { clearSuMusic(); return; }
   applySuLyrics();
 };
 $("#suStyle").onchange = suStylePreview;
@@ -829,11 +892,12 @@ $("#startBtn").onclick = async () => {
   try {
     await api(`/jobs/${jobId}/setup`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aspect_ratio: $("#suAr").value,
-        video_length: suLyricsOn() ? "" : $("#suVlen").value,
+        video_length: (suLyricsOn() || suMusicOn()) ? "" : $("#suVlen").value,
         megapixels: Number($("#suMp").value), resolution: $("#suRes").value,
         art_style: real ? "" : $("#suStyle").value, audio_mode: $("#suAudio").value,
         voice_id: $("#suAudio").value === "music" ? "" : $("#suVoice").value,
         lyrics: suLyricsOn() ? $("#suLyrics").value.trim() : "",
+        music_upload_id: suMusicOn() ? suMusicUp.id : "",
         storyboard: $("#suSb").checked }) });
     toast("Video started - the script is being written");
     startPolling(); refresh();

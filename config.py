@@ -198,6 +198,9 @@ TTS_CHUNK_CHARS = 300           # max characters per Fish Speech request (long t
 MAX_TRANSCRIPT_CHARS = 60000    # ~15k tokens, leaves room in the 32k context
 COMFY_TIMEOUT = 60 * 60         # seconds to wait for a single clip
 LYRIC_ALIGN_MIN_RATIO = 0.55    # below this whisper/lyrics token match ratio the raw whisper words are kept
+MIN_HEARD_WORDS = 8             # an uploaded track with fewer words heard in the whole song counts as
+                                # instrumental (whisper hallucinates a word or two over music), and its
+                                # scenes follow the story instead of the empty per-clip lyric windows
 SONG_PACE_TOLERANCE = 1.4       # a song measured faster than budget * this is re-rendered once, slower
 SONG_SHORT_TOLERANCE = 0.9      # a song shorter than the target range's low bound * this is re-rendered once, longer
 # User-supplied song lyrics (kids channels): the sheet is sung verbatim, so it is rejected rather

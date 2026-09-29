@@ -74,7 +74,7 @@
             <div class="grow" style="min-width:160px">
               <label for="vlen">Video length</label>
               <select id="vlen"></select>
-              <div class="hint" id="vlenHint" hidden>Set by your lyrics.</div>
+              <div class="hint" id="vlenHint" hidden></div>
             </div>
             <div class="grow" style="min-width:180px">
               <label for="ar">Aspect ratio</label>
@@ -89,6 +89,16 @@
               <select id="res"></select>
             </div>
           </div>
+        </div>
+        <div class="msec" id="musicUpBlock" hidden>
+          <div class="msec-title">Your own music</div>
+          <div class="row" style="align-items:center;gap:10px">
+            <input type="file" id="musicFile" accept="audio/*" style="max-width:280px">
+            <button class="btn secondary" id="musicClear" type="button" hidden>Remove</button>
+            <span class="hint" id="musicUpStatus"></span>
+          </div>
+          <audio id="musicPreview" controls preload="none" hidden style="margin-top:8px;height:32px;width:100%"></audio>
+          <div class="hint" id="musicUpHint">Optional. Upload a track and it becomes the soundtrack as-is &mdash; no song is generated, and it, not the Video length, decides how long the video is (10 seconds to 6 minutes).</div>
         </div>
         <div class="msec" id="lyricsBlock" hidden>
           <div class="msec-title">Song lyrics</div>
@@ -160,17 +170,67 @@ const SOURCE_PREFIX = { topic: "topic: ", description: "description: ", transcri
 const MAX_LYRIC_WORDS = 250;      // mirrors config.MAX_LYRIC_WORDS (the server rejects beyond it)
 const KIDS_SONG_WPS = 0.9;        // mirrors config.KIDS_SONG_WPS
 
+let musicUp = null;               // the staged track for this video: {id, name, seconds} or null
+let musicPreviewUrl = "";
+
 function isKids(ch) { return !!ch && ch.audience === "kids"; }
 function lyricsOn() { return !$("#lyricsBlock").hidden && $("#lyrics").value.trim().length > 0; }
+function musicUpOn() { return !$("#musicUpBlock").hidden && !!musicUp; }
+function mmss(s) { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
+// uploaded on pick, not on Generate: the length is what disables the Video length picker, so it
+// has to be known before the form is submitted
+async function uploadMusic() {
+  const f = $("#musicFile").files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  $("#musicFile").disabled = true;
+  $("#musicUpStatus").textContent = "Uploading…";
+  try {
+    const r = await fetch("/api/music-uploads", { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "upload failed");
+    musicUp = await r.json();
+    $("#musicUpStatus").innerHTML = `<b>${esc(musicUp.name)}</b> &mdash; ${mmss(musicUp.seconds)}`;
+    if (musicPreviewUrl) URL.revokeObjectURL(musicPreviewUrl);
+    musicPreviewUrl = URL.createObjectURL(f);
+    $("#musicPreview").src = musicPreviewUrl;
+    $("#musicPreview").hidden = false;
+    $("#musicClear").hidden = false;
+  } catch (e) {
+    toast(e.message, true);
+    musicUp = null;
+    $("#musicFile").value = "";
+    $("#musicUpStatus").textContent = "";
+  } finally {
+    $("#musicFile").disabled = false;
+    applyLyrics();
+  }
+}
+
+function clearMusic() {
+  if (musicUp) fetch(`/api/music-uploads/${musicUp.id}`, { method: "DELETE" }).catch(() => {});
+  musicUp = null;
+  $("#musicFile").value = "";
+  $("#musicUpStatus").textContent = "";
+  $("#musicClear").hidden = true;
+  $("#musicPreview").hidden = true;
+  $("#musicPreview").removeAttribute("src");
+  if (musicPreviewUrl) { URL.revokeObjectURL(musicPreviewUrl); musicPreviewUrl = ""; }
+  applyLyrics();
+}
 
 function applyLyrics() {
-  // only kids channels singing a song; hiding it also clears it, so nothing invisible is ever posted
-  const show = isKids(currentChannel()) && $("#audio").value === "music";
+  // only kids channels singing a song, and never alongside an uploaded track (the server rejects
+  // the combination); hiding it also clears it, so nothing invisible is ever posted
+  const show = isKids(currentChannel()) && $("#audio").value === "music" && !musicUpOn();
   if (!show && !$("#lyricsBlock").hidden) $("#lyrics").value = "";
   $("#lyricsBlock").hidden = !show;
   const on = lyricsOn();
-  $("#vlen").disabled = on;         // the lyrics decide the length
-  $("#vlenHint").hidden = !on;
+  $("#musicFile").disabled = on;    // the other half of the same exclusion
+  $("#vlen").disabled = on || musicUpOn();      // the lyrics / the track decide the length
+  $("#vlenHint").textContent = musicUpOn() ? "Set by your music." : "Set by your lyrics.";
+  $("#vlenHint").hidden = !(on || musicUpOn());
   const words = $("#lyrics").value.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").split(/\s+/).filter(Boolean).length;
   const secs = Math.round(words / KIDS_SONG_WPS);
   $("#lyricsHint").innerHTML = !on
@@ -179,7 +239,14 @@ function applyLyrics() {
       + (words > MAX_LYRIC_WORDS ? ` <b>Too long &mdash; at most ${MAX_LYRIC_WORDS} sung words.</b>` : "");
 }
 
-function applyAudio() { $("#voiceField").hidden = $("#audio").value === "music"; applyLyrics(); }
+function applyAudio() {
+  const song = $("#audio").value === "music";
+  $("#voiceField").hidden = song;
+  // hiding it clears it too: nothing invisible is ever posted
+  if (!song && musicUp) { clearMusic(); return; }   // clearMusic calls applyLyrics itself
+  $("#musicUpBlock").hidden = !song;
+  applyLyrics();
+}
 
 let channelsList = [];
 let admin = false;                  // admins see every user's channels and jobs, tagged with the owner
@@ -225,7 +292,7 @@ async function loadVoices() {
 }
 
 function audioLabel(j) {
-  if ((j.audio_mode || "") === "music") return "Song";
+  if ((j.audio_mode || "") === "music") return j.music_upload ? "Song (your track)" : "Song";
   if (j.voice_id === "random") return "Voiceover (random voices)";
   const v = j.voice_id && voicesById[j.voice_id];
   return "Voiceover" + (v ? ` (${esc(v)})` : "");
@@ -255,21 +322,30 @@ async function submit() {
                aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
                resolution: $("#res").value,
                art_style: real ? "" : $("#artstyle").value,
-               video_length: lyricsOn() ? "" : $("#vlen").value, audio_mode: $("#audio").value,
+               video_length: (lyricsOn() || musicUpOn()) ? "" : $("#vlen").value, audio_mode: $("#audio").value,
                voice_id: $("#audio").value === "music" ? "" : $("#voice").value,
                storyboard: $("#storyboard").checked };
   if (lyricsOn()) body.lyrics = $("#lyrics").value.trim();
+  if (musicUpOn()) body.music_upload_id = musicUp.id;
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
   else if (mode === "topic") body.topic = raw;
   else if (mode === "transcript") body.transcript = raw;
   else if (mode === "repo") { body.repo_url = raw; body.page_scroll = $("#pageScroll").checked; }
   else body.description = raw;
+  if (musicUpOn() && (body.urls || []).length > 1) {
+    toast("An uploaded track applies to one video - submit one URL at a time", true); return;
+  }
   $("#go").disabled = true;
   try {
     const jobs = await api("/jobs", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
     $("#urls").value = "";
     $("#lyrics").value = "";
+    musicUp = null;                 // consumed by the job the server just created
+    $("#musicFile").value = "";
+    $("#musicUpStatus").textContent = "";
+    $("#musicClear").hidden = true;
+    $("#musicPreview").hidden = true;
     applyLyrics();
     closeCreate();
     toast(mode === "url" ? `${jobs.length} job${jobs.length > 1 ? "s" : ""} queued`
@@ -337,7 +413,8 @@ function jobCard(j) {
         ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
         ${j.storyboard ? `<span>Story board</span>` : ""}
         ${j.page_scroll ? `<span>Page scroll</span>` : ""}
-        <span>${j.has_lyrics ? "Length from lyrics"
+        <span>${j.music_upload ? "Length from your music"
+                : j.has_lyrics ? "Length from lyrics"
                 : j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
@@ -559,6 +636,8 @@ $("#go").onclick = submit;
 $("#source").onchange = applySource;
 $("#audio").onchange = applyAudio;
 $("#lyrics").oninput = applyLyrics;
+$("#musicFile").onchange = uploadMusic;
+$("#musicClear").onclick = clearMusic;
 $("#channel").onchange = applyChannel;
 $("#artstyle").addEventListener("focus", () => renderStyleList(""));
 $("#artstyle").addEventListener("input", () => { renderStyleList($("#artstyle").value); updateStylePreview(); });
