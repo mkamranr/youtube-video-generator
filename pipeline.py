@@ -13,7 +13,7 @@ from pathlib import Path
 
 import config
 from services import (browser, cast, channels, comfy, llm, lyrics, music_upload, repo, resource,
-                      schedule, storyboard, transcript, tts, video)
+                      schedule, story, storyboard, transcript, tts, video, voices)
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -39,6 +39,11 @@ class Job:
     upscales: list = field(default_factory=list)
     upscaling: str = ""
     audio_mode: str = ""
+    # The CONTENT FORMAT of this video: "" (legacy) and "song" are every video made before story
+    # videos existed; "story" means the LLM invents the story beats and the voiceover is only the
+    # story's spoken lines. Not the channel's `video_type` (animated / real / tech), which is its
+    # look - this is what the video IS. Kids channels with characters only; always narration+music.
+    video_mode: str = ""
     voice_id: str = ""              # reference voice for Fish Speech cloning ("" = default voice)
     song_voice: str = ""            # singer of a generated song (config.SONG_VOICES); "" = legacy job, auto
     art_style: str = ""
@@ -291,6 +296,45 @@ def _resolve_lyrics(lyrics: str, channel: dict | None, audio_mode: str) -> str:
     return text
 
 
+def _is_story(job: Job) -> bool:
+    """Is this a story video? Always go through here - "" is a legacy song job, not a falsy story."""
+    return (getattr(job, "video_mode", "") or "song") == "story"
+
+
+STORY_SOURCES = ("topic", "description", "youtube")
+
+
+def _resolve_video_mode(video_mode: str, channel: dict | None, source: str,
+                        lyrics: str = "", upload_id: str = "") -> str:
+    """"song" (the default, and every video made before this existed) or "story", validated.
+
+    A story video tells a story the LLM invents, and its voiceover is only the spoken lines of that
+    story. It needs a kids channel with characters (the format is built on named speakers) and a
+    source the story can be written from - a pasted transcript is the one thing it cannot use, since
+    those words ARE the script and a story video writes its own.
+
+    Deliberately not a parameter of _resolve_choices - that signature is called positionally by
+    tests/test_lyric_sync.py and tests/test_resolution.py, which also index its 11-tuple."""
+    name = (video_mode or "").strip() or config.DEFAULT_VIDEO_MODE
+    if name not in config.VIDEO_MODES:
+        raise ValueError(f"unsupported video type: {video_mode}")
+    if name != "story":
+        return "song"
+    # hiding the dropdown in the UI is not enough: /jobs is a public API
+    if (channel or {}).get("audience") != "kids":
+        raise ValueError("story videos are only available on kids channels")
+    if not cast.enabled(channel) or not cast.active(channel):
+        raise ValueError("a story video needs the channel's characters: switch characters on and "
+                         "add a cast in Settings")
+    if source not in STORY_SOURCES:
+        raise ValueError("story videos are written from a topic, a description or a YouTube URL")
+    if lyrics:
+        raise ValueError("song lyrics belong to a song video - a story video is spoken, not sung")
+    if upload_id:
+        raise ValueError("an uploaded music track belongs to a song video - a story video is spoken")
+    return "story"
+
+
 def _resolve_music_upload(upload_id: str, audio_mode: str, lyrics: str):
     """The staged music track this job will use, validated; None when there is none. Hiding the
     control in the UI is not enough - /jobs is a public API. Rejected rather than repaired: a
@@ -476,20 +520,255 @@ def _save_plan(job: Job, plan: dict):
     (job.dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
 
 
-def _set_cast_used(job: Job, plan: dict) -> list:
+def _story_blob(plan: dict) -> str:
+    """Everything a story's own text says, for cast detection: the premise, every beat and every
+    spoken line. A character can be in the picture for the whole video without ever being named in
+    the spoken lines, so the beats have to count too or their look would stop being sent."""
+    s = plan.get("story") or {}
+    parts = [s.get("premise", "")]
+    for b in s.get("beats") or []:
+        parts += [b.get("setting", ""), b.get("action", ""), " ".join(b.get("characters") or [])]
+    for ln in s.get("lines") or []:
+        parts += [ln.get("speaker", ""), ln.get("text", "")]
+    return "\n".join(p for p in parts if p)
+
+
+def _set_cast_used(job: Job, plan: dict, *extra: str) -> list:
     """plan["cast_used"]: the channel characters that are in this video, in first-mention order.
 
     Every roster name found in the final title/narration counts. The names the script writer
     reported choosing ("cast_chosen") are added when the text itself names nobody - a pasted
     transcript never mentions who plays in the visuals, and a script may say "the little fox"
-    without naming Finn - otherwise the text (which the user may have edited) is the authority."""
-    used = cast.names(cast.used_characters(job.channel, plan.get("title", ""), plan.get("narration", "")))
+    without naming Finn - otherwise the text (which the user may have edited) is the authority.
+
+    extra: further text that also counts as "in this video" (a story video passes its beats)."""
+    used = cast.names(cast.used_characters(job.channel, plan.get("title", ""),
+                                           plan.get("narration", ""), *extra))
     if not used or job.source == "transcript":
         for n in plan.get("cast_chosen") or []:
             if n not in used:
                 used.append(n)
     plan["cast_used"] = used
     return used
+
+
+def _validate_story_lines(lines, current: list, used: list) -> list:
+    """The spoken lines as the user edited them on the approval screen, validated.
+
+    One line per scene, no more and no fewer: the scenes were drafted and the clips are built one
+    per line, so adding or removing one here would silently re-cut the video. A speaker the roster
+    does not know becomes the narrator, exactly as a drafted one does."""
+    if not isinstance(lines, list):
+        raise ValueError("the story must be a list of spoken lines")
+    if len(lines) != len(current):
+        raise ValueError(f"this story has {len(current)} scenes, but {len(lines)} lines were sent")
+    out = []
+    for i, (item, was) in enumerate(zip(lines, current), 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"scene {i}: each line must be an object")
+        text = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
+        if len(text) > config.MAX_STORY_LINE_CHARS:
+            raise ValueError(f"scene {i}: the spoken line is too long ({len(text)} characters, "
+                             f"at most {config.MAX_STORY_LINE_CHARS})")
+        want = str(item.get("speaker") or "").strip()
+        speaker = next((s for s in used if s.lower() == want.lower()), config.STORY_NARRATOR)
+        out.append({**was, "speaker": speaker, "text": text})
+    return out
+
+
+def _drop_stale_lines(job: Job, lines: list):
+    """Forget the audio of every line whose words changed, so it is spoken again."""
+    vdir = job.dir / "voices"
+    for i, ln in enumerate(lines, 1):
+        wav = vdir / f"line_{i:02d}.wav"
+        if ln.get("text", "") != ln.get("spoken_text") and wav.exists():
+            wav.unlink(missing_ok=True)
+            ln.pop("seconds", None)
+        ln["spoken_text"] = ln.get("text", "")
+
+
+def _clean_story_lines(job: Job, beats: list, lines: list, used: list, max_words: int) -> list:
+    """Draft-time pass over the spoken lines: a line that says out loud what the viewer can already
+    see, or that is too long to fit a clip, is written again - ONCE, and before the user ever reads
+    it. Nothing the user approved is rewritten later; that is the same rule _fit_narration follows.
+
+    Returns the issues to show on the approval screen (the lines are edited in place)."""
+    chars = cast.select_characters(job.channel, used)
+    hard, issues = story.max_line_words(), []
+    for i, (ln, beat) in enumerate(zip(lines, beats), 1):
+        text = (ln.get("text") or "").strip()
+        if not text:
+            continue
+        hits = story.describes_look(text, chars)
+        reason = "long" if len(text.split()) > hard else ("describes" if hits else "")
+        if not reason:
+            continue
+        job.set("drafting", f"rewriting line {i} of the story")
+        try:
+            new = llm.rewrite_story_line(ln, beat, reason, max_words, channel=job.channel,
+                                         used=used, speakers=used)
+        except Exception as e:  # noqa: BLE001 - one awkward line never costs a draft
+            issues.append(f"line {i} could not be written again ({e})")
+            continue
+        fresh = (new.get("text") or "").strip()
+        if not fresh or fresh == text:
+            continue
+        ln["text"], ln["rewritten"] = fresh, reason
+        still = story.describes_look(fresh, chars)
+        if reason == "describes":
+            issues.append(f"line {i} described the picture ({', '.join(hits[:3])}) and was written "
+                          "again" + (" - it still does, so edit it before approving" if still else ""))
+        else:
+            issues.append(f"line {i} took too long to say and was written again")
+    return issues
+
+
+def _youtube_transcript(job: Job, status: str = "transcript") -> str:
+    """The captions of job.url, fetched once and kept in transcript.txt, quality-gated.
+
+    status: the job status to show while fetching. A story video needs its source text in the DRAFT
+    thread (it has to reach the approval step like every other story), the other sources fetch it in
+    the worker, so the stage label differs but nothing else does."""
+    tfile = job.dir / "transcript.txt"
+    if tfile.exists() and tfile.stat().st_size > 50:
+        job.add_log("resume: reusing transcript")
+        return tfile.read_text(encoding="utf-8")
+    job.set(status, "fetching YouTube transcript")
+    info = transcript.get_transcript_info(job.url)
+    text, coverage = info["text"], info["seconds"]
+    words = len(text.split())
+    if words < config.MIN_TRANSCRIPT_WORDS:
+        raise RuntimeError(
+            f"This video cannot be processed: no proper transcript available "
+            f"(only {words} words of captions). Please choose a video with real speech.")
+    if coverage > 60 and words < (coverage / 60.0) * config.MIN_TRANSCRIPT_WPM:
+        raise RuntimeError(
+            f"This video cannot be processed: the transcript is too sparse for its length "
+            f"({words} words over {coverage / 60:.1f} minutes - likely music or little speech).")
+    job.dir.mkdir(parents=True, exist_ok=True)
+    tfile.write_text(text, encoding="utf-8")
+    job.add_log(f"transcript: {words} words covering {coverage:.0f}s of video")
+    return text
+
+
+def _story_reference(job: Job, speaker: str, pins: dict, notes: list):
+    """(ref_audio, ref_text, label) for one spoken line, in priority order:
+
+      1. a voice already pinned for this speaker in this video (so a character never changes voice
+         mid-story, and a resume reuses the same pin);
+      2. the reference voice configured for that character on the channel;
+      3. for the narrator, the video's own reference voice (the New Video dialog's Voice picker);
+      4. nothing - Fish Speech invents a voice, which is then pinned for this speaker.
+
+    A configured voice that has since been deleted falls through to 4 with a note, never an error:
+    the same thing the narration branch already does for a deleted job voice."""
+    pinned = pins.get(speaker)
+    if pinned:
+        return Path(pinned[0]), pinned[1], "pinned"
+    if speaker != config.STORY_NARRATOR:
+        vid = cast.voice_id_for(job.channel, speaker)
+        if vid:
+            ref = voices.reference(vid)
+            if ref:
+                return ref[0], ref[1], f"voice:{vid}"
+            notes.append(f"{speaker}'s reference voice no longer exists - the channel's default "
+                         "character voice is used instead")
+        # the channel's default character voice: on a kids channel this is the one setting that
+        # makes every character without a voice of their own sound like a child
+        fallback = (job.channel or {}).get("character_voice") or ""
+        if fallback:
+            ref = voices.reference(fallback)
+            if ref:
+                return ref[0], ref[1], f"voice:{fallback}"
+            notes.append("the channel's default character voice no longer exists - a voice is "
+                         "cloned from each character's first line instead")
+        return None, "", "cloned"
+    if job.voice_id == voices.RANDOM_VOICE:
+        # a different narrator every line is the one thing a story must never do
+        notes.append("the random voice cannot narrate a story - one voice is cloned and kept")
+        return None, "", "cloned"
+    ref = voices.reference(job.voice_id)
+    if ref:
+        return ref[0], ref[1], f"voice:{job.voice_id}"
+    if job.voice_id:
+        notes.append(f"reference voice {job.voice_id} no longer exists - a narrator voice is cloned")
+    return None, "", "cloned"
+
+
+def _story_audio(job: Job, plan: dict) -> tuple:
+    """Speak every line of the story, each in its speaker's own voice, and lay the lines out on the
+    clip grid. Returns (narration_file, durs, line_seconds).
+
+    Nothing is transcribed and nothing is aligned: we wrote the words and we built the track, so
+    every timestamp is known exactly. The clip each line gets is the job's preset length, or longer
+    when the line needs the room - never shorter, so a run of terse lines still paces normally.
+
+    Resume-safe at two levels: each line's wav is kept, and once the track exists the whole grid is
+    read back from plan["story"]["clip_seconds"] instead of being recomputed, so a Settings change
+    between runs can never re-cut a job and strand its scene prompts."""
+    d = job.dir
+    st = plan["story"]
+    lines, beats = st["lines"], st["beats"]
+    n = len(lines)
+    narration_file = d / "narration.wav"
+    if (narration_file.exists() and narration_file.stat().st_size > 1000
+            and len(st.get("clip_seconds") or []) == n):
+        job.add_log("resume: reusing the spoken story")
+        return narration_file, [float(x) for x in st["clip_seconds"]], st.get("line_seconds") or []
+
+    vdir = d / "voices"
+    vdir.mkdir(parents=True, exist_ok=True)
+    pins = {k: (str(vdir / v["file"]), v["text"])
+            for k, v in (st.get("voice_pins") or {}).items() if (vdir / v["file"]).exists()}
+    notes, client = [], None
+    for i, ln in enumerate(lines, 1):
+        _check_cancel(job)
+        text = (ln.get("text") or "").strip()
+        wav = vdir / f"line_{i:02d}.wav"
+        if not text:
+            ln["seconds"] = 0.0
+            continue
+        if wav.exists() and wav.stat().st_size > 1000:
+            ln.setdefault("seconds", round(tts.audio_duration(wav), 3))
+        else:
+            speaker = ln.get("speaker") or config.STORY_NARRATOR
+            ref_audio, ref_text, label = _story_reference(job, speaker, pins, notes)
+            for note in notes:
+                job.add_log(note)
+            notes.clear()
+            job.set("tts", f"speaking line {i}/{n} ({speaker})")
+            client = client or tts.connect()
+            ln["seconds"] = round(tts.synthesize(text, wav, on_progress=_progress(job, "tts"),
+                                                 ref_audio=ref_audio, ref_text=ref_text,
+                                                 client=client), 3)
+            ln["voice"] = label
+        speaker = ln.get("speaker") or config.STORY_NARRATOR
+        if speaker not in pins and ln.get("voice") in ("cloned", None):
+            # the first line this speaker says becomes their voice for the rest of the video
+            pins[speaker] = (str(wav), text)
+            st.setdefault("voice_pins", {})[speaker] = {"file": wav.name, "text": text}
+        _save_plan(job, plan)
+
+    line_seconds = [float(ln.get("seconds") or 0.0) for ln in lines]
+    durs = story.clip_durations(line_seconds, _clip_seconds(job))
+    long = [i for i, dur in enumerate(durs, 1) if dur > config.STORY_MAX_CLIP_SECONDS]
+    if long:
+        job.add_log(f"line(s) {', '.join(map(str, long))} speak longer than "
+                    f"{config.STORY_MAX_CLIP_SECONDS:g}s, so their scenes run long")
+    parts, at = [], 0.0
+    for i, (ln, dur) in enumerate(zip(lines, durs), 1):
+        if float(ln.get("seconds") or 0.0) > 0:
+            parts.append((vdir / f"line_{i:02d}.wav", at + config.STORY_LINE_LEAD))
+        at += dur
+    job.set("tts", "laying the spoken story out on the clips")
+    total = tts.concat_timed(parts, narration_file, total=at)
+    st["clip_seconds"] = durs
+    st["line_seconds"] = line_seconds
+    st["audio"] = {"duration": round(total, 3), "lead": config.STORY_LINE_LEAD,
+                   "gap": config.STORY_LINE_GAP, "spoken": sum(1 for s in line_seconds if s > 0)}
+    _save_plan(job, plan)
+    job.add_log(f"spoken story: {st['audio']['spoken']}/{n} lines, {total:.1f}s")
+    return narration_file, durs, line_seconds
 
 
 def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None) -> tuple:
@@ -760,24 +1039,8 @@ def _run(job: Job):
             raise RuntimeError("the repository README was not fetched - resume the job to retry")
         text = tfile.read_text(encoding="utf-8")
         job.add_log("reusing the fetched README")
-    elif tfile.exists() and tfile.stat().st_size > 50:
-        text = tfile.read_text(encoding="utf-8")
-        job.add_log("resume: reusing transcript")
     else:
-        job.set("transcript", "fetching YouTube transcript")
-        info = transcript.get_transcript_info(job.url)
-        text, coverage = info["text"], info["seconds"]
-        words = len(text.split())
-        if words < config.MIN_TRANSCRIPT_WORDS:
-            raise RuntimeError(
-                f"This video cannot be processed: no proper transcript available "
-                f"(only {words} words of captions). Please choose a video with real speech.")
-        if coverage > 60 and words < (coverage / 60.0) * config.MIN_TRANSCRIPT_WPM:
-            raise RuntimeError(
-                f"This video cannot be processed: the transcript is too sparse for its length "
-                f"({words} words over {coverage / 60:.1f} minutes - likely music or little speech).")
-        tfile.write_text(text, encoding="utf-8")
-        job.add_log(f"transcript: {words} words covering {coverage:.0f}s of video")
+        text = _youtube_transcript(job)
 
     _check_cancel(job)
     # 2. story plan: title, visual style, story text (reused on resume)
@@ -816,8 +1079,9 @@ def _run(job: Job):
     # "promises nothing" is a legitimate falsy answer that must be remembered, or every resume
     # re-decides (and _chat runs at temperature 0.7, so it could decide differently).
     # "music" mode is skipped: what the viewer hears there is the song, and its lyrics are not
-    # written until further down.
-    if "resource" not in plan and mode != "music":
+    # written until further down. A story video is skipped too - a kids story hands the viewer
+    # nothing, and _draft_story already wrote the key away so no resume re-decides it.
+    if "resource" not in plan and mode != "music" and not _is_story(job):
         job.set("planning", "checking whether the script promises the viewer anything")
         try:
             res, origin, url = _viewer_document(job, plan, text)
@@ -837,8 +1101,30 @@ def _run(job: Job):
 
     narration_file = None
     music_file = None
+    beats = None
 
-    if mode == "music":
+    if _is_story(job):
+        # 3. the spoken story: every line in its speaker's own voice, laid out on a clip grid built
+        #    around the lines. Nothing is transcribed and nothing is aligned - we wrote the words
+        #    and we built the track, so every timestamp is already exact.
+        _check_cancel(job)
+        if not (plan.get("story") or {}).get("lines"):
+            raise RuntimeError("this story has no spoken lines - request a new draft")
+        narration_file, durs, line_seconds = _story_audio(job, plan)
+        n = len(durs)
+        beats = (plan["story"]["beats"] + [{}] * n)[:n]
+        timed = story.timeline(plan["story"]["lines"], line_seconds, durs)
+        segments = [t["text"] for t in timed]
+        timelines = [story.format_timeline(t) for t in timed]
+        aligned = True                      # we wrote every word: there is nothing to mis-hear
+        kind = "story being told"
+        sync_text = plan["narration"]
+        plan["timed_segments"] = timed
+        plan["lyric_align"] = {"source": "story", "aligned": True, "ratio": 1.0,
+                               "words": len(plan["narration"].split()), "inferred": 0,
+                               "wps": round(len(plan["narration"].split())
+                                            / max(0.1, sum(line_seconds)), 2)}
+    elif mode == "music":
         # 3. music first: the actual track length drives the clip count, and the
         #    lyrics drive the per-clip scenes so the song matches each clip.
         _check_cancel(job)
@@ -1029,7 +1315,6 @@ def _run(job: Job):
             duration = tts.audio_duration(narration_file)
             job.add_log("resume: reusing narration audio")
         else:
-            from services import voices
             ref_audio, ref_text, keep_voice = None, "", True
             if job.voice_id == voices.RANDOM_VOICE:
                 keep_voice = False
@@ -1086,7 +1371,8 @@ def _run(job: Job):
                                           on_progress=scene_progress, on_review_issue=review_issue,
                                           channel=job.channel, used=plan.get("cast_used"),
                                           opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None,
-                                          timelines=timelines, clip_secs=durs, aligned=aligned)
+                                          timelines=timelines, clip_secs=durs, aligned=aligned,
+                                          beats=beats)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -1347,7 +1633,12 @@ class JobManager:
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
-               lyrics: str = "", music_upload_id: str = "") -> Job:
+               lyrics: str = "", music_upload_id: str = "", video_mode: str = "") -> Job:
+        video_mode = _resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
+        if video_mode == "story":
+            # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
+            # and a kids channel usually defaults to music - the narrator would lose their voice
+            audio_mode, storyboard_flag = "narration+music", False
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
@@ -1359,13 +1650,21 @@ class JobManager:
                   aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
                   storyboard=sb, lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
+                  video_mode=video_mode,
+                  status="drafting" if video_mode == "story" else "queued",
+                  detail="writing the story with the LLM" if video_mode == "story" else "",
                   music_upload=(up or {}).get("name", ""),
                   music_seconds=float((up or {}).get("seconds", 0.0)))
         job.save()
         _install_upload(job, up)
         with self.lock:
             self.jobs[job.id] = job
-            self.queue.append(job.id)
+            if video_mode != "story":
+                self.queue.append(job.id)
+        # a story is always reviewed before anything renders, whatever it was created from, so even
+        # a URL story job drafts in its own thread instead of going straight into the GPU queue
+        if video_mode == "story":
+            self._start_draft(job)
         return job
 
     def _loop(self):
@@ -1460,7 +1759,8 @@ class JobManager:
                       channel: dict | None = None, storyboard_flag=None, megapixels=None,
                       owner: str = "", resolution: str = "", song_voice: str = "",
                       start: bool = True, title: str = "", plan: dict | None = None,
-                      page_scroll=None, lyrics: str = "", music_upload_id: str = "") -> Job:
+                      page_scroll=None, lyrics: str = "", music_upload_id: str = "",
+                      video_mode: str = "") -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -1476,6 +1776,9 @@ class JobManager:
         # only a repo job ever produces a page.png to scroll
         page_scroll = bool(source_kind == REPO_SOURCE
                            and (True if page_scroll is None else page_scroll))
+        video_mode = _resolve_video_mode(video_mode, channel, source_kind, lyrics, music_upload_id)
+        if video_mode == "story":       # see the note in submit(): forced before the resolve
+            audio_mode, storyboard_flag = "narration+music", False
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice)
@@ -1487,8 +1790,10 @@ class JobManager:
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
                   url=text if source_kind == REPO_SOURCE else "",
                   source=source_kind, topic=text, title=title.strip(), page_scroll=page_scroll,
+                  video_mode=video_mode,
                   status="drafting" if start else "planned",
-                  detail=("writing script with the LLM" if start else
+                  detail=(("writing the story with the LLM" if video_mode == "story"
+                           else "writing script with the LLM") if start else
                           "needs setup - open the job to choose length and resolution"),
                   aspect_ratio=aspect_ratio, megapixels=mp,
                   resolution=res, song_voice=sv,
@@ -1515,7 +1820,7 @@ class JobManager:
                       video_length: str = "", audio_mode: str = "", voice_id: str = "",
                       storyboard_flag=None, megapixels=None, resolution: str = "",
                       song_voice: str = "", lyrics: str = "",
-                      music_upload_id: str = "") -> Job:
+                      music_upload_id: str = "", video_mode: str = "") -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -1533,7 +1838,12 @@ class JobManager:
                   "defaults": {"aspect_ratio": job.aspect_ratio, "art_style": job.art_style,
                                "video_length": job.video_length, "audio_mode": job.audio_mode,
                                "song_voice": job.song_voice, "storyboard": job.storyboard,
-                               "voice_id": job.voice_id}}
+                               "voice_id": job.voice_id, "video_mode": job.video_mode}}
+            # resolved against the snapshot frozen at plan time, exactly as the lyrics are below
+            vmode = _resolve_video_mode(video_mode or job.video_mode, ch, job.source,
+                                        lyrics, music_upload_id)
+            if vmode == "story":        # see the note in submit(): forced before the resolve
+                audio_mode, storyboard_flag = "narration+music", False
             ar, style, vlen, mode, voice, sv, _cid, _snap, sb, mp, res = self._resolve_choices(
                 aspect_ratio, art_style, video_length, audio_mode, voice_id, ch, storyboard_flag,
                 megapixels if megapixels not in (None, "", 0) else job.megapixels,
@@ -1548,23 +1858,90 @@ class JobManager:
                 vlen = "Auto"          # the lyrics / the track set the length: keep no unused preset
             if up:      # the job folder exists since plan time; nothing was mutated before this
                 music_upload.install(up["id"], job.dir / "music.mp3")
-            job.set("drafting", "writing script with the LLM", aspect_ratio=ar, art_style=style,
+            job.set("drafting",
+                    "writing the story with the LLM" if vmode == "story" else "writing script with the LLM",
+                    aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
                     storyboard=sb, megapixels=mp, resolution=res, lyrics=words, setup_done=True,
+                    video_mode=vmode,
                     music_upload=(up or {}).get("name", ""),
                     music_seconds=float((up or {}).get("seconds", 0.0)))
             job.add_log(f"setup confirmed ({'your uploaded track' if up else 'your lyrics' if words else vlen}, "
                         f"{ar}, {mp} MP, {res}, "
-                        f"{'song' if mode == 'music' else 'voiceover'}) - writing the script")
+                        f"{'story' if vmode == 'story' else 'song' if mode == 'music' else 'voiceover'})"
+                        " - writing the script")
         self._start_draft(job)
         return job
 
     def _start_draft(self, job: Job, feedback: str = ""):
         threading.Thread(target=self._draft_script, args=(job, feedback), daemon=True).start()
 
+    def _draft_story(self, job: Job, feedback: str = ""):
+        """The two LLM calls a story video is drafted from, in this order:
+
+        1. the BEATS - the video content: what happens, and therefore what is drawn;
+        2. the LINES - the voiceover, written FROM those beats.
+
+        That order is the whole point of the format. A writer asked for narration first has to
+        imagine a shot and then describe it, which is how you get "Ellie the elephant, wearing a
+        yellow dress, is riding a blue train"; a writer handed a beat that already exists can simply
+        say what happens. The lines are written with the cast sheet in spoken mode, so the writer is
+        never even shown the looks it must not recite."""
+        pfile = job.dir / "plan.json"
+        previous = None
+        if feedback and pfile.exists():
+            try:
+                previous = (json.loads(pfile.read_text(encoding="utf-8")).get("story") or {}).get("beats")
+            except Exception:  # noqa: BLE001
+                previous = None
+        text = job.topic if job.source in PROMPT_SOURCES else _youtube_transcript(job, "drafting")
+        clip_s = _clip_seconds(job)
+        target = _length_params(job)[1] or float(config.TARGET_VIDEO_SECONDS or 0) or 60.0
+        n = story.beat_count(target, clip_s)
+        job.set("drafting", f"planning {n} story scenes with the LLM")
+        plan = llm.write_story_beats(text, job.source, n, clip_s,
+                                     art_style=config.ART_STYLES.get(job.art_style, ""),
+                                     feedback=feedback, previous=previous,
+                                     channel=job.channel, hook=job.hook)
+        beats = plan.pop("beats")
+        plan["video_mode"] = "story"
+        plan["audio_mode"] = job.audio_mode
+        plan["narration"] = ""
+        plan["story"] = {"premise": plan.pop("premise", ""), "beats": beats, "lines": [],
+                         "issues": [], "target_seconds": round(target, 2),
+                         "clip_seconds_req": clip_s}
+        if job.thumb_idea:
+            plan["thumbnail_idea"] = job.thumb_idea
+        # a kids story hands the viewer nothing: write the key away so no resume re-decides it
+        plan["resource"] = None
+        used = _set_cast_used(job, plan, _story_blob(plan))
+        job.add_log("cast in this story: " + (", ".join(used) or "none"))
+
+        max_words = story.line_words(clip_s)
+        job.set("drafting", f"writing what is said over the {len(beats)} scenes")
+        lines, issues = llm.write_story_lines(beats, used, channel=job.channel, used=used,
+                                              max_words=max_words)
+        issues += _clean_story_lines(job, beats, lines, used, max_words)
+        plan["story"]["lines"] = lines
+        plan["story"]["issues"] = issues
+        plan["narration"] = "\n".join(ln["text"] for ln in lines if ln.get("text", "").strip())
+        used = _set_cast_used(job, plan, _story_blob(plan))
+        job.dir.mkdir(parents=True, exist_ok=True)
+        pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        job.set("awaiting_approval", "story ready - review and approve",
+                title=plan.get("title", ""))
+        for line in issues:
+            job.add_log(line)
+        spoken = sum(1 for ln in lines if ln.get("text", "").strip())
+        job.add_log(f"story drafted: {len(beats)} scenes, {spoken} spoken lines "
+                    f"- awaiting approval")
+
     def _draft_script(self, job: Job, feedback: str = ""):
         """LLM-only work: runs in its own thread, never in the GPU queue."""
         try:
+            if _is_story(job):
+                self._draft_story(job, feedback)
+                return
             job.set("drafting", "writing script with the LLM")
             previous = None
             pfile = job.dir / "plan.json"
@@ -1614,7 +1991,7 @@ class JobManager:
             job.set("failed", f"script drafting failed: {e}", error=str(e))
 
     def approve_script(self, job_id: str, title: str | None = None,
-                       narration: str | None = None) -> Job:
+                       narration: str | None = None, lines: list | None = None) -> Job:
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
@@ -1625,10 +2002,24 @@ class JobManager:
             plan = json.loads(pfile.read_text(encoding="utf-8"))
             if title and title.strip():
                 plan["title"] = title.strip()
-            if narration and narration.strip():
+            extra = ()
+            if _is_story(job):
+                # the spoken lines ARE the narration here, so the free-text box is never applied:
+                # an edited paragraph would contradict the lines the clips are timed to
+                if lines is not None:
+                    st = plan.setdefault("story", {})
+                    st["lines"] = _validate_story_lines(lines, st.get("lines") or [],
+                                                        plan.get("cast_used") or [])
+                    _drop_stale_lines(job, st["lines"])
+                plan["narration"] = "\n".join(
+                    ln["text"] for ln in (plan.get("story") or {}).get("lines") or []
+                    if ln.get("text", "").strip())
+                extra = (_story_blob(plan),)
+            elif narration and narration.strip():
                 plan["narration"] = narration.strip()
             if cast.active(job.channel):   # the user may have written characters in or out
-                job.add_log("cast in this video: " + (", ".join(_set_cast_used(job, plan)) or "none"))
+                job.add_log("cast in this video: "
+                            + (", ".join(_set_cast_used(job, plan, *extra)) or "none"))
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("queued", "script approved - waiting for video generation",
                     title=plan.get("title", ""), script_approved=True)

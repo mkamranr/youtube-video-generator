@@ -80,6 +80,11 @@ async def auth_gate(request: Request, call_next):
     return JSONResponse({"detail": "not authenticated"}, status_code=401)
 
 
+# what the Video type dropdown reads, for the New Video dialog, the planned-job setup card and
+# the channel editor. The values themselves live in config.VIDEO_MODES.
+VIDEO_MODE_LABELS = {"song": "Song based", "story": "Story based"}
+
+
 class Submit(BaseModel):
     urls: list[str] = []
     topic: str = ""
@@ -98,6 +103,7 @@ class Submit(BaseModel):
     music_upload_id: str = ""  # id from POST /api/music-uploads: the user's own track is used instead of
                                # a generated song and sets the video length (audio_mode "music" only)
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
+    video_mode: str = ""       # "" -> channel default; "story" = a kids story video (re-validated here)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
 
@@ -211,7 +217,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     song_voice=body.song_voice,
                                                     lyrics=body.lyrics,
                                                     music_upload_id=body.music_upload_id,
-                                                    page_scroll=body.page_scroll))]
+                                                    page_scroll=body.page_scroll,
+                                                    video_mode=body.video_mode))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
@@ -219,7 +226,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                          resolution=body.resolution,
                                          song_voice=body.song_voice,
                                          lyrics=body.lyrics,
-                                         music_upload_id=body.music_upload_id)) for u in urls]
+                                         music_upload_id=body.music_upload_id,
+                                         video_mode=body.video_mode)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -247,6 +255,9 @@ class SceneUpdates(BaseModel):
 class ApproveBody(BaseModel):
     title: str = ""
     narration: str = ""
+    # story videos: the reviewed spoken lines, one per scene. None = leave them as drafted; an
+    # empty list is NOT the same thing and is rejected, so a broken form cannot blank a story.
+    lines: list[dict] | None = None
 
 
 class RedraftBody(BaseModel):
@@ -265,6 +276,7 @@ class JobSetup(BaseModel):
     song_voice: str = ""
     lyrics: str = ""           # kids channels + Generate Song; "" means none (clearing the box removes them)
     music_upload_id: str = ""  # the user's own track for this video; "" means none (never inherited)
+    video_mode: str = ""       # "" inherits the planned job's own format (unlike lyrics)
     storyboard: bool | None = None
 
 
@@ -285,7 +297,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                resolution=body.resolution,
                                                song_voice=body.song_voice,
                                                lyrics=body.lyrics,
-                                               music_upload_id=body.music_upload_id))
+                                               music_upload_id=body.music_upload_id,
+                                               video_mode=body.video_mode))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -296,7 +309,7 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
 def approve_script(job_id: str, body: ApproveBody, user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)
     try:
-        return _job_json(manager.approve_script(job_id, body.title, body.narration))
+        return _job_json(manager.approve_script(job_id, body.title, body.narration, body.lines))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -703,6 +716,8 @@ def options(user: dict = Depends(auth.require_user)):
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
             "default_source": config.DEFAULT_SOURCE,
             "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music",
+            "video_modes": config.VIDEO_MODES, "default_video_mode": config.DEFAULT_VIDEO_MODE,
+            "video_mode_labels": VIDEO_MODE_LABELS,
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
             "channels": chans,
             # the caller's own first channel; "" when they have none yet (admins pick explicitly)
@@ -881,6 +896,7 @@ def list_channels_api(user: dict = Depends(auth.require_user)):
             "art_styles": list(config.ART_STYLES), "aspect_ratios": config.ASPECT_RATIOS,
             "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES,
             "song_voices": config.SONG_VOICES, "song_voice_labels": config.SONG_VOICE_LABELS,
+            "video_modes": config.VIDEO_MODES, "video_mode_labels": VIDEO_MODE_LABELS,
             "max_cast": channels.MAX_CAST, "max_rules_chars": channels.MAX_RULES_CHARS}
 
 

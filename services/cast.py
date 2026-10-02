@@ -170,6 +170,17 @@ def looks_prefix(channel: dict | None, names: list | None) -> str:
                      for c in select_characters(channel, names) if c.get("look", "").strip())
 
 
+def voice_id_for(channel: dict | None, name: str) -> str:
+    """The reference voice configured for this character ("" = none, unknown, or characters off).
+
+    Story videos speak every line in its speaker's own voice. The lookup goes through active(), so a
+    channel with characters switched off resolves every speaker to the video's own voice, which is
+    the same thing every other prompt-facing helper in this module does."""
+    for c in select_characters(channel, [name]):
+        return str(c.get("voice_id") or "").strip()
+    return ""
+
+
 def with_prefix(channel: dict | None, text: str, only: list | None = None) -> str:
     """text with the look prefix prepended when a cast character is named in it."""
     p = render_prefix(channel, text, only=only)

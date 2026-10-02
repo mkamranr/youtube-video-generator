@@ -56,6 +56,12 @@ SPOKEN_OVERRIDE = ("The channel rules and the character sheet above describe how
                    "they apply to image and video prompts only. What you write here is SPOKEN ALOUD, so it "
                    "must never contain appearance detail - name a character and move on. ")
 
+BRIEF_OVERRIDE = ("The channel rules and the character sheet above describe how the characters are DRAWN: "
+                  "they apply to the finished image and video prompts, and each character's full look is "
+                  "attached to those automatically, later. What you write here is a short PLAN, not an "
+                  "image prompt - name a character and say what they do, never repeat or invent appearance "
+                  "detail, and never write camera, lens, shot or art-style words. ")
+
 # ---- channels whose videos have no characters (cast.enabled() is False) ----
 # The cast machinery goes quiet on its own (services/cast.py active() returns []), but an empty
 # roster is not an instruction: with nothing said, the writer happily invents a protagonist. These
@@ -107,7 +113,7 @@ def _narration_rule(channel: dict | None) -> str:
 
 
 def _system(channel: dict | None = None, used: list | None = None, rules: bool = True,
-            spoken: bool = False) -> str:
+            spoken: bool = False, brief: bool = False) -> str:
     """The per-job system prompt.
 
     used:  None while the script is being written (the cast sheet lists the whole roster and asks
@@ -117,7 +123,11 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
            such as SEO and music).
     spoken: the call writes words a voice reads out (narration, script review, song lyrics). The
            cast sheet then carries no looks, and the override cancels the "repeat the look"
-           instructions a channel's own rules text may contain."""
+           instructions a channel's own rules text may contain.
+    brief: the call writes a short plan that BECOMES an image prompt later (story beats). The sheet
+           carries no looks either - the look is re-attached deterministically by cast.with_prefix
+           and by write_scenes' own full sheet - but the override says why, so the writer does not
+           simply forget the characters exist."""
     ch = _channel(channel)
     chars = cast.enabled(ch)
     kind = VIDEO_KIND.get(ch["video_type"], VIDEO_KIND["real"])
@@ -140,8 +150,9 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
             "channel naturally only where it fits (intros, outros, sign-offs), without forcing it "
             "into every line. "
             + rules_block
-            + (cast.sheet_text(ch, used=used, spoken=spoken) if chars else NO_CHARACTER_RULES)
-            + ((SPOKEN_OVERRIDE if chars else SPOKEN_NO_CHARACTER_OVERRIDE) if spoken else "")
+            + (cast.sheet_text(ch, used=used, spoken=spoken or brief) if chars else NO_CHARACTER_RULES)
+            + (BRIEF_OVERRIDE if (brief and chars) else
+               (SPOKEN_OVERRIDE if chars else SPOKEN_NO_CHARACTER_OVERRIDE) if (spoken or brief) else "")
             + "Always answer with a single JSON object and nothing else.")
 
 
@@ -191,10 +202,22 @@ TECH_STYLE_EXAMPLE = ("Sleek modern tech-documentary look: real studios, labs an
 def _style_example(channel: dict | None) -> str:
     return TECH_STYLE_EXAMPLE if _channel(channel)["video_type"] == "tech" else STYLE_EXAMPLE
 
+
+def _style_rule(art_style: str, channel: dict | None) -> str:
+    """What the writer is asked to return under "style": the one sentence that becomes the global
+    look of every shot, pinned to the job's art style when it has one."""
+    if art_style:
+        return (f'one sentence describing the global visual style applied to every shot. '
+                f'It MUST follow this art direction: "{art_style}" - keep that exact aesthetic '
+                f'and expand it with detail that fits this video.')
+    return (f'one sentence describing the global visual style applied to every shot, similar to: '
+            f'"{_style_example(channel)}"')
+
 SCENE_RULES = """Each scene prompt describes ONE continuous {secs}-second shot for a text-to-video model and must contain, in this order:
 - Scene overview: subject, setting, action, mood (2-3 sentences).
-- Storyboard with timestamps, e.g. "[0s-2s] ... [2s-4s] ... [4s-{secs}s] ...". When a sung-lyrics TIMELINE
-  is given for the clip, the storyboard timestamps follow it: each visual beat starts when its line is sung.
+- Storyboard with timestamps, e.g. "[0s-2s] ... [2s-4s] ... [4s-{secs}s] ...". When a TIMELINE of what is
+  heard is given for the clip, the storyboard timestamps follow it: each visual beat starts when its
+  line is heard.
 - Camera: angle and movement.
 - Audio: ambient sound / effects appropriate to the scene (no speech, no narration, no music with lyrics).
 - End with: "No text, subtitles, logos or watermarks of any kind."
@@ -281,12 +304,7 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
     hook: the opening line a weekly plan chose for this video (services/planner.py); the script
     starts from it. Empty for every other job."""
     words = words or config.NARRATION_WORDS
-    if art_style:
-        style_rule = (f'one sentence describing the global visual style applied to every shot. '
-                      f'It MUST follow this art direction: "{art_style}" - keep that exact aesthetic '
-                      f'and expand it with detail that fits this video.')
-    else:
-        style_rule = f'one sentence describing the global visual style applied to every shot, similar to: "{_style_example(channel)}"'
+    style_rule = _style_rule(art_style, channel)
     narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
                       f'no headings, no stage directions, no emojis. It will drive the whole video. '
                       f'{_narration_rule(channel)} '
@@ -408,12 +426,236 @@ def _secs(x) -> str:
     return f"{float(x):.1f}".rstrip("0").rstrip(".")
 
 
+# ---- story videos ----------------------------------------------------------
+# Two calls, in this order, and the order is the whole point. The BEATS are the video content -
+# what happens, and therefore what is drawn. The LINES are the voiceover, written FROM those beats.
+# Doing it the other way round is exactly what produces narration that describes the picture
+# ("Ellie the elephant, wearing a yellow dress, is riding a blue train"), because the writer is then
+# describing a shot it has only just imagined. Here the picture already exists when the words are
+# written, so the words are free to simply tell the story.
+
+BEAT_RULES = """BEAT RULES:
+- The beats are a STORY, not a list of moments: beat 1 sets things up, the middle beats raise and
+  answer one small problem, and the last beat ends it. Nothing is left hanging.
+- ONE action per beat. If a beat needs the words "and then", it is two beats.
+- NEVER describe how anyone or anything LOOKS - no colours, clothes, fur, feathers, size, materials,
+  markings or ages. Name the character and say what they do; their look is added later, automatically.
+- NEVER write camera, lens, shot, lighting, editing or art-style words (close-up, pan, cut, wide
+  shot, zoom, cinematic, 4K). The shot is written later, from the beat.
+- No dialogue here and no quotation marks: the spoken words are written separately, from these beats."""
+
+
+def write_story_beats(text: str, source_kind: str, n: int, clip_seconds: float,
+                      art_style: str = "", feedback: str = "", previous: dict | None = None,
+                      channel: dict | None = None, hook: str = "") -> dict:
+    """The VIDEO content of a story video: title, premise, visual style and exactly n story beats.
+
+    One call, not one per beat: the beats have to work as a single story, unlike write_scenes, where
+    one call per clip is what stops a scene drifting from the fixed audio segment it must match.
+
+    Written with the cast sheet in `brief` mode, so the beats carry no appearance detail at all -
+    the canonical look is re-attached deterministically by cast.with_prefix at render time and by
+    write_scenes' own full sheet. Returns {title, premise, style, beats, cast_chosen}, where each
+    beat is {"setting", "action", "characters"}."""
+    secs = _secs(config.actual_clip_seconds(clip_seconds))
+    if source_kind == "description":
+        task = ('The user wrote the following description / outline for a story video. Build the '
+                f'story from it, staying FAITHFUL to their {_faithful_keys(channel)} - expand and '
+                'polish it, do not replace it:\n"""' + text + '"""')
+    elif source_kind in ("topic", ""):
+        task = 'Create an original STORY for this channel about this topic: "' + text + '"'
+    else:
+        task = ('Below is source content. Turn it into an original STORY for this channel that '
+                'carries the same ideas, told as something that happens to the characters:\n"""'
+                + text[: config.MAX_TRANSCRIPT_CHARS] + '"""')
+    task += _cast_selection_rule(channel, text[:600])
+    if hook.strip():
+        task += ("\nThe story opens on this moment - make it beat 1: "
+                 f'"{hook.strip()}"')
+    revision = ""
+    if feedback:
+        revision = '\n\nThe user reviewed a previous version and asked for these changes: "' + feedback + '"'
+        if previous:
+            revision += ("\nPrevious beats:\n"
+                         + "\n".join(f'{i}. [{b.get("setting", "")}] {b.get("action", "")}'
+                                     for i, b in enumerate(previous, 1))
+                         + "\nRevise them accordingly.")
+    user = f"""{task}{revision}
+
+The story is told in {n} BEATS. Each beat becomes ONE {secs}-second animated shot, in order, and
+each shot is rendered starting from the LAST FRAME of the one before it - so consecutive beats share
+a place, or the characters walk, ride, climb or open a door into the next one. Never a cut.
+
+Return JSON with keys:
+- "title": short title.
+- "premise": 2-3 sentences telling the whole story in order (beginning, middle, end).
+- "beats": exactly {n} objects, in story order, each with:
+    - "setting": where this beat happens, 3-8 words ("on the sunny platform", "inside the carriage").
+    - "action": ONE sentence - what HAPPENS. A physical, visible action with a clear start and end
+      ("Ellie steps up onto the train"), never a feeling, a summary or a topic.
+    - "characters": the names of the cast characters present in this beat (may be empty).
+- "style": {_style_rule(art_style, channel)}
+
+{BEAT_RULES}"""
+    out = _chat([{"role": "system", "content": _system(channel, brief=True)},
+                 {"role": "user", "content": user}])
+    plan = {"title": str(out.get("title") or "").strip(),
+            "premise": str(out.get("premise") or "").strip(),
+            "style": str(out.get("style") or "").strip(),
+            "beats": _as_beats(out.get("beats"), n)}
+    plan["cast_chosen"] = _chosen(channel, out.pop("characters", None))
+    if len(plan["beats"]) < config.STORY_MIN_BEATS:
+        raise RuntimeError(f"vLLM returned only {len(plan['beats'])} story beats "
+                           f"(at least {config.STORY_MIN_BEATS} are needed)")
+    return plan
+
+
+def _as_beats(value, n: int) -> list:
+    """The reply's "beats" normalised to at most n well-formed beats.
+
+    Short replies are kept as they are (the clip grid follows the beats, so a 9-beat story is simply
+    a slightly shorter video); long ones are cut, because every extra beat is another GPU render."""
+    out = []
+    for item in (value or [])[:n]:
+        if isinstance(item, str):
+            item = {"action": item}
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or item.get("beat") or "").strip()
+        if not action:
+            continue
+        chars = item.get("characters")
+        if isinstance(chars, str):
+            chars = re.split(r"[,;/]| and ", chars)
+        out.append({"setting": str(item.get("setting") or "").strip(),
+                    "action": action,
+                    "characters": [str(c).strip() for c in (chars or []) if str(c).strip()]})
+    return out
+
+
+NO_DESCRIPTION_RULE = """THE MOST IMPORTANT RULE: these words are SPOKEN ALOUD over a picture the viewer can already see.
+They must NEVER describe that picture. Never say what anyone wears, what colour or size anything is,
+what species or age someone is, where the camera is, or what the scene looks like.
+  WRONG: "Ellie the elephant, wearing a yellow dress with a long nose and blue trousers, is riding a blue train."
+  RIGHT: "Ellie waited for the train to arrive."
+  RIGHT: "All aboard!"
+  RIGHT: "Ellie boarded the train and looked around."
+Write it the way a picture book is read out loud: short sentences that move the story forward, plus
+the characters' own words."""
+
+
+def _beat_list(beats: list) -> str:
+    return "\n".join(
+        f'{i}. [{b.get("setting", "")}] {b.get("action", "")}'.replace("[] ", "")
+        for i, b in enumerate(beats, 1))
+
+
+def write_story_lines(beats: list, speakers: list, channel: dict | None = None,
+                      used: list | None = None, max_words: int = 10) -> tuple:
+    """The VOICEOVER of a story video, derived from the beats: one spoken line per beat.
+
+    Returns (lines, issues), where lines is EXACTLY len(beats) objects {"speaker", "text"}. The
+    count and the speaker roster are guaranteed here, deterministically, not by the model: a reply
+    with the wrong count is padded or cut, and a speaker outside `speakers` becomes the narrator
+    (their quoted words survive in the text, which is how a one-off conductor still gets to talk).
+
+    The system prompt is built with spoken=True, so the cast sheet carries no looks at all: a writer
+    that was never shown the look cannot recite it."""
+    n = len(beats)
+    roster = list(speakers) + [config.STORY_NARRATOR]
+    user = f"""Below are the {n} beats of a story, in order. Write the words the VIEWER HEARS over each beat.
+
+BEATS:
+{_beat_list(beats)}
+
+Return JSON with one key:
+- "lines": exactly {n} objects, one per beat, in the same order, each with
+    "speaker": one of {', '.join(roster)}, and
+    "text": what is heard during that beat - one sentence, at most {max_words} words.
+
+{NO_DESCRIPTION_RULE}
+
+MORE RULES:
+- A line is either (a) a character speaking, where "speaker" is that character and "text" is ONLY
+  the words they say, with no "said Ellie" tag, or (b) {config.STORY_NARRATOR} telling the story,
+  who MAY quote anyone who is not in the cast: "All aboard!" called the conductor.
+- Only these may be a speaker: {', '.join(roster)}. Everyone else speaks through {config.STORY_NARRATOR}.
+- Read end to end, the {n} lines are ONE continuous story: each follows from the last, nothing is
+  repeated, nothing is skipped, and the last line ends it.
+- Plain spoken English for a text-to-speech voice: no stage directions, no headings, no emojis, no
+  asterisks, no "(excitedly)", no written-out sound effects.
+- A purely visual beat may have an empty "text". Use this sparingly.
+- {_narration_rule(channel)}"""
+    out = _chat([{"role": "system", "content": _system(channel, used=used, spoken=True)},
+                 {"role": "user", "content": user}])
+    return _as_lines(out.get("lines"), n, speakers)
+
+
+def _as_lines(value, n: int, speakers: list) -> tuple:
+    """The reply's "lines" normalised to exactly n entries on a closed speaker roster.
+
+    Returns (lines, issues). A short reply is padded with silent beats rather than retried: the
+    beats still carry the story visually, and the user reads every line before approving anyway."""
+    issues, out = [], []
+    roster = list(speakers) + [config.STORY_NARRATOR]
+    for item in (value or [])[:n]:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            item = {}
+        text = re.sub(r"\s+", " ", str(item.get("text") or item.get("line") or "")).strip()
+        want = str(item.get("speaker") or "").strip()
+        speaker = next((s for s in roster if s.lower() == want.lower()), "")
+        if want and not speaker:
+            issues.append(f'"{want}" is not in this video - their line is told by '
+                          f"{config.STORY_NARRATOR}")
+        out.append({"speaker": speaker or config.STORY_NARRATOR, "text": text})
+    if len(out) < n:
+        issues.append(f"the writer returned {len(out)} lines for {n} beats - "
+                      f"the last {n - len(out)} play without speech")
+        out += [{"speaker": config.STORY_NARRATOR, "text": ""} for _ in range(n - len(out))]
+    return out, issues
+
+
+def rewrite_story_line(line: dict, beat: dict, reason: str, max_words: int,
+                       channel: dict | None = None, used: list | None = None,
+                       speakers: list | None = None) -> dict:
+    """One line, written again - the only retry a story line ever gets.
+
+    reason "describes": a deterministic check (services/story.describes_look) found the line saying
+    out loud what the viewer can already see. reason "long": spoken, it ran past the longest clip a
+    single line may buy. Either way only this line is rewritten, so the rest of the story - which
+    the user may already have read - is untouched."""
+    speakers = list(speakers or [])
+    why = ("This line describes the picture instead of telling the story. The viewer can already SEE "
+           "all of that." if reason == "describes" else
+           "This line takes too long to say out loud. It must be shorter, without losing what "
+           "happens in it.")
+    user = f"""One line of a story voiceover has to be written again.
+
+The beat it is heard over (what the viewer SEES): [{beat.get("setting", "")}] {beat.get("action", "")}
+The line as written, spoken by {line.get("speaker") or config.STORY_NARRATOR}:
+"{line.get("text", "")}"
+
+WHY IT MUST CHANGE: {why}
+
+Write the line again: at most {max_words} words, one sentence, same speaker, same moment of the story.
+
+{NO_DESCRIPTION_RULE}
+
+Return JSON: {{"text": "the new line"}}"""
+    out = _chat([{"role": "system", "content": _system(channel, used=used, spoken=True)},
+                 {"role": "user", "content": user}], max_tokens=1000)
+    text = re.sub(r"\s+", " ", str(out.get("text") or "")).strip()
+    return {"speaker": line.get("speaker") or config.STORY_NARRATOR, "text": text or line.get("text", "")}
+
+
 def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  kind: str = "voiceover narration", segments: list | None = None,
                  on_review_issue=None, channel: dict | None = None,
                  opening: dict | None = None, used: list | None = None,
                  timelines: list | None = None, clip_secs: list | None = None,
-                 aligned: bool = True) -> list:
+                 aligned: bool = True, beats: list | None = None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
@@ -425,11 +667,14 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     CLIP_SECONDS for every clip.
     aligned: False when the segment text is raw speech recognition (may contain mis-hearings).
     opening: the cast character whose portrait is clip 1's first frame, if any.
-    used: the names of this video's cast (plan["cast_used"]); None = legacy plan, all cast."""
+    used: the names of this video's cast (plan["cast_used"]); None = legacy plan, all cast.
+    beats: story mode - the {setting, action, characters} this clip must SHOW. The beat is the
+    subject of the shot; the segment and its timeline only say when the words land on it."""
     if segments is None:
         segments = split_narration(narration, n)
     segments = (list(segments) + [""] * n)[:n]
     timelines = (list(timelines or []) + [""] * n)[:n]
+    beats = (list(beats or []) + [None] * n)[:n]
     clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds()] * n)[:n]
     cast_rule = ""
     roster = cast.active(channel)
@@ -463,7 +708,30 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
         nxt = (f'For flow only, the next segment will be: "{segments[i + 1]}"') if i + 1 < n \
             else "This is the FINAL clip: give it a conclusive ending."
         secs = _secs(clip_secs[i])
-        if seg.strip() and timelines[i]:
+        if beats[i]:
+            b = beats[i]
+            who = ", ".join(b.get("characters") or []) or "no cast character"
+            spoken = (f"""While this clip plays, the viewer HEARS exactly this, and nothing else:
+"{seg}"
+TIMELINE - when the words are heard, measured from the START of this clip:
+{timelines[i]}""" if seg.strip() else
+                      "No one speaks during this clip. Carry the beat visually: continue the previous "
+                      "shot's motion and let the action play out in silence.")
+            heard = f"""This clip is BEAT {i + 1} of the story:
+  Where: {b.get("setting", "") or "as the previous clip"}
+  What happens: {b.get("action", "")}
+  Who is there: {who}
+Build the whole shot around that action: it must visibly start, happen and finish inside the {secs} seconds.
+
+{spoken}
+
+The spoken words are the SOUNDTRACK, not the subject. Never render them as on-screen text or
+subtitles, and never add a narrator, storyteller, book, microphone or stage to illustrate the
+speaking - a cast character already on screen MAY be shown talking while their own line plays. Your
+storyboard timestamps follow the TIMELINE: the key moment of the action lands while its words are
+heard, and "(no speech)" spans carry motion, reaction or atmosphere and introduce nothing that
+belongs to another beat."""
+        elif seg.strip() and timelines[i]:
             heard = f"""While this clip plays, the {kind} is EXACTLY this (the lyric text, timed from the recording):
 "{seg}"
 TIMELINE - what is sung, with times measured from the START of this clip:
@@ -514,7 +782,8 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
             scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
                                          prev_scene=scenes[-1] if scenes else "",
                                          channel=channel, used=used,
-                                         timeline=timelines[i], aligned=aligned)
+                                         timeline=timelines[i], aligned=aligned,
+                                         beat=(beats[i] or {}).get("action", "") if beats[i] else "")
             if issues and on_review_issue:
                 on_review_issue(i + 1, issues)
         scenes.append(scene)
@@ -531,13 +800,28 @@ SAFETY_CHECKS = {
 def review_scene(scene: str, segment: str, style: str, i: int, n: int,
                  kind: str = "voiceover narration", prev_scene: str = "",
                  channel: dict | None = None, used: list | None = None,
-                 timeline: str = "", aligned: bool = True) -> tuple:
+                 timeline: str = "", aligned: bool = True, beat: str = "") -> tuple:
     """Second-pass review of one scene prompt against the audio it must match.
 
     Returns (corrected_scene, issues). Catches inconsistencies like a letter or object
     in the storyboard not matching what the audio actually says at that moment, and - when a
-    lyric timeline is given - storyboard beats that do not fall where their line is sung."""
-    if segment.strip():
+    lyric timeline is given - storyboard beats that do not fall where their line is sung.
+
+    beat: story mode - the action this clip must show. The scene is then checked against the BEAT
+    (the spoken line is only the soundtrack), and the sung-lyrics wording is dropped."""
+    if beat.strip():
+        audio_ctx = (f"This clip must show one beat of a story:\n\"{beat.strip()}\"")
+        if segment.strip():
+            audio_ctx += f'\nWhile it plays the viewer hears exactly this, and nothing else:\n"{segment}"'
+            if timeline:
+                audio_ctx += f"\nTIMELINE (when the words are heard, times from the START of this clip): {timeline}"
+        else:
+            audio_ctx += "\nNobody speaks during this clip."
+        rule = ("The storyboard must show that beat happening, from start to finish, inside this clip. "
+                "Everything it shows must be consistent with the beat and with what is heard; the "
+                "spoken words are never drawn as on-screen text or subtitles, and no narrator, "
+                "storyteller, book, microphone or stage is added to illustrate the speaking.")
+    elif segment.strip():
         audio_ctx = f'While this clip plays, the {kind} is EXACTLY this:\n"{segment}"'
         if timeline:
             audio_ctx += f"\nTIMELINE (what is sung, times from the START of this clip): {timeline}"
@@ -552,7 +836,13 @@ def review_scene(scene: str, segment: str, style: str, i: int, n: int,
         audio_ctx = f"During this clip the {kind} is INSTRUMENTAL - no words are heard."
         rule = "The scene must not introduce letters/objects that belong to other clips' audio."
     timing = ""
-    if timeline and segment.strip():
+    if beat.strip():
+        if timeline and segment.strip():
+            timing = ("5. TIMING: the key moment of the action falls within about 1 second of the words that "
+                      "go with it in the TIMELINE; beats during \"(no speech)\" spans carry motion, reaction "
+                      "or atmosphere and introduce nothing that belongs to another part of the story. The "
+                      "timeline is timing metadata only: never add the spoken words as on-screen text.")
+    elif timeline and segment.strip():
         timing = ("5. TIMING: every storyboard beat that visualises a sung line falls within about 1 second of "
                   "that line's window in the TIMELINE; beats during \"(instrumental)\" spans introduce nothing "
                   "that belongs to a later line. The timeline is timing metadata only: never add the lyrics as "

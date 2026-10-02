@@ -63,13 +63,26 @@ function navbar(active) {
 /* ---- status helpers ---- */
 const STEP_LABELS = { planned: "Setup", queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", clips: "Clips", assembling: "Assemble", done: "Done" };
 
+// A story video runs exactly the same stages as a voiceover video; only the words change, so no
+// new status is invented (that would need pipeline, pill and progress changes, and old jobs would
+// render badly).
+const STORY_STEP_LABELS = { drafting: "Story", awaiting_approval: "Approve story",
+                            tts: "Character voices" };
+
+function stepLabel(j, s) {
+  return ((j || {}).video_mode === "story" && STORY_STEP_LABELS[s]) || STEP_LABELS[s];
+}
+
 function orderFor(j) {
-  const mid = j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
+  const story = (j.video_mode || "") === "story";
+  const mid = story ? ["tts", "scenes", "thumbnail", "music"]
+            : j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]
             : j.audio_mode === "narration" ? ["tts", "scenes", "thumbnail"]
             : ["tts", "scenes", "thumbnail", "music"];
   // every source that drafts a script for approval; without this they get the URL stepper,
-  // pct() returns 0 for the whole script phase and no step is highlighted
-  const head = ["topic", "description", "transcript", "repo"].includes(j.source)
+  // pct() returns 0 for the whole script phase and no step is highlighted. A story is always
+  // reviewed before it renders, whatever it was created from - so a URL story job drafts too.
+  const head = story || ["topic", "description", "transcript", "repo"].includes(j.source)
             ? [...(j.plan_id ? ["planned"] : []), "drafting", "awaiting_approval", "queued", "planning"]
             : ["queued", "transcript", "planning"];
   if (j.storyboard) mid.push("storyboard");
@@ -149,7 +162,7 @@ function pillHTML(j) {
             : j.status === "planned" ? "planned" : "running";
   const text = j.status === "clips" && j.clips_total ? `clips ${j.clips_done}/${j.clips_total}`
              : j.status === "awaiting_approval" ? "review script"
-             : j.status === "planned" ? "needs setup" : (STEP_LABELS[j.status] || j.status);
+             : j.status === "planned" ? "needs setup" : (stepLabel(j, j.status) || j.status);
   return `<span class="pill ${cls} ${active ? "running" : ""}">${esc(text.toLowerCase())}</span>`;
 }
 
@@ -228,9 +241,13 @@ async function copyText(text, okMsg) {
 // Voice <select>: the two built-in defaults, then the reference voices from /api/voices.
 // A saved id that is no longer in the library stays selected as a disabled placeholder,
 // so a deleted or lost voice file is visible instead of silently becoming "Default voice".
-function fillVoiceSelect(sel, voices, selected) {
-  sel.innerHTML = `<option value="">Default voice — same voice for the whole video</option>
-    <option value="random">Default voice — random voice per segment</option>` +
+// builtins: the non-cloned options offered above the library. The defaults are the per-video ones
+// ("the whole video", "per segment"); a per-character picker passes its own, because neither of
+// those means anything for one character in a story.
+function fillVoiceSelect(sel, voices, selected, builtins) {
+  sel.innerHTML = (builtins || [["", "Default voice — same voice for the whole video"],
+                                ["random", "Default voice — random voice per segment"]])
+    .map(([v, label]) => `<option value="${esc(v)}">${esc(label)}</option>`).join("") +
     voices.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
   selectVoice(sel, selected);
 }

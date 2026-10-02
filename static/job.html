@@ -91,7 +91,11 @@
     <div class="hint" style="margin-bottom:12px">From your weekly plan - nothing has been generated yet.
       Choose the options and press Start; the script is written next, for your review.</div>
     <div class="row">
-      <div class="grow" style="min-width:170px">
+      <div class="grow" id="suVmodeField" style="min-width:180px" hidden>
+        <label for="suVmode">Video type</label>
+        <select id="suVmode"></select>
+      </div>
+      <div class="grow" id="suAudioField" style="min-width:170px">
         <label for="suAudio">Audio</label>
         <select id="suAudio">
           <option value="music">Generate Song</option>
@@ -99,7 +103,7 @@
         </select>
       </div>
       <div class="grow" id="suVoiceField" style="min-width:170px" hidden>
-        <label for="suVoice">Voice</label>
+        <label for="suVoice" id="suVoiceLabel">Voice</label>
         <select id="suVoice"></select>
       </div>
       <div class="grow" style="min-width:160px"><label for="suVlen">Video length</label><select id="suVlen"></select>
@@ -129,7 +133,7 @@
         <img id="suStylePreview" alt="style preview" hidden style="max-height:76px;border-radius:6px">
       </div>
     </div>
-    <label class="switch" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
+    <label class="switch" id="suSbLabel" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="startBtn">Start video generation</button>
     </div>
@@ -140,8 +144,19 @@
     <div class="hint" style="margin-bottom:12px">Review and edit the script below. After approval, the whole video (music, scenes, clips, thumbnail) is generated from it.</div>
     <label for="apTitle">Title</label>
     <input type="text" id="apTitle">
-    <label for="apScript" style="margin-top:12px">Script</label>
-    <textarea id="apScript" style="min-height:220px"></textarea>
+    <div id="apScriptBlock">
+      <label for="apScript" style="margin-top:12px">Script</label>
+      <textarea id="apScript" style="min-height:220px"></textarea>
+    </div>
+    <div id="apStoryBlock" hidden>
+      <label style="margin-top:12px">The story</label>
+      <div class="hint">One row per scene. The <b>spoken line</b> is the only thing the viewer hears;
+        the scene above it is what they see and is never read out. Keep the lines to what happens and
+        what the characters say &mdash; never what anything looks like, the picture already shows that.</div>
+      <div class="warn" id="apStoryIssues" hidden style="margin-top:10px"></div>
+      <div id="apBeats" style="margin-top:10px"></div>
+      <div class="hint" id="apStoryTotal" style="margin-top:8px"></div>
+    </div>
     <div class="hint" id="apCast" style="margin-top:6px" hidden></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="approveBtn">Approve &amp; generate video</button>
@@ -257,7 +272,7 @@
 
   <div class="grid2">
     <section class="card" id="narrSec" hidden>
-      <h2>Narration script <span class="count">(vLLM)</span></h2>
+      <h2><span id="narrTitle">Narration script</span> <span class="count">(vLLM)</span></h2>
       <pre class="box" id="narrText"></pre>
     </section>
     <section class="card" id="styleSec" hidden>
@@ -331,7 +346,7 @@ function renderStepper(j) {
     if (j.status === "done") cls = "done";
     else if (idx < cur) cls = "done";
     else if (idx === cur) cls = failed ? "error" : "current";
-    const label = s === "clips" && j.clips_total ? `Clips ${j.clips_done}/${j.clips_total}` : STEP_LABELS[s];
+    const label = s === "clips" && j.clips_total ? `Clips ${j.clips_done}/${j.clips_total}` : stepLabel(j, s);
     return `<li class="${cls}">${label}</li>`;
   });
   $("#stepper").innerHTML = items.join("");
@@ -349,7 +364,19 @@ async function loadDetails(j) {
   if (d.plan && lastJob && lastJob.status === "awaiting_approval" && !approvalLoaded) {
     approvalLoaded = true;
     $("#apTitle").value = d.plan.title || "";
-    $("#apScript").value = d.plan.narration || "";
+    const st = (lastJob.video_mode === "story" && d.plan.story) || null;
+    $("#apStoryBlock").hidden = !st;
+    $("#apScriptBlock").hidden = !!st;
+    if (st) {
+      apBeats = (st.beats || []).map(b => ({ ...b }));
+      apLines = (st.lines || []).map(l => ({ speaker: l.speaker || STORY_NARRATOR, text: l.text || "" }));
+      apSpeakers = [...(d.plan.cast_used || []), STORY_NARRATOR];
+      $("#apStoryIssues").hidden = !(st.issues || []).length;
+      $("#apStoryIssues").innerHTML = (st.issues || []).map(esc).join("<br>");
+      renderStoryLines();
+    } else {
+      $("#apScript").value = d.plan.narration || "";
+    }
   }
   if (d.plan) {
     if (Array.isArray(d.plan.cast_used)) {
@@ -366,7 +393,12 @@ async function loadDetails(j) {
       $("#seoDesc").textContent = d.plan.seo_description || "";
     }
     renderResource(d.plan.resource, j);
-    if (d.plan.narration) { $("#narrSec").hidden = false; $("#narrText").textContent = d.plan.narration; }
+    if (d.plan.narration) {
+      $("#narrSec").hidden = false;
+      $("#narrText").textContent = d.plan.narration;
+      $("#narrTitle").textContent = (lastJob || {}).video_mode === "story"
+        ? "What is spoken" : "Narration script";
+    }
     if (d.plan.style) { $("#styleSec").hidden = false; $("#styleText").textContent = d.plan.style; }
     if (d.plan.music) {
       const up = d.plan.music.uploaded || "";
@@ -410,12 +442,14 @@ function renderStoryboard(cards, j) {
 }
 
 function lyricRows(seg) {
-  // the whisper-timed lyric lines sung during this clip (times from the clip's start)
+  // what is heard during this clip, with times from the clip's start: whisper-timed lyrics for a
+  // song, the spoken line we laid out ourselves for a story
+  const story = (lastJob || {}).video_mode === "story";
   const lines = seg && Array.isArray(seg.lines) ? seg.lines : [];
   if (!lines.some(l => l.text)) return "";
   return `<div class="scene-lyrics">${lines.map(l =>
     `<div class="lyric-line${l.instrumental ? " instr" : ""}"><span class="t">${Number(l.start).toFixed(1)}–${Number(l.end).toFixed(1)}s</span>` +
-    `<span>${l.instrumental ? "(instrumental)" : esc(l.text)}</span></div>`).join("")}</div>`;
+    `<span>${l.instrumental ? (story ? "(no speech)" : "(instrumental)") : esc(l.text)}</span></div>`).join("")}</div>`;
 }
 
 function renderScenes(scenes, timed, align) {
@@ -426,7 +460,9 @@ function renderScenes(scenes, timed, align) {
   if (align && typeof align.ratio === "number") {
     const b = document.createElement("span");
     b.id = "alignBadge"; b.className = "badge-align";
-    b.textContent = align.source === "upload"
+    b.textContent = align.source === "story"
+      ? `spoken story · ${align.words || 0} words, ${align.wps || 0} words/s`
+      : align.source === "upload"
       ? (align.words ? `words heard in your track · ${align.words} words, ${align.wps || 0} words/s`
                      : "instrumental track - scenes follow the story")
       : align.aligned
@@ -771,11 +807,60 @@ $("#cancelBtn").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
+const STORY_WPS = 2.2;            // mirrors config.STORY_WPS, for the live length estimate
+const STORY_NARRATOR = "Narrator";   // mirrors config.STORY_NARRATOR
+let apBeats = [], apLines = [], apSpeakers = [];
+
+function storyLinesSync() {   // read the edited rows back (re-rendering would lose typed text)
+  document.querySelectorAll("#apBeats .story-row").forEach(row => {
+    const ln = apLines[+row.dataset.i];
+    if (!ln) return;
+    ln.speaker = row.querySelector(".story-speaker").value;
+    ln.text = row.querySelector(".story-line").value;
+  });
+}
+
+function storyTotals() {
+  const words = apLines.reduce((n, l) => n + (l.text.trim() ? l.text.trim().split(/\s+/).length : 0), 0);
+  const secs = Math.round(words / STORY_WPS);
+  const spoken = apLines.filter(l => l.text.trim()).length;
+  $("#apStoryTotal").textContent =
+    `${apLines.length} scenes, ${spoken} spoken — about ${words} words, roughly `
+    + `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of speech.`;
+}
+
+function renderStoryLines() {
+  $("#apBeats").innerHTML = apLines.map((ln, i) => {
+    const b = apBeats[i] || {};
+    const where = b.setting ? `[${esc(b.setting)}] ` : "";
+    return `<div class="story-row" data-i="${i}" style="padding:10px 0;border-top:1px solid var(--line)">
+      <div class="hint"><b>Scene ${i + 1}</b> — ${where}${esc(b.action || "")}</div>
+      <div class="row" style="margin-top:6px;gap:8px">
+        <select class="story-speaker" style="max-width:170px">${apSpeakers.map(sp =>
+          `<option value="${esc(sp)}" ${sp === ln.speaker ? "selected" : ""}>${esc(sp)}</option>`).join("")}</select>
+        <input type="text" class="story-line grow" value="${esc(ln.text)}"
+               maxlength="400" placeholder="What is heard over this scene (leave empty for a silent scene)">
+      </div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#apBeats .story-line").forEach(el =>
+    el.oninput = () => { storyLinesSync(); storyTotals(); });
+  storyTotals();
+}
+
 $("#approveBtn").onclick = async () => {
+  const story = !$("#apStoryBlock").hidden;
+  if (story) storyLinesSync();
+  const body = { title: $("#apTitle").value };
+  // a story never sends `narration`: the lines ARE the narration, and a stale textarea would
+  // contradict the lines the clips are timed to
+  if (story) body.lines = apLines.map(l => ({ speaker: l.speaker, text: l.text }));
+  else body.narration = $("#apScript").value;
   try {
     await api(`/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: $("#apTitle").value, narration: $("#apScript").value }) });
-    toast("Script approved - queued for video generation");
+      body: JSON.stringify(body) });
+    toast(story ? "Story approved - queued for video generation"
+                : "Script approved - queued for video generation");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
 };
@@ -805,6 +890,9 @@ async function fillSetup(j) {
   $("#suMp").value = j.megapixels || o.default_megapixels;
   $("#suRes").value = j.resolution || o.default_resolution;
   $("#suAudio").value = j.audio_mode === "music" ? "music" : "narration+music";
+  $("#suVmode").innerHTML = (o.video_modes || ["song"]).map(m =>
+    opt(m, (o.video_mode_labels || {})[m] || m)).join("");
+  $("#suVmode").value = j.video_mode || "song";
   $("#suSb").checked = !!j.storyboard;
   // the channel may have been deleted since the plan was made: use the job's frozen snapshot
   const vt = (j.channel && j.channel.video_type) || "";
@@ -813,20 +901,27 @@ async function fillSetup(j) {
   try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
   suStylePreview();
   try {
-    const d = await api("/api/voices");
-    fillVoiceSelect($("#suVoice"), d.voices, j.voice_id);
+    suVoiceList = (await api("/api/voices")).voices || [];
   } catch (e) { /* the built-in voice options stay */ }
-  $("#suVoiceField").hidden = $("#suAudio").value === "music";
+  fillVoiceSelect($("#suVoice"), suVoiceList, j.voice_id);
   suKids = ((j.channel || {}).audience === "kids");     // the snapshot frozen at plan time
+  suCast = ((j.channel || {}).cast) || [];
+  suSource = j.source || "youtube";
   $("#suLyrics").value = "";        // a planned job never carries lyrics: they are chosen here
   suMusicUp = null;                 // nor an uploaded track
   $("#suMusicFile").value = "";
   $("#suMusicStatus").textContent = "";
   $("#suMusicClear").hidden = true;
-  applySuLyrics();
+  applySuVmode();
 }
 
 let suKids = false;
+let suCast = [];
+let suSource = "youtube";
+let suVoiceList = [];
+// a story narrator reads the lines nobody in the cast says, so neither per-video built-in fits:
+// "a random voice per segment" would hand the narrator a new voice every scene
+const SU_STORY_VOICES = [["", "Default — one narrator voice, kept for the whole story"]];
 let suMusicUp = null;             // the staged track for this video: {id, name, seconds} or null
 function suLyricsOn() { return !$("#suLyricsBlock").hidden && $("#suLyrics").value.trim().length > 0; }
 function suMusicOn() { return !$("#suMusicBlock").hidden && !!suMusicUp; }
@@ -863,12 +958,34 @@ function clearSuMusic() {
   applySuLyrics();
 }
 
+function suStoryOn() { return !$("#suVmodeField").hidden && $("#suVmode").value === "story"; }
+
+// Mirrors applyVideoMode() on the Jobs page, but gated on the channel snapshot frozen at plan
+// time - the same authority the lyrics box uses, and the one setup_planned resolves against.
+function applySuVmode() {
+  const show = suKids && suCast.length > 0
+            && ["youtube", "topic", "description"].includes(suSource);
+  if (!show && !$("#suVmodeField").hidden) $("#suVmode").value = "song";
+  $("#suVmodeField").hidden = !show;
+  const story = suStoryOn();
+  $("#suAudioField").hidden = story;
+  $("#suVoiceLabel").textContent = story ? "Narrator voice" : "Voice";
+  if (story && $("#suVoice").value === "random") $("#suVoice").value = "";
+  fillVoiceSelect($("#suVoice"), suVoiceList, $("#suVoice").value, story ? SU_STORY_VOICES : null);
+  if (story) $("#suSb").checked = false;
+  $("#suSbLabel").hidden = story;
+  applySuLyrics();
+}
+
 function applySuLyrics() {
   // lyrics and an uploaded track are mutually exclusive (the server rejects the combination)
-  const song = $("#suAudio").value === "music";
+  const story = suStoryOn();
+  const song = $("#suAudio").value === "music" && !story;
+  $("#suVoiceField").hidden = song;
   const show = suKids && song && !suMusicOn();
   if (!show && !$("#suLyricsBlock").hidden) $("#suLyrics").value = "";
   $("#suLyricsBlock").hidden = !show;
+  if (story && suMusicUp) { clearSuMusic(); return; }
   $("#suMusicBlock").hidden = !song;
   $("#suMusicFile").disabled = suLyricsOn();
   $("#suVlen").disabled = suLyricsOn() || suMusicOn();    // the lyrics / the track decide the length
@@ -877,10 +994,10 @@ function applySuLyrics() {
 }
 
 $("#suLyrics").oninput = applySuLyrics;
+$("#suVmode").onchange = applySuVmode;
 $("#suMusicFile").onchange = uploadSuMusic;
 $("#suMusicClear").onclick = clearSuMusic;
 $("#suAudio").onchange = () => {
-  $("#suVoiceField").hidden = $("#suAudio").value === "music";
   if ($("#suAudio").value !== "music" && suMusicUp) { clearSuMusic(); return; }
   applySuLyrics();
 };
@@ -894,8 +1011,10 @@ $("#startBtn").onclick = async () => {
       body: JSON.stringify({ aspect_ratio: $("#suAr").value,
         video_length: (suLyricsOn() || suMusicOn()) ? "" : $("#suVlen").value,
         megapixels: Number($("#suMp").value), resolution: $("#suRes").value,
-        art_style: real ? "" : $("#suStyle").value, audio_mode: $("#suAudio").value,
-        voice_id: $("#suAudio").value === "music" ? "" : $("#suVoice").value,
+        art_style: real ? "" : $("#suStyle").value,
+        audio_mode: suStoryOn() ? "narration+music" : $("#suAudio").value,
+        video_mode: $("#suVmodeField").hidden ? "" : $("#suVmode").value,
+        voice_id: (!suStoryOn() && $("#suAudio").value === "music") ? "" : $("#suVoice").value,
         lyrics: suLyricsOn() ? $("#suLyrics").value.trim() : "",
         music_upload_id: suMusicOn() ? suMusicUp.id : "",
         storyboard: $("#suSb").checked }) });
@@ -911,6 +1030,7 @@ $("#redraftGo").onclick = async () => {
   try {
     await api(`/jobs/${jobId}/redraft`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: $("#redraftFeedback").value }) });
+    apBeats = []; apLines = []; apSpeakers = [];
     toast("New draft requested");
     approvalLoaded = false; $("#redraftBox").hidden = true;
     startPolling(); refresh();

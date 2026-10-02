@@ -52,7 +52,7 @@
         <div class="row" style="margin-bottom:12px">
           <div class="grow" style="min-width:220px">
             <label for="chName">Channel name</label>
-            <input type="text" id="chName" placeholder="e.g. Bright Minds Town">
+            <input type="text" id="chName" placeholder="Your channel name">
           </div>
           <div class="grow" style="min-width:150px">
             <label for="chAudience">Audience</label>
@@ -88,7 +88,12 @@
             <label for="chStyle">Default art style</label>
             <select id="chStyle"></select>
           </div>
-          <div class="grow" style="min-width:170px">
+          <div class="grow" id="chVmodeField" style="min-width:180px" hidden>
+            <label for="chVmode">Default video type</label>
+            <select id="chVmode"></select>
+            <div class="hint">Story videos are spoken by the characters</div>
+          </div>
+          <div class="grow" id="chAudioField" style="min-width:170px">
             <label for="chAudio">Default audio</label>
             <select id="chAudio">
               <option value="music">Generate Song</option>
@@ -124,9 +129,16 @@
             Videos of this channel have characters</label>
           <div class="hint" style="margin:4px 0 10px">Off = informative explainer videos: no protagonist and no recurring cast — the narration speaks straight to the viewer ("you") through hook, problem, concrete steps and payoff. Generic unnamed people (a project manager at a laptop, hands typing, a presenter) can still appear on screen, never named. Switching this off keeps the cast and its portraits — turn it back on and they are used again. Independent of the audience preset: a grown-up channel can have characters too.</div>
           <div id="chCastBody">
-          <div class="hint" style="margin:4px 0 10px">Give each character a name and a precise look (species or age, colours, size, clothes, accessories, distinguishing marks). Not every character is in every video: the LLM picks the 1-3 the story needs — name them in your topic to decide yourself, e.g. "Use Finn as the main character and Pip as the supporting character". Main = usual protagonists, supporting = when the story calls for them. The look is repeated to the script writer and to the video model for every scene the character is in. Approve a reference portrait per character: the first character of the story that has one becomes the first frame of clip 1.</div>
+          <div class="hint" style="margin:4px 0 10px">Give each character a name and a precise look (species or age, colours, size, clothes, accessories, distinguishing marks). Not every character is in every video: the LLM picks the 1-3 the story needs — name them in your topic to decide yourself, e.g. "Use Ava as the main character and Leo as the supporting character". Main = usual protagonists, supporting = when the story calls for them. The look is repeated to the script writer and to the video model for every scene the character is in. Approve a reference portrait per character: the first character of the story that has one becomes the first frame of clip 1.</div>
           <label class="switch"><input type="checkbox" id="chCastOpening" checked><span class="track"></span>
             Open each video on its first story character that has an approved portrait (first frame of clip 1)</label>
+          <div class="row" style="margin-top:12px;align-items:flex-end">
+            <div class="grow" style="min-width:240px;max-width:340px">
+              <label for="chCharacterVoice">Default character voice</label>
+              <select id="chCharacterVoice"></select>
+            </div>
+            <div class="hint grow" id="chCharacterVoiceHint" style="min-width:240px"></div>
+          </div>
           <div id="chCastList" style="margin-top:10px"></div>
           <div class="row" style="margin-top:8px">
             <button class="btn secondary sm" id="chCastAdd" type="button">Add character</button>
@@ -614,13 +626,47 @@ function chTypeChanged() {
 function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "music"; }
 function chDefaultSongVoice() { return $("#chAudience").value === "kids" ? "child" : "auto"; }
 // a new channel follows its audience (child voice for kids); an edited one keeps its explicit choice
-function chAudienceChanged() { if (!chEditing) $("#chSongVoice").value = chDefaultSongVoice(); }
+function chAudienceChanged() {
+  if (!chEditing) $("#chSongVoice").value = chDefaultSongVoice();
+  chApplyVmode();
+}
+
+let chVoices = [];       // the reference-voice library, also used by the per-character pickers
 
 async function chLoadVoices(selected) {
   try {
     const d = await api("/api/voices");
-    fillVoiceSelect($("#chVoice"), d.voices, selected);
+    chVoices = d.voices || [];
+    fillVoiceSelect($("#chVoice"), chVoices, selected);
   } catch (e) { /* voice list is optional */ }
+}
+
+function chApplyVmode() {
+  // the story format is a kids-channel feature; hiding the picker resets it, so a channel that
+  // stops being a kids channel never keeps an invisible story default (the server demotes it too)
+  const show = $("#chAudience").value === "kids";
+  if (!show && !$("#chVmodeField").hidden) $("#chVmode").value = "song";
+  $("#chVmodeField").hidden = !show;
+  const story = show && $("#chVmode").value === "story";
+  if (story && $("#chAudio").value === "music") $("#chAudio").value = "narration+music";
+  $("#chAudioField").hidden = story;     // a story is always told by its voiceover
+  chApplyAudio();
+  chCharacterVoiceHint();
+}
+
+// Fish Speech has no "voice type" setting: it either clones a sample you give it or invents a
+// speaker. So the only way to make a kids channel sound like kids is a child sample, picked here
+// once for every character that has no voice of their own.
+function chCharacterVoiceHint() {
+  const kids = $("#chAudience").value === "kids";
+  const set = !!$("#chCharacterVoice").value;
+  $("#chCharacterVoiceHint").innerHTML = set
+    ? "Every character without a voice of their own speaks with this one in story videos. "
+      + "Give a character its own voice above to tell them apart."
+    : "Story videos: with none picked, a voice is invented for each character and kept for that "
+      + "video, so it can sound like anyone."
+      + (kids ? " <b>Upload a young child’s sample under Reference voices and pick it here "
+                + "so this channel sounds like kids.</b>" : "");
 }
 
 async function chOpen(c) {
@@ -663,9 +709,15 @@ async function chOpen(c) {
   $("#chCastOpening").checked = c ? c.cast_opening !== false : true;
   // the server always sends the key (services/channels.py back-fills it), so trust it exactly
   $("#chCharacters").checked = c ? !!c.characters_enabled : $("#chVideoType").value !== "tech";
+  // await: chCastRender draws a voice picker per character, so the library must be loaded first
+  await chLoadVoices(d.voice_id || "");
+  fillVoiceSelect($("#chCharacterVoice"), chVoices, d.character_voice || "",
+                  [["", "None — a voice is invented per character, per video"]]);
+  const vms = chData.video_modes || ["song"], vml = chData.video_mode_labels || {};
+  $("#chVmode").innerHTML = vms.map(v => `<option value="${esc(v)}">${esc(vml[v] || v)}</option>`).join("");
+  $("#chVmode").value = d.video_mode || "song";
   chCastRender();
-  chLoadVoices(d.voice_id || "");
-  chApplyType(); chApplyAudio(); chApplyCharacters();
+  chApplyType(); chApplyVmode(); chApplyCharacters();
   $("#chModal").classList.add("open");
   setTimeout(() => $("#chName").focus(), 150);
 }
@@ -686,6 +738,7 @@ function chCastSync() {   // read the edited rows back into chCast (re-rendering
     c.role = row.querySelector(".cast-role").value;
     c.look = row.querySelector(".cast-look").value.trim();
     c.personality = row.querySelector(".cast-personality").value.trim();
+    c.voice_id = row.querySelector(".cast-voice").value;
   });
 }
 
@@ -699,12 +752,13 @@ function chCastRender() {
         : `<span>no<br>portrait</span>`}</div>
       <div class="grow">
         <div class="row">
-          <input type="text" class="cast-name" placeholder="Name, e.g. Ellie" value="${esc(c.name || "")}" style="max-width:170px">
+          <input type="text" class="cast-name" placeholder="Name" value="${esc(c.name || "")}" style="max-width:170px">
           <input type="text" class="cast-kind" placeholder="Kind, e.g. baby elephant / 6-year-old girl" value="${esc(c.kind || "")}" style="max-width:260px">
           <select class="cast-role" style="max-width:190px">
             <option value="main" ${c.role !== "supporting" ? "selected" : ""}>Main — usual protagonist</option>
             <option value="supporting" ${c.role === "supporting" ? "selected" : ""}>Supporting</option>
           </select>
+          <select class="cast-voice" style="max-width:220px"></select>
         </div>
         <textarea class="cast-look" rows="2" placeholder="Look — be specific, this exact text goes to the video model: e.g. a small round baby elephant with soft light-grey skin, big floppy ears with pink insides, a short curly trunk, bright green eyes, wearing a tiny red scarf">${esc(c.look || "")}</textarea>
         <input type="text" class="cast-personality" placeholder="Personality (optional), e.g. curious, giggly, always asks 'why?'" value="${esc(c.personality || "")}">
@@ -719,13 +773,17 @@ function chCastRender() {
         <div class="cast-cands" id="castCands${i}" hidden></div>
       </div>
     </div>`).join("");
+  // filled after the markup: this character speaks with this voice in a story video
+  document.querySelectorAll("#chCastList .cast-voice").forEach((sel, i) =>
+    fillVoiceSelect(sel, chVoices, chCast[i].voice_id || "",
+                    [["", "Voice: auto — cloned from this character’s first line"]]));
 }
 
 $("#chCastAdd").onclick = () => {
   chCastSync();
   const max = chData.max_cast || 24;
   if (chCast.length >= max) { toast(`At most ${max} characters per channel`, true); return; }
-  chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main", look: "", personality: "", has_portrait: false });
+  chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main", look: "", personality: "", voice_id: "", has_portrait: false });
   chCastRender();
   const rows = document.querySelectorAll("#chCastList .cast-row");
   rows[rows.length - 1].querySelector(".cast-name").focus();
@@ -781,7 +839,7 @@ $("#chBibleApply").onclick = () => {
     } else if (chCast.length >= max) {
       skipped++;
     } else {
-      chCast.push({ id: "", ...pc, has_portrait: false });
+      chCast.push({ id: "", voice_id: "", ...pc, has_portrait: false });
       added++;
     }
   }
@@ -811,10 +869,13 @@ function chBody() {
     made_for_kids: $("#chKids").checked,
     cast_opening: $("#chCastOpening").checked,
     characters_enabled: $("#chCharacters").checked,
-    cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role, look: c.look, personality: c.personality })),
+    cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role, look: c.look,
+                             personality: c.personality, voice_id: c.voice_id || "" })),
     defaults: {
       art_style: CH_REAL_TYPES.includes($("#chVideoType").value) ? "" : $("#chStyle").value,
       storyboard: $("#chStoryboard").checked,
+      video_mode: $("#chVmodeField").hidden ? "song" : $("#chVmode").value,
+      character_voice: $("#chCharacterVoice").value,
       audio_mode: $("#chAudio").value,
       voice_id: $("#chAudio").value === "music" ? "" : $("#chVoice").value,
       song_voice: $("#chSongVoice").value,
@@ -1028,6 +1089,8 @@ $("#chModal").addEventListener("click", ev => { if (ev.target === $("#chModal"))
 document.addEventListener("keydown", ev => { if (ev.key === "Escape" && $("#chModal").classList.contains("open")) chCloseModal(); });
 $("#chVideoType").onchange = chTypeChanged;
 $("#chAudio").onchange = chApplyAudio;
+$("#chVmode").onchange = chApplyVmode;
+$("#chCharacterVoice").onchange = chCharacterVoiceHint;
 $("#chAudience").onchange = chAudienceChanged;
 $("#chCharacters").onchange = chApplyCharacters;
 

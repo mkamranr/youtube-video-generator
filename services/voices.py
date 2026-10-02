@@ -61,6 +61,25 @@ def voice_audio_path(voice_id: str) -> Path:
     return config.VOICES_DIR / f"{voice_id}.wav"
 
 
+def reference(voice_id: str):
+    """(wav_path, transcript) for a usable library voice, or None.
+
+    None for "" (the built-in voice), for RANDOM_VOICE, for an id whose record was deleted and for
+    a record whose wav has gone missing - so every caller can treat "no clonable reference" as one
+    case. Story videos resolve one of these per speaking character.
+    """
+    vid = (voice_id or "").strip()
+    if not vid or vid == RANDOM_VOICE:
+        return None
+    v = get_voice(vid)
+    if not v:
+        return None
+    path = voice_audio_path(vid)
+    if not path.exists():
+        return None
+    return path, v.get("text", "")
+
+
 def add_voice(name: str, text: str, data: bytes, orig_filename: str = "") -> dict:
     name = (name or "").strip()
     text = (text or "").strip()

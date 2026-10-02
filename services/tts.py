@@ -91,16 +91,29 @@ def _predict_chunk(client: Client, text: str, ref_audio=None, ref_text: str = ""
     raise RuntimeError(f"Fish TTS failed: {last}")
 
 
+def connect() -> Client:
+    """A Fish Speech client, with ComfyUI asked to free VRAM first.
+
+    Split out of synthesize() so a caller that speaks many short pieces in a row (a story video
+    speaks one line at a time) can build the client and free the VRAM once instead of per line."""
+    free_comfy_vram()
+    return Client(config.FISH_URL, verbose=False)
+
+
 def synthesize(text: str, out_wav: Path, on_progress=None,
-               ref_audio: Path = None, ref_text: str = "", keep_voice: bool = True) -> float:
+               ref_audio: Path = None, ref_text: str = "", keep_voice: bool = True,
+               client: Client = None) -> float:
     """Speak `text` into out_wav, chunk by chunk.
 
     Without a reference sample Fish Speech invents a new voice for every request, so a
     long narration would switch speakers at each chunk. keep_voice=True (default) makes
     the first chunk's audio the reference for all following chunks, so one video keeps one
-    voice; keep_voice=False keeps the old behaviour (a random voice per chunk)."""
-    free_comfy_vram()
-    client = Client(config.FISH_URL, verbose=False)
+    voice; keep_voice=False keeps the old behaviour (a random voice per chunk).
+
+    client: reuse an existing connect() client instead of making one (and freeing VRAM) per call.
+    Note that keep_voice only holds WITHIN one call - a caller speaking line by line must carry the
+    reference across calls itself, or every line gets a different voice."""
+    client = client or connect()
     chunks = split_chunks(text)
     out_wav = Path(out_wav)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +137,51 @@ def synthesize(text: str, out_wav: Path, on_progress=None,
             listfile.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
             subprocess.run([ffmpeg(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
                             "-i", str(listfile), "-c", "copy", str(out_wav)], check=True)
+    return audio_duration(out_wav)
+
+
+AUDIO_ARGS = ("-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le")   # what synthesize() writes
+
+
+def silence(seconds: float, out_wav: Path) -> Path:
+    """A silent wav in the same format every synthesized part uses, so concat can stream-copy."""
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([ffmpeg(), "-y", "-v", "error", "-f", "lavfi",
+                    "-i", "anullsrc=r=44100:cl=mono", "-t", f"{max(0.001, float(seconds)):.3f}",
+                    *AUDIO_ARGS, str(out_wav)], check=True)
+    return out_wav
+
+
+def concat_timed(parts: list, out_wav: Path, total: float = 0.0) -> float:
+    """One wav in which each (wav, start_seconds) part begins at its own start time.
+
+    The gaps between parts - and the tail up to `total` - are digital silence. Used by story videos,
+    where every spoken line is synthesized on its own and then laid out on the clip grid, so the
+    words land exactly where the scene that shows them is rendered. Parts must not overlap; they are
+    placed in the order given and a start that has already passed is clamped to the cursor."""
+    out_wav = Path(out_wav)
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as d:
+        pieces, cursor, n = [], 0.0, 0
+        for src, start in parts:
+            gap = float(start) - cursor
+            if gap > 0.001:
+                n += 1
+                pieces.append(silence(gap, Path(d) / f"sil_{n:04d}.wav"))
+                cursor += gap
+            pieces.append(Path(src))
+            cursor += audio_duration(src)
+        pad = float(total or 0.0) - cursor
+        if pad > 0.001:
+            n += 1
+            pieces.append(silence(pad, Path(d) / f"sil_{n:04d}.wav"))
+        if not pieces:
+            return audio_duration(silence(0.5, out_wav))
+        listfile = Path(d) / "list.txt"
+        listfile.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces), encoding="utf-8")
+        subprocess.run([ffmpeg(), "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                        "-i", str(listfile), "-c", "copy", str(out_wav)], check=True)
     return audio_duration(out_wav)
 
 

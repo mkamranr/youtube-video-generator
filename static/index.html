@@ -60,7 +60,11 @@
         <div class="msec">
           <div class="msec-title">Sound &amp; format</div>
           <div class="row">
-            <div class="grow" style="min-width:170px">
+            <div class="grow" id="vmodeField" style="min-width:180px" hidden>
+              <label for="vmode">Video type</label>
+              <select id="vmode"></select>
+            </div>
+            <div class="grow" id="audioField" style="min-width:170px">
               <label for="audio">Audio</label>
               <select id="audio">
                 <option value="music">Generate Song</option>
@@ -68,7 +72,7 @@
               </select>
             </div>
             <div class="grow" id="voiceField" style="min-width:170px" hidden>
-              <label for="voice">Voice</label>
+              <label for="voice" id="voiceLabel">Voice</label>
               <select id="voice"><option value="">Default voice — same voice for the whole video</option><option value="random">Default voice — random voice per segment</option></select>
             </div>
             <div class="grow" style="min-width:160px">
@@ -100,13 +104,20 @@
           <audio id="musicPreview" controls preload="none" hidden style="margin-top:8px;height:32px;width:100%"></audio>
           <div class="hint" id="musicUpHint">Optional. Upload a track and it becomes the soundtrack as-is &mdash; no song is generated, and it, not the Video length, decides how long the video is (10 seconds to 6 minutes).</div>
         </div>
+        <div class="msec" id="storyBlock" hidden>
+          <div class="msec-title">Story video</div>
+          <div class="hint">The LLM invents the scenes that build the story, and the voiceover is
+            only what happens and what the characters say &mdash; never a description of what is on
+            screen. You review and edit every line before anything is rendered.</div>
+          <div class="hint" id="storyVoices" style="margin-top:6px"></div>
+        </div>
         <div class="msec" id="lyricsBlock" hidden>
           <div class="msec-title">Song lyrics</div>
           <label for="lyrics">Your lyrics (optional)</label>
           <textarea id="lyrics" maxlength="2000" placeholder="[Verse]&#10;Twinkle, twinkle, little star..."></textarea>
           <div class="hint" id="lyricsHint">Leave this empty and the LLM writes the song. Paste lyrics and they are sung exactly as written &mdash; and they, not the Video length, decide how long the video is.</div>
         </div>
-        <div class="msec">
+        <div class="msec" id="sbBlock">
           <div class="msec-title">On-screen story board</div>
           <label class="switch"><input type="checkbox" id="storyboard"><span class="track"></span> Add story board cards</label>
           <div class="hint">Styled fact cards (key facts, numbers, takeaways) with related images are drawn over the video, timed to what is being said. On by default for Tech channels.</div>
@@ -222,8 +233,10 @@ function clearMusic() {
 
 function applyLyrics() {
   // only kids channels singing a song, and never alongside an uploaded track (the server rejects
-  // the combination); hiding it also clears it, so nothing invisible is ever posted
-  const show = isKids(currentChannel()) && $("#audio").value === "music" && !musicUpOn();
+  // the combination); hiding it also clears it, so nothing invisible is ever posted. A story video
+  // is spoken, so the box disappears and clears there too.
+  const show = isKids(currentChannel()) && $("#audio").value === "music" && !musicUpOn()
+            && !storyOn();
   if (!show && !$("#lyricsBlock").hidden) $("#lyrics").value = "";
   $("#lyricsBlock").hidden = !show;
   const on = lyricsOn();
@@ -240,12 +253,55 @@ function applyLyrics() {
 }
 
 function applyAudio() {
-  const song = $("#audio").value === "music";
+  const song = $("#audio").value === "music" && !storyOn();
   $("#voiceField").hidden = song;
   // hiding it clears it too: nothing invisible is ever posted
   if (!song && musicUp) { clearMusic(); return; }   // clearMusic calls applyLyrics itself
   $("#musicUpBlock").hidden = !song;
   applyLyrics();
+}
+
+function storyOn() { return !$("#vmodeField").hidden && $("#vmode").value === "story"; }
+
+// The Video type picker: kids channels only, and only for the sources a story can be written from
+// (a pasted transcript IS the script, and a repo video is a tech-channel thing). The server
+// re-validates all of this - /jobs is a public API - and hiding the picker resets it, so nothing
+// invisible is ever posted.
+function applyVideoMode() {
+  const ch = currentChannel();
+  const show = isKids(ch) && (ch.characters_enabled !== false) && (ch.cast || []).length > 0
+            && ["url", "topic", "description"].includes($("#source").value);
+  if (!show && !$("#vmodeField").hidden) $("#vmode").value = "song";
+  $("#vmodeField").hidden = !show;
+  const story = storyOn();
+  // a story is told by its voiceover: the audio choice is made for it
+  $("#audioField").hidden = story;
+  $("#storyBlock").hidden = !story;
+  $("#sbBlock").hidden = story;        // fact cards are an explainer device, not a story one
+  if (story) $("#storyboard").checked = false;
+  $("#voiceLabel").textContent = story ? "Narrator voice" : "Voice";
+  if ($("#voice").value === "random" && story) $("#voice").value = "";
+  refillVoices();
+  if (story) {
+    if (musicUp) { clearMusic(); }              // clearMusic calls applyLyrics itself
+    $("#musicUpBlock").hidden = true;
+    $("#voiceField").hidden = false;
+    applyLyrics();
+    const noVoice = (ch.cast || []).filter(c => !c.voice_id).map(c => c.name);
+    const shared = ((ch.defaults || {}).character_voice || "");
+    $("#storyVoices").innerHTML = !noVoice.length
+      ? "Every character speaks with its own reference voice."
+      : shared
+        ? `${esc(noVoice.join(", "))} ${noVoice.length > 1 ? "use" : "uses"} this channel&rsquo;s `
+          + `default character voice. Give each of them their own in `
+          + `<a href="/settings#channelsCard">Settings &rarr; Channels</a> to tell them apart.`
+        : `${esc(noVoice.join(", "))} ${noVoice.length > 1 ? "have" : "has"} no voice yet &mdash; one `
+          + `is invented per character and kept for this video, so it can sound like anyone. Pick `
+          + `voices (or one default character voice) in `
+          + `<a href="/settings#channelsCard">Settings &rarr; Channels</a>.`;
+  } else {
+    applyAudio();
+  }
 }
 
 let channelsList = [];
@@ -261,7 +317,7 @@ function applyChannel() {
   if (d.aspect_ratio) $("#ar").value = d.aspect_ratio;
   if (d.video_length) $("#vlen").value = d.video_length;
   $("#audio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
-  applyAudio();
+  $("#vmode").value = d.video_mode || "song";
   loadVoices().then(() => { if (d.voice_id) selectVoice($("#voice"), d.voice_id); });
   const real = isRealistic(ch);
   $("#artstyleBlock").hidden = real;
@@ -282,20 +338,35 @@ function applyChannel() {
 
 let voicesById = {};
 
+let voiceList = [];
+
+// A story has one narrator reading the lines nobody in the cast says; the characters speak with
+// their own voices, set per character in Settings. So neither per-video built-in applies here -
+// "a random voice per segment" would give the narrator a new voice every scene.
+const STORY_VOICE_BUILTINS = [["", "Default — one narrator voice, kept for the whole story"]];
+
+function refillVoices() {
+  fillVoiceSelect($("#voice"), voiceList, $("#voice").value,
+                  storyOn() ? STORY_VOICE_BUILTINS : null);
+}
+
 async function loadVoices() {
   try {
     const d = await api("/api/voices");
+    voiceList = d.voices || [];
     voicesById = {};
-    d.voices.forEach(v => { voicesById[v.id] = v.name; });
-    fillVoiceSelect($("#voice"), d.voices, $("#voice").value);
+    voiceList.forEach(v => { voicesById[v.id] = v.name; });
+    refillVoices();
   } catch (e) { /* voice list is optional */ }
 }
 
 function audioLabel(j) {
-  if ((j.audio_mode || "") === "music") return j.music_upload ? "Song (your track)" : "Song";
-  if (j.voice_id === "random") return "Voiceover (random voices)";
+  const story = (j.video_mode || "") === "story";
+  if (!story && (j.audio_mode || "") === "music") return j.music_upload ? "Song (your track)" : "Song";
+  const kind = story ? "Story" : "Voiceover";
+  if (j.voice_id === "random") return story ? "Story" : "Voiceover (random voices)";
   const v = j.voice_id && voicesById[j.voice_id];
-  return "Voiceover" + (v ? ` (${esc(v)})` : "");
+  return kind + (v ? ` (${esc(v)})` : "");
 }
 
 function applySource() {
@@ -306,6 +377,7 @@ function applySource() {
   $("#urls").placeholder = ui.ph;
   $("#subText").textContent = ui.sub;
   $("#pageScrollBlock").hidden = mode !== "repo";   // only a repo job has a page to scroll
+  applyVideoMode();        // a story cannot be written from a pasted transcript or a repo
 }
 
 async function submit() {
@@ -322,8 +394,10 @@ async function submit() {
                aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
                resolution: $("#res").value,
                art_style: real ? "" : $("#artstyle").value,
-               video_length: (lyricsOn() || musicUpOn()) ? "" : $("#vlen").value, audio_mode: $("#audio").value,
-               voice_id: $("#audio").value === "music" ? "" : $("#voice").value,
+               video_length: (lyricsOn() || musicUpOn()) ? "" : $("#vlen").value,
+               audio_mode: storyOn() ? "narration+music" : $("#audio").value,
+               video_mode: $("#vmodeField").hidden ? "" : $("#vmode").value,
+               voice_id: (!storyOn() && $("#audio").value === "music") ? "" : $("#voice").value,
                storyboard: $("#storyboard").checked };
   if (lyricsOn()) body.lyrics = $("#lyrics").value.trim();
   if (musicUpOn()) body.music_upload_id = musicUp.id;
@@ -604,6 +678,9 @@ async function loadOptions() {
     `<option value="${v}" ${v === o.default_megapixels ? "selected" : ""}>${v} MP</option>`).join("");
   $("#res").innerHTML = (o.resolutions || []).map(r =>
     `<option value="${esc(r)}" ${r === o.default_resolution ? "selected" : ""}>${esc(r)}</option>`).join("");
+  $("#vmode").innerHTML = (o.video_modes || ["song"]).map(m =>
+    `<option value="${esc(m)}">${esc((o.video_mode_labels || {})[m] || m)}</option>`).join("");
+  $("#vmode").value = o.default_video_mode || "song";
   artStyles = o.art_styles;
   $("#artstyle").value = o.default_art_style;
   $("#source").value = o.default_source || "url";
@@ -635,6 +712,7 @@ document.addEventListener("keydown", ev => {
 $("#go").onclick = submit;
 $("#source").onchange = applySource;
 $("#audio").onchange = applyAudio;
+$("#vmode").onchange = applyVideoMode;
 $("#lyrics").oninput = applyLyrics;
 $("#musicFile").onchange = uploadMusic;
 $("#musicClear").onclick = clearMusic;

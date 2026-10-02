@@ -28,7 +28,9 @@ MAX_CAST_NAME_CHARS = 40
 MAX_CAST_KIND_CHARS = 60
 CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: detail helps consistency
 
-DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice")
+MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
+DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice",
+                "video_mode", "character_voice")
 BOOL_DEFAULT_KEYS = ("storyboard",)   # story board overlay on by default for this channel's videos
 
 
@@ -41,7 +43,12 @@ def _read_index() -> dict:
                     c.setdefault("made_for_kids", c.get("audience") == "kids")
                     c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
                     c["defaults"].setdefault("song_voice", default_song_voice(c.get("audience")))
+                    c["defaults"].setdefault("video_mode", config.DEFAULT_VIDEO_MODE)
+                    c["defaults"].setdefault("character_voice", "")
                     c.setdefault("cast", [])
+                    for m in c["cast"]:         # characters created before they could have a voice
+                        if isinstance(m, dict):
+                            m.setdefault("voice_id", "")
                     c.setdefault("cast_opening", True)
                     c.setdefault("characters_enabled", bool(c.get("cast")))
                     c.setdefault("rules", "")
@@ -113,7 +120,11 @@ def snapshot(rec: dict) -> dict:
     return {"name": rec["name"], "purpose": rec["purpose"], "rules": str(rec.get("rules") or ""),
             "audience": rec["audience"], "video_type": rec["video_type"],
             "made_for_kids": rec.get("made_for_kids", rec["audience"] == "kids"),
-            "cast": [dict(c) for c in rec.get("cast") or []],
+            "cast": [{**c, "voice_id": str(c.get("voice_id") or "")}
+                     for c in rec.get("cast") or []],
+            # the voice every character without one of their own speaks with: a story video needs it
+            # at synthesis time, long after the channel record is out of reach
+            "character_voice": str((rec.get("defaults") or {}).get("character_voice") or ""),
             "cast_opening": bool(rec.get("cast_opening", True)),
             "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast"))))}
 
@@ -134,7 +145,12 @@ def _validate_cast(items, base_cast: list) -> list:
              "kind": str(it.get("kind") or "").strip(),
              "role": str(it.get("role") or "main").strip().lower(),
              "look": str(it.get("look") or "").strip(),
-             "personality": str(it.get("personality") or "").strip()}
+             "personality": str(it.get("personality") or "").strip(),
+             # reference voice this character speaks with in a story video ("" = one is cloned from
+             # their first line and kept for that video). Deliberately NOT checked against the voice
+             # library here: deleting a voice would otherwise make every channel using it unsavable,
+             # and the job logs a fallback instead (pipeline resolves it at synthesis time).
+             "voice_id": str(it.get("voice_id") or "").strip()}
         if not c["id"] or c["id"] not in known or c["id"] in seen:
             c["id"] = uuid.uuid4().hex[:8]
         seen.add(c["id"])
@@ -146,6 +162,11 @@ def _validate_cast(items, base_cast: list) -> list:
             raise ValueError(f"cast: role must be one of {list(CAST_ROLES)}")
         if not c["look"]:
             raise ValueError(f"cast: {c['name']} needs a look description")
+        if len(c["voice_id"]) > MAX_CAST_VOICE_CHARS:
+            raise ValueError(f"cast: {c['name']} has an invalid voice")
+        if c["voice_id"] == "random":
+            # "a new voice every time" is the one thing a recurring character must never be
+            raise ValueError(f"cast: {c['name']} needs one steady voice, not the random voice")
         out.append(c)
     names = [c["name"].lower() for c in out]
     if len(set(names)) != len(names):
@@ -160,7 +181,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
-                        "song_voice": ""}}
+                        "song_voice": "", "video_mode": "", "character_voice": ""}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
                   "cast_opening", "characters_enabled"):
@@ -212,6 +233,21 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         raise ValueError(f"aspect_ratio must be one of {config.ASPECT_RATIOS}")
     if df["video_length"] and df["video_length"] not in config.VIDEO_LENGTHS:
         raise ValueError(f"video_length must be one of {list(config.VIDEO_LENGTHS)}")
+    df["video_mode"] = df.get("video_mode") or config.DEFAULT_VIDEO_MODE
+    if df["video_mode"] not in config.VIDEO_MODES:
+        raise ValueError(f"video_mode must be one of {config.VIDEO_MODES}")
+    # Demoted rather than rejected at the channel level: the audience is edited on the same form, so
+    # rejecting would make a kids+story channel unsavable the moment it stops being a kids channel.
+    # The per-video path (pipeline._resolve_video_mode) still raises, because there the user asked.
+    if df["video_mode"] == "story" and rec["audience"] != "kids":
+        df["video_mode"] = "song"
+    if df["video_mode"] == "story":
+        df["audio_mode"] = "narration+music"   # a story is told by its voiceover, never sung
+    if df["character_voice"] == "random":
+        # one voice per character is the whole point; a new one every line is the bug
+        raise ValueError("the default character voice cannot be the random voice")
+    if len(df["character_voice"]) > MAX_CAST_VOICE_CHARS:
+        raise ValueError("invalid default character voice")
     if df["audio_mode"] == "music":
         df["voice_id"] = ""  # a reference voice is meaningless for songs
     # the song voice stays whatever the audio default is: the audio mode is chosen per video

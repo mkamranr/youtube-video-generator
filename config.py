@@ -170,6 +170,21 @@ GPU_WINDOW_START = "22:00"      # HH:MM; end before start = overnight window
 GPU_WINDOW_END = "06:00"
 AUDIO_MODES = ["music", "narration", "narration+music"]
 AUDIO_MODE = "music"            # default preselection for the New Video dialog audio choice
+# Per-video CONTENT FORMAT, offered on kids channels. "song" is every video made so far; "story"
+# tells a story whose voiceover is nothing but the spoken lines of that story (services/story.py).
+# Not the same thing as a channel's VIDEO_TYPES (animated / real / tech), which is how it looks.
+VIDEO_MODES = ["song", "story"]
+DEFAULT_VIDEO_MODE = "song"
+STORY_WPS = 2.2                 # spoken words per second each story line is sized for
+STORY_LINE_LEAD = 0.2           # silence before every line, so no word starts exactly on a clip cut
+STORY_LINE_GAP = 0.6            # silence held after every line, before its clip ends
+STORY_MAX_CLIP_SECONDS = 12.0   # a line speaking longer than this is shortened once and re-spoken
+STORY_MIN_BEATS = 4             # fewest scenes a story is told in
+STORY_MAX_BEATS = 40            # most scenes a story is told in: one LLM call and one GPU
+                                # render per scene, so this is a cost ceiling, not a style
+STORY_NARRATOR = "Narrator"     # speaker of a line that no cast character says out loud
+MAX_STORY_LINE_CHARS = 400      # one spoken line, as edited on the approval screen (above
+                                # TTS_CHUNK_CHARS, so a long one is at most two requests)
 MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode, auto-ducked)
 STORYBOARD_MAX_IMAGES = 6       # story board overlay: max related images rendered per video (0 = text only)
 STORYBOARD_ACCENT = "#e9a13b"   # story board overlay accent colour (kicker text, side bar)
@@ -350,6 +365,20 @@ EDITABLE_SETTINGS = {
                         "into Settings to finish. Set to the HTTPS address users open the app with (e.g. "
                         "https://videogen.example.com) together with a Web-type OAuth client that has "
                         "<url>/api/youtube/callback registered for a fully automatic sign-in"),
+    "STORY_WPS": (float, lambda v: 1.0 <= v <= 4.0, "Story words/second",
+                  "Spoken-words-per-second budget for a story video: it sizes every spoken line so the "
+                  "line fits the clip that shows its scene (1-4)"),
+    "STORY_LINE_LEAD": (float, lambda v: 0 <= v <= 2.0, "Story line lead-in (s)",
+                        "Silence held at the start of each story clip before the line is spoken, so no "
+                        "word begins exactly on a cut (0-2 s)"),
+    "STORY_LINE_GAP": (float, lambda v: 0 <= v <= 3.0, "Story line tail (s)",
+                       "Silence held after each spoken story line before its clip ends (0-3 s)"),
+    "STORY_MAX_CLIP_SECONDS": (float, lambda v: 6.0 <= v <= 15.0, "Story: longest clip (s)",
+                               "A story line that speaks longer than this stretches its clip too far, so "
+                               "the LLM is asked once for a shorter line and it is spoken again (6-15 s)"),
+    "STORY_MIN_BEATS": (int, lambda v: 2 <= v <= 20, "Story: fewest scenes",
+                        "A story is always told in at least this many scenes, however short the target "
+                        "length is (2-20)"),
     "SCRIPT_REVIEW": (bool, lambda v: True, "LLM review pass",
                       "After generating each scene (and each drafted script), the LLM reviews it once more against the audio/content and fixes inconsistencies (wrong letters, mismatched objects, safety issues)"),
     "COMFY_CLEANUP": (bool, lambda v: True, "Clean up ComfyUI",
