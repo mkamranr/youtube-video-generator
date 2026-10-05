@@ -1030,8 +1030,20 @@ def _plan_shape(channel: dict | None, day_value: str) -> str:
             '"thumbnail_idea": "...", "hook": "..."}')
 
 
-def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, avoid) -> str:
-    """The shared part of the weekly-plan prompts: what a good week looks like."""
+STORY_WEEK_RULE = (
+    "These are STORY videos. Each one is told as a short series of scenes with NO CUTS between them: "
+    "the camera never jumps, so the characters walk, ride, climb or open a door from one place into "
+    "the next. Plan a story that happens in one or two connected places and resolves by the end - "
+    "not one that moves across the world.")
+
+
+def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, avoid,
+                video_mode: str = "song") -> str:
+    """The shared part of the weekly-plan prompts: what a good week looks like.
+
+    video_mode: "story" adds the one constraint a story brief has and a song brief does not -
+    a story is rendered as clips that each continue from the previous one's last frame, so a
+    week of ideas that hop between unconnected places fights the continuity contract."""
     avoid = [str(a).strip() for a in (avoid or []) if str(a).strip()]
     parts = [f"Plan {days} videos for this channel, one per day"
              + (f", starting {week_start}." if week_start else ".")]
@@ -1042,6 +1054,8 @@ def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, av
         if cast.active(channel):
             parts.append("Cast the videos from the channel roster above - usually 1-3 characters each, "
                          "and not the same lead every day. Use their names exactly as written.")
+            if video_mode == "story":
+                parts.append(STORY_WEEK_RULE)
     else:
         parts.append("Every video stands on its own (a viewer may watch only one) but the week as a "
                      "whole has variety: a different concrete problem, a different tool or workflow, a "
@@ -1060,13 +1074,13 @@ def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, av
 
 
 def write_week_plan(channel: dict | None = None, days: int = 7, week_start: str = "",
-                    notes: str = "", avoid=()) -> list:
+                    notes: str = "", avoid=(), video_mode: str = "song") -> list:
     """A week of video ideas: one row per day (actors, title, description, thumbnail idea, hook).
 
     Returns the raw row list (normalized by services.planner.normalize_days). The rows are written
     with the spoken cast sheet: a description becomes the brief the narration is written from, so it
     must not carry the characters' looks."""
-    user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}
+    user = f"""{_plan_rules(channel, days, week_start, notes, avoid, video_mode)}
 
 Return JSON: {{"plan": [{_plan_shape(channel, '1')}, ...]}} with exactly {days} entries, "day" running 1 to {days}, where:
 {_plan_row_keys(channel)}
@@ -1081,14 +1095,14 @@ Never mention real people's names or brands."""
 
 def write_plan_day(channel: dict | None = None, day: int = 1, others: list | None = None,
                    feedback: str = "", days: int = 7, week_start: str = "", notes: str = "",
-                   avoid=()) -> dict:
+                   avoid=(), video_mode: str = "song") -> dict:
     """One replacement row for day `day`, written so it stays different from the other days."""
     rest = "\n".join(f'day {r.get("day")}: {r.get("title", "")} - {r.get("description", "")}'
                      for r in (others or []) if r.get("title") or r.get("description"))
     context = f"\n\nThe other days of this week are:\n{rest}\n\nThe new idea must be different from all of them." \
         if rest else ""
     wish = f'\n\nThe user asks for this day: "{feedback.strip()}"' if feedback.strip() else ""
-    user = f"""{_plan_rules(channel, days, week_start, notes, avoid)}{context}{wish}
+    user = f"""{_plan_rules(channel, days, week_start, notes, avoid, video_mode)}{context}{wish}
 
 Rewrite DAY {day} only, as one fresh idea.
 Return JSON: {{"day": {_plan_shape(channel, str(day))}}} where:

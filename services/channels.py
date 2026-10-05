@@ -238,7 +238,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         raise ValueError(f"video_mode must be one of {config.VIDEO_MODES}")
     # Demoted rather than rejected at the channel level: the audience is edited on the same form, so
     # rejecting would make a kids+story channel unsavable the moment it stops being a kids channel.
-    # The per-video path (pipeline._resolve_video_mode) still raises, because there the user asked.
+    # The per-video path (pipeline.resolve_video_mode) still raises, because there the user asked.
     if df["video_mode"] == "story" and rec["audience"] != "kids":
         df["video_mode"] = "song"
     if df["video_mode"] == "story":

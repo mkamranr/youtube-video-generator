@@ -44,11 +44,16 @@
         <label for="weekStart">Week starts</label>
         <input type="date" id="weekStart">
       </div>
+      <div class="grow" id="planModeField" style="min-width:180px" hidden>
+        <label for="planMode">Video type</label>
+        <select id="planMode"></select>
+      </div>
       <div class="grow" style="min-width:260px">
         <label for="notes">Anything specific this week? (optional)</label>
         <input type="text" id="notes" placeholder="e.g. stories about sharing and first days at school">
       </div>
     </div>
+    <div class="hint" id="planModeHint" hidden style="margin-top:8px"></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="genBtn">Generate 7-day plan</button>
       <span class="hint" id="genHint"></span>
@@ -68,6 +73,42 @@ let busy = new Set();    // "planId:day" rows with a request in flight
 function channelName(cid) {
   const c = channelsList.find(x => x.id === cid);
   return c ? c.name : "(deleted channel)";
+}
+
+function channelOf(cid) { return channelsList.find(x => x.id === cid); }
+
+// the same gate the New Video dialog uses (static/index.html applyVideoMode); the planner has no
+// source picker, and its source is always "description", which is already a story source
+function storyChannel(ch) {
+  return !!ch && ch.audience === "kids" && ch.characters_enabled !== false
+      && (ch.cast || []).length > 0;
+}
+
+let videoModes = ["song"], videoModeLabels = {};
+
+function modeOptions(selected) {
+  return videoModes.map(m =>
+    `<option value="${esc(m)}" ${m === selected ? "selected" : ""}>${esc(videoModeLabels[m] || m)}</option>`).join("");
+}
+
+// The plan the rows will be confirmed into. A plan stores its own format, so an eligible plan keeps
+// a live select in its header; everything else is a song week and sends nothing.
+function modeOf(planId) {
+  const sel = document.querySelector(`.plan-mode[data-plan="${planId}"]`);
+  return sel ? sel.value : "";
+}
+
+function applyPlanMode() {
+  const ch = channelOf($("#channel").value);
+  const show = storyChannel(ch);
+  // hiding it resets it, so an invisible choice is never posted
+  if (!show && !$("#planModeField").hidden) $("#planMode").value = "song";
+  $("#planModeField").hidden = !show;
+  const story = show && $("#planMode").value === "story";
+  $("#planModeHint").hidden = !story;
+  $("#planModeHint").textContent = "Every video of this week becomes a story: the LLM writes the "
+    + "scenes and the voiceover is only what happens and what the characters say. You still review "
+    + "each one before it renders.";
 }
 
 function dayLabel(row) {
@@ -110,6 +151,12 @@ function planHTML(plan) {
       ${made}/${(plan.days || []).length} made${plan.notes ? ` &middot; ${esc(plan.notes)}` : ""}
       ${plan.owner_name ? ` &middot; ${esc(plan.owner_name)}` : ""}
     </div>
+    ${storyChannel(channelOf(plan.channel_id)) ? `<div class="row" style="margin-bottom:10px;align-items:center;gap:8px">
+      <label for="planMode-${esc(plan.id)}" style="margin:0">Video type</label>
+      <select class="plan-mode" id="planMode-${esc(plan.id)}" data-plan="${esc(plan.id)}"
+              style="max-width:180px">${modeOptions(plan.video_mode || "song")}</select>
+      <span class="hint">applied to every video you make from this week</span>
+    </div>` : ""}
     ${(plan.days || []).map(d => rowHTML(plan, d)).join("")}
     <div class="row" style="margin-top:14px">
       <button class="btn" onclick="makeSelected('${plan.id}')">Make selected videos</button>
@@ -162,7 +209,7 @@ async function makeJobs(planId, days) {
   try {
     const r = await api(`/api/plans/${planId}/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ days }) });
+      body: JSON.stringify({ days, video_mode: modeOf(planId) }) });
     plans = plans.map(p => (p.id === r.plan.id ? r.plan : p));
     const n = (r.jobs || []).length;
     toast(n ? `${n} video${n > 1 ? "s" : ""} created - open each one to set it up` : "Nothing to create");
@@ -189,7 +236,8 @@ $("#genBtn").onclick = async () => {
   try {
     const plan = await api("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel_id: $("#channel").value, week_start: $("#weekStart").value,
-                             notes: $("#notes").value }) });
+                             notes: $("#notes").value,
+                             video_mode: $("#planModeField").hidden ? "" : $("#planMode").value }) });
     plans = [plan, ...plans];
     render();
     toast("Weekly plan ready - review the seven days");
@@ -197,7 +245,8 @@ $("#genBtn").onclick = async () => {
   finally { $("#genBtn").disabled = false; $("#genHint").textContent = ""; }
 };
 
-$("#channel").addEventListener("change", refresh);
+$("#channel").addEventListener("change", () => { applyPlanMode(); refresh(); });
+$("#planMode").addEventListener("change", applyPlanMode);
 
 (async function init() {
   const monday = new Date();
@@ -206,10 +255,14 @@ $("#channel").addEventListener("change", refresh);
   try {
     const o = await api("/options");
     channelsList = o.channels || [];
+    videoModes = o.video_modes || ["song"];
+    videoModeLabels = o.video_mode_labels || {};
+    $("#planMode").innerHTML = modeOptions(o.default_video_mode || "song");
     $("#channel").innerHTML = channelsList.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")
       || `<option value="">No channel yet</option>`;
     if (o.default_channel_id) $("#channel").value = o.default_channel_id;
   } catch (e) { toast(e.message, true); }
+  applyPlanMode();
   await refresh();
 })();
 </script>

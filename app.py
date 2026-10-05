@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
-from pipeline import JobManager
+from pipeline import JobManager, resolve_video_mode
 from services import (auth, bible, browser, cast, channels, llm, music_upload, ownership, planner,
                       schedule, users, voices)
 
@@ -754,6 +754,7 @@ class PlanCreate(BaseModel):
     channel_id: str = ""
     week_start: str = ""       # ISO date of day 1; today when empty
     notes: str = ""            # optional steer for the week
+    video_mode: str = ""       # the format every video of this week is made in; "" -> song
 
 
 class PlanRegen(BaseModel):
@@ -771,6 +772,7 @@ class PlanDay(BaseModel):
 
 class PlanJobs(BaseModel):
     days: list[int] = []       # day numbers to turn into jobs
+    video_mode: str = ""       # "" -> the format stored on the plan; a value changes it and sticks
 
 
 def _owned_plan(pid: str, user: dict) -> dict:
@@ -801,14 +803,20 @@ def create_plan_api(body: PlanCreate, user: dict = Depends(auth.require_user)):
     """Write a week of video ideas with the LLM and store it. No job is created here."""
     ch = _owned_channel(body.channel_id, user)
     week_start = planner.parse_week_start(body.week_start)
+    # the planner always writes from a description, so the source never blocks a story
+    try:
+        mode = resolve_video_mode(body.video_mode, ch, "description")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     try:
         rows = llm.write_week_plan(channel=channels.snapshot(ch), days=planner.DAYS,
                                    week_start=week_start, notes=body.notes,
-                                   avoid=planner.previous_titles(ch["id"]))
+                                   avoid=planner.previous_titles(ch["id"]), video_mode=mode)
     except Exception as e:  # noqa: BLE001  (vLLM down / bad reply)
         raise HTTPException(502, f"the LLM could not write the plan: {e}")
     days = planner.normalize_days(rows, week_start, ch)
-    return planner.create_plan(ch["id"], ch.get("owner") or user["id"], week_start, days, body.notes)
+    return planner.create_plan(ch["id"], ch.get("owner") or user["id"], week_start, days,
+                               body.notes, video_mode=mode)
 
 
 @app.post("/api/plans/{plan_id}/regenerate")
@@ -828,7 +836,8 @@ def regenerate_plan_api(plan_id: str, body: PlanRegen, user: dict = Depends(auth
             new = llm.write_plan_day(channel=snap, day=day, others=others, feedback=body.feedback,
                                      days=planner.DAYS, week_start=plan["week_start"],
                                      notes=plan.get("notes", ""),
-                                     avoid=planner.previous_titles(plan["channel_id"]))
+                                     avoid=planner.previous_titles(plan["channel_id"]),
+                                     video_mode=plan.get("video_mode") or config.DEFAULT_VIDEO_MODE)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(502, f"the LLM could not rewrite day {day}: {e}")
         out = planner.set_day(plan_id, day,
@@ -857,6 +866,14 @@ def create_plan_jobs_api(plan_id: str, body: PlanJobs, user: dict = Depends(auth
     if not ch:
         raise HTTPException(400, "the channel of this plan no longer exists")
     owner = ch.get("owner") or user["id"]
+    # resolved ONCE, before anything is created: set_job runs after each submit, so a failure
+    # half-way through the loop would leave the earlier days created and stamped on disk
+    try:
+        mode = resolve_video_mode(body.video_mode or plan.get("video_mode"), ch, "description")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if mode != plan.get("video_mode"):
+        plan = planner.set_video_mode(plan_id, mode)
     made = []
     for day in body.days or []:
         row = next((r for r in plan["days"] if r["day"] == day), None)
@@ -865,6 +882,7 @@ def create_plan_jobs_api(plan_id: str, body: PlanJobs, user: dict = Depends(auth
         try:
             job = manager.submit_prompt(planner.job_seed(row), "description", channel=ch,
                                         owner=owner, start=False, title=row.get("title", ""),
+                                        video_mode=mode,
                                         plan={"plan_id": plan_id, "day": day,
                                               "date": row.get("date", ""), "hook": row.get("hook", ""),
                                               "thumb_idea": row.get("thumbnail_idea", "")})

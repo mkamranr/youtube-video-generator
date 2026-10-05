@@ -2,6 +2,7 @@
 
 Run with  python -m unittest discover -s tests -t .  from the repo root. The store is pointed at
 a throw-away directory, so nothing touches the real plans/plans.json."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,25 @@ class Store(unittest.TestCase):
                                       "2026-09-15", self.ch)
         self.plan = planner.create_plan("ch01", "u1", "2026-09-15", days, "gentle stories")
 
+    def test_a_week_remembers_the_format_its_videos_are_made_in(self):
+        self.assertEqual(self.plan["video_mode"], "song")        # the default
+        story = planner.create_plan("ch01", "u1", "2026-09-15", [], "", video_mode="story")
+        self.assertEqual(story["video_mode"], "story")
+        back = planner.set_video_mode(story["id"], "song")
+        self.assertEqual(back["video_mode"], "song")
+        self.assertEqual(planner.get_plan(story["id"])["video_mode"], "song")
+        # a blank falls back rather than storing nothing
+        self.assertEqual(planner.set_video_mode(story["id"], "")["video_mode"],
+                         config.DEFAULT_VIDEO_MODE)
+        with self.assertRaises(KeyError):
+            planner.set_video_mode("nope", "story")
+
+    def test_a_plan_written_before_formats_existed_reads_as_a_song_week(self):
+        config.PLANS_INDEX.write_text(json.dumps({"plans": [
+            {"id": "old1", "channel_id": "ch01", "owner": "u1", "created": 1.0, "updated": 1.0,
+             "week_start": "2026-09-15", "notes": "", "days": []}]}), encoding="utf-8")
+        self.assertEqual(planner.get_plan("old1")["video_mode"], "song")
+
     def test_listing_is_filtered_by_owner_and_channel(self):
         planner.create_plan("ch02", "u2", "2026-09-15", [], "")
         self.assertEqual([p["id"] for p in planner.list_plans(owner="u1")], [self.plan["id"]])
@@ -122,6 +142,30 @@ class Prompts(unittest.TestCase):
             calls.append(messages)
             return dict(reply)
         return calls, fake
+
+    def test_a_story_week_is_told_the_camera_never_cuts(self):
+        """A story is rendered as clips that each continue from the previous one's last frame, so a
+        week of ideas that hop between unconnected places would fight the continuity contract."""
+        song = llm._plan_rules(self.ch, 7, "2026-09-15", "", (), "song")
+        story = llm._plan_rules(self.ch, 7, "2026-09-15", "", (), "story")
+        self.assertNotIn("NO CUTS", song)
+        self.assertIn("NO CUTS", story)
+        self.assertIn("one or two connected places", story)
+        self.assertNotIn("NO CUTS", llm._plan_rules(self.ch, 7, "", "", ()))   # default is a song
+        # an explainer channel has no characters to walk anywhere
+        off = {**self.ch, "characters_enabled": False}
+        self.assertNotIn("NO CUTS", llm._plan_rules(off, 7, "", "", (), "story"))
+
+    def test_the_story_rule_reaches_both_plan_writers(self):
+        calls, fake = self._capture({"plan": [_row(i + 1) for i in range(7)],
+                                     "day": _row(3)})
+        with mock.patch.object(llm, "_chat", fake):
+            llm.write_week_plan(channel=self.ch, days=7, week_start="2026-09-15", video_mode="story")
+            llm.write_plan_day(channel=self.ch, day=3, others=[_row(1)], video_mode="story")
+            llm.write_week_plan(channel=self.ch, days=7, week_start="2026-09-15")
+        self.assertIn("NO CUTS", calls[0][1]["content"])
+        self.assertIn("NO CUTS", calls[1][1]["content"])
+        self.assertNotIn("NO CUTS", calls[2][1]["content"])
 
     def test_week_prompt_has_no_looks(self):
         calls, fake = self._capture({"plan": [_row(i + 1) for i in range(7)]})

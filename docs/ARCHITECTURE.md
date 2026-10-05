@@ -59,7 +59,8 @@ services/
   auth.py              Signed session cookies (HMAC-SHA256, stdlib only), current_user /
                        require_user / require_admin dependencies, login throttling
   planner.py           Weekly content plans (plans/plans.json): seven dated video ideas per
-                       channel, normalization and the store; rows become paused jobs
+                       channel plus the week's `video_mode`, so a confirmed row becomes a story
+                       job directly; normalization and the store; rows become paused jobs
 static/                Web UI: index (submit + job list), job (detail/revision), planner (weekly
                        plans), archive, settings, login, setup; shared css/app.css and
                        js/common.js (nav + user slot, status pills, mode-aware stepper,

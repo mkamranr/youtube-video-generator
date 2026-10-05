@@ -304,7 +304,7 @@ def _is_story(job: Job) -> bool:
 STORY_SOURCES = ("topic", "description", "youtube")
 
 
-def _resolve_video_mode(video_mode: str, channel: dict | None, source: str,
+def resolve_video_mode(video_mode: str, channel: dict | None, source: str,
                         lyrics: str = "", upload_id: str = "") -> str:
     """"song" (the default, and every video made before this existed) or "story", validated.
 
@@ -312,6 +312,9 @@ def _resolve_video_mode(video_mode: str, channel: dict | None, source: str,
     story. It needs a kids channel with characters (the format is built on named speakers) and a
     source the story can be written from - a pasted transcript is the one thing it cannot use, since
     those words ARE the script and a story video writes its own.
+
+    Public (unlike _resolve_lyrics / _resolve_music_upload) because app.py resolves the format of
+    a whole weekly plan up front, before it creates any job from it.
 
     Deliberately not a parameter of _resolve_choices - that signature is called positionally by
     tests/test_lyric_sync.py and tests/test_resolution.py, which also index its 11-tuple."""
@@ -1634,7 +1637,7 @@ class JobManager:
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
                lyrics: str = "", music_upload_id: str = "", video_mode: str = "") -> Job:
-        video_mode = _resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
+        video_mode = resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
         if video_mode == "story":
             # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
             # and a kids channel usually defaults to music - the narrator would lose their voice
@@ -1776,7 +1779,7 @@ class JobManager:
         # only a repo job ever produces a page.png to scroll
         page_scroll = bool(source_kind == REPO_SOURCE
                            and (True if page_scroll is None else page_scroll))
-        video_mode = _resolve_video_mode(video_mode, channel, source_kind, lyrics, music_upload_id)
+        video_mode = resolve_video_mode(video_mode, channel, source_kind, lyrics, music_upload_id)
         if video_mode == "story":       # see the note in submit(): forced before the resolve
             audio_mode, storyboard_flag = "narration+music", False
         aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
@@ -1840,7 +1843,7 @@ class JobManager:
                                "song_voice": job.song_voice, "storyboard": job.storyboard,
                                "voice_id": job.voice_id, "video_mode": job.video_mode}}
             # resolved against the snapshot frozen at plan time, exactly as the lyrics are below
-            vmode = _resolve_video_mode(video_mode or job.video_mode, ch, job.source,
+            vmode = resolve_video_mode(video_mode or job.video_mode, ch, job.source,
                                         lyrics, music_upload_id)
             if vmode == "story":        # see the note in submit(): forced before the resolve
                 audio_mode, storyboard_flag = "narration+music", False

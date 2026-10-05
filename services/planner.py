@@ -33,6 +33,9 @@ def _read_index() -> dict:
     try:
         data = json.loads(config.PLANS_INDEX.read_text(encoding="utf-8"))
         if isinstance(data.get("plans"), list):
+            for p in data["plans"]:     # plans written before a week had a format
+                if isinstance(p, dict):
+                    p.setdefault("video_mode", config.DEFAULT_VIDEO_MODE)
             return data
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
@@ -119,10 +122,12 @@ def get_plan(pid: str):
     return None
 
 
-def create_plan(channel_id: str, owner: str, week_start: str, days: list, notes: str = "") -> dict:
+def create_plan(channel_id: str, owner: str, week_start: str, days: list, notes: str = "",
+                video_mode: str = "") -> dict:
     rec = {"id": uuid.uuid4().hex[:8], "channel_id": str(channel_id), "owner": str(owner or ""),
            "created": time.time(), "updated": time.time(),
-           "week_start": week_start, "notes": _clip(notes, MAX_NOTES_CHARS), "days": days}
+           "week_start": week_start, "notes": _clip(notes, MAX_NOTES_CHARS),
+           "video_mode": str(video_mode or config.DEFAULT_VIDEO_MODE), "days": days}
     with _lock:
         idx = _read_index()
         idx["plans"].append(rec)
@@ -163,6 +168,16 @@ def set_job(pid: str, day: int, job_id: str) -> dict:
                 d["job_id"] = job_id
                 return
         raise KeyError(f"day {day}")
+    return _mutate(pid, apply)
+
+
+def set_video_mode(pid: str, mode: str) -> dict:
+    """The format every job confirmed from this plan is created in.
+
+    A property of the whole plan, not of a row: rows are confirmed a few at a time, and a per-click
+    choice would let one week come out as a mix of song and story videos."""
+    def apply(p):
+        p["video_mode"] = str(mode or config.DEFAULT_VIDEO_MODE)
     return _mutate(pid, apply)
 
 

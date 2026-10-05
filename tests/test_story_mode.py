@@ -299,11 +299,11 @@ class StoryScenes(unittest.TestCase):
 # ------------------------------------------------------------- option resolving
 class ResolveVideoMode(unittest.TestCase):
     def test_the_default_is_a_song_video(self):
-        self.assertEqual(pipeline._resolve_video_mode("", _channel(), "topic"), "song")
-        self.assertEqual(pipeline._resolve_video_mode("song", _channel(), "topic"), "song")
-        self.assertEqual(pipeline._resolve_video_mode("story", _channel(), "topic"), "story")
-        self.assertEqual(pipeline._resolve_video_mode("story", _channel(), "youtube"), "story")
-        self.assertEqual(pipeline._resolve_video_mode("story", _channel(), "description"), "story")
+        self.assertEqual(pipeline.resolve_video_mode("", _channel(), "topic"), "song")
+        self.assertEqual(pipeline.resolve_video_mode("song", _channel(), "topic"), "song")
+        self.assertEqual(pipeline.resolve_video_mode("story", _channel(), "topic"), "story")
+        self.assertEqual(pipeline.resolve_video_mode("story", _channel(), "youtube"), "story")
+        self.assertEqual(pipeline.resolve_video_mode("story", _channel(), "description"), "story")
 
     def test_every_rejection(self):
         for mode, ch, source, kw, needle in [
@@ -316,7 +316,7 @@ class ResolveVideoMode(unittest.TestCase):
                 ("story", _channel(), "topic", {"lyrics": "la la"}, "spoken, not sung"),
                 ("story", _channel(), "topic", {"upload_id": "u1"}, "uploaded music track")]:
             with self.assertRaises(ValueError) as cm:
-                pipeline._resolve_video_mode(mode, ch, source, **kw)
+                pipeline.resolve_video_mode(mode, ch, source, **kw)
             self.assertIn(needle, str(cm.exception))
 
     def test_is_story_never_branches_on_truthiness(self):
