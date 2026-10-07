@@ -325,11 +325,18 @@ def _freeze_templates(cards: list, seed: str, add_log=None) -> list:
     return cards
 
 
-def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0.2) -> list:
+def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0.2,
+                  size: tuple = None) -> list:
     """Shorten or drop cards so they never share the screen with the hook or the end card.
 
     Applied after the cards are drawn (the PNGs are already on disk and cost nothing to keep) but
-    before they are handed to composite, so a card squeezed out of existence simply never appears."""
+    before they are handed to composite, so a card squeezed out of existence simply never appears.
+
+    size: when given, a card whose window actually moved has its motion expression recomputed.
+    cardtemplates.motion_xy bakes both the start AND the duration into an ffmpeg ease-out, so
+    otherwise the easing stays anchored to a window the card no longer has: a start shifted by
+    MOTION_SECONDS or more zeroes the term, so the card simply appears in its final position
+    without easing in. Harmless, but the page panel's reserved window moves card starts often."""
     out = []
     for lyr in layers:
         start, end = float(lyr["start"]), float(lyr["end"])
@@ -343,7 +350,21 @@ def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0
             start = max(start, be) if bs <= start else start
             end = min(end, bs) if be >= end else end
         if end - start >= min_dur:
-            out.append(dict(lyr, start=round(start, 3), end=round(end, 3)))
+            out.append(_retimed(lyr, round(start, 3), round(end, 3), size))
+    return out
+
+
+def _retimed(lyr: dict, start: float, end: float, size) -> dict:
+    """A copy of `lyr` on the window [start, end], with its motion expression re-anchored there.
+
+    The template guard matters: motion_xy returns (0, 0) for a template it does not know, and
+    MOTION.get(None) is None, so recomputing a layer that carries no template would quietly wipe
+    an expression it already had."""
+    out = dict(lyr, start=start, end=end)
+    moved = start != float(lyr["start"]) or end != float(lyr["end"])
+    if size and moved and lyr.get("template"):
+        from services import cardtemplates      # module-level would be circular
+        out["x"], out["y"] = cardtemplates.motion_xy(lyr["template"], size, start, end)
     return out
 
 

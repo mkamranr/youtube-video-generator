@@ -153,6 +153,69 @@ class ScrollWindow(unittest.TestCase):
     def test_none_when_the_cards_leave_no_gap(self):
         self.assertIsNone(video.scroll_window(60, busy=[(0.0, 60.0)]))
 
+    def test_evenly_spread_cards_leave_no_gap_on_a_short_video(self):
+        """The reported bug, frozen: three cards on clips 2, 4 and 6 of a 40s video.
+
+        Not every short schedule fails - about 29% of the three-card ones do - and it is the
+        evenly spread arrangements, which is what the LLM tends to write. A test built on "three
+        cards somewhere" would pass against the old code and prove nothing."""
+        cards = [(5.35, 9.65), (15.35, 19.65), (25.35, 29.65)]
+        polish = [(0.0, 3.2), (36.0, 40.0)]
+        self.assertIsNone(video.scroll_window(40, busy=cards + polish))
+        # ... while a clustered schedule on the same video still finds its own gap
+        self.assertIsNotNone(video.scroll_window(
+            40, busy=[(0.35, 4.65), (15.35, 19.65), (30.35, 34.65)] + polish))
+
+
+class ScrollReserve(unittest.TestCase):
+    """The fallback when the cards leave no gap: take a window and move the cards instead."""
+
+    CARDS = [(5.35, 9.65), (15.35, 19.65), (25.35, 29.65)]
+    POLISH = [(0.0, 3.2), (36.0, 40.0)]
+
+    def test_the_reported_case_gets_a_window(self):
+        win = video.scroll_reserve(40, soft=self.CARDS, hard=self.POLISH)
+        self.assertIsNotNone(win)
+        self.assertAlmostEqual(win[1] - win[0], video.SCROLL_MIN_WINDOW, places=3)
+        self.assertLessEqual(8.8, win[0])
+        self.assertLessEqual(win[1], 31.2)
+
+    def test_it_overlaps_the_cards_as_little_as_possible(self):
+        """The three gaps inside the band are 5.7s, 5.7s and 1.55s, all under the window, so some
+        overlap is unavoidable - 0.3s is the minimum, and the exact candidate set must find it
+        rather than landing mid-card the way a 0.1s grid sweep would."""
+        win = video.scroll_reserve(40, soft=self.CARDS, hard=self.POLISH)
+        self.assertLessEqual(video._busy_overlap(win[0], win[1], self.CARDS), 0.31)
+
+    def test_a_real_gap_costs_no_card_time(self):
+        soft = [(9.0, 13.0), (25.0, 29.0)]       # a 12s hole in the middle
+        win = video.scroll_reserve(40, soft=soft, hard=self.POLISH)
+        self.assertEqual(video._busy_overlap(win[0], win[1], soft), 0.0)
+
+    def test_the_hook_and_end_cards_are_never_covered(self):
+        """They are composited after the panel, so a panel underneath one is simply invisible -
+        and unlike a fact card they cannot be trimmed. END_CARD_SECONDS goes up to 10, which on a
+        20s video starts the end card at 10.0, inside the band."""
+        self.assertIsNone(video.scroll_reserve(20, hard=[(0.0, 3.2), (10.0, 20.0)]))
+        win = video.scroll_reserve(20, hard=[(0.0, 3.2), (16.0, 20.0)])
+        self.assertIsNotNone(win)
+        self.assertGreaterEqual(win[0], 3.2)
+        self.assertLessEqual(win[1], 16.0)
+
+    def test_short_videos_are_still_skipped(self):
+        self.assertIsNone(video.scroll_reserve(18))
+        self.assertIsNone(video.scroll_reserve(0))
+
+    def test_a_blocked_middle_still_yields_a_window_from_the_floor_up(self):
+        """What makes the panel a guarantee: the band is 0.56*total, so it is 11.2s wide at the
+        20s floor and the window always fits however busy the middle is."""
+        for total in range(20, 300, 7):
+            win = video.scroll_reserve(total, soft=[(0.0, float(total))])
+            self.assertIsNotNone(win, f"no window at {total}s")
+            self.assertLess(0, win[0])
+            self.assertLess(win[0], win[1])
+            self.assertLess(win[1], total)
+
 
 class ScrollFilter(unittest.TestCase):
     """The three traps: per-frame crop, quoted commas, and the image input's frame rate."""
@@ -270,6 +333,53 @@ class AssembleOrder(unittest.TestCase):
         self.assertEqual(self.m["mix_audio"].call_args.args[0],
                          self.job.dir / "clips_joined.mp4")
         self.assertTrue(any("overlay failed" in str(e) for e in self.job.log))
+
+    def test_a_missing_page_screenshot_says_so(self):
+        """The screenshot is only ever taken while the script is drafted, so a job reassembled
+        without one can never grow a panel. It used to skip in total silence."""
+        self.job.page_scroll = True
+        pipeline._assemble(self.job, {}, None, None)
+        self.assertTrue(any("no page screenshot" in str(e) for e in self.job.log))
+
+    def _crowded(self):
+        """A 40s video, 8 clips of 5s, cards on clips 2, 4 and 6 - the reported schedule."""
+        self.m["clip_boundaries"].return_value = [5.0 * i for i in range(1, 9)]
+        self.m["render_all"].return_value = [
+            {"png": TMP / f"card_{i}.png", "start": s, "end": e,
+             "x": 0, "y": 0, "template": "lower_third"}
+            for i, (s, e) in enumerate([(5.35, 9.65), (15.35, 19.65), (25.35, 29.65)], 1)]
+        _png(self.job.dir / "page.png")
+        self.job.page_scroll = True
+        self.job.storyboard = True
+        self.job.polish = True
+        # keeps _polish_windows real (hook_end=3.2, end_start=36.0) without the PIL card work
+        return mock.patch.object(pipeline, "_polish_layers", return_value=([], []))
+
+    def test_a_crowded_middle_reserves_the_panel_and_moves_the_cards(self):
+        with self._crowded():
+            pipeline._assemble(self.job, {"storyboard": [{}, {}, {}]}, None, None)
+        layers = self.m["composite"].call_args.args[1]
+        self.assertIn("crop=", layers[0].get("pre", ""))        # the panel, underneath
+        cards = layers[1:]
+        self.assertEqual(len(cards), 3)                         # every card survived
+        win = (layers[0]["start"], layers[0]["end"])
+        for c in cards:
+            self.assertFalse(c["end"] > win[0] and c["start"] < win[1],
+                             f"card {c['start']}-{c['end']} draws under the panel {win}")
+        self.assertTrue(any("page scroll" in str(e) for e in self.job.log))
+
+    def test_the_page_scroll_suffix_only_appears_with_a_panel(self):
+        """`len(layers) > len(cards)` counted the polish layers, so the log claimed a page scroll
+        on any video with polish on - whether or not a panel was ever drawn."""
+        self.job.storyboard = True
+        self.job.polish = True
+        with mock.patch.object(pipeline, "_polish_layers",
+                               return_value=([{"png": TMP / "hook.png", "start": 0.0,
+                                               "end": 3.0, "x": 0, "y": 0}], [])):
+            pipeline._assemble(self.job, {"storyboard": [{}]}, None, None)
+        overlays = [str(e) for e in self.job.log if "overlays:" in str(e)]
+        self.assertTrue(overlays)
+        self.assertNotIn("page scroll", overlays[-1])
 
 
 class _Sync:

@@ -1164,35 +1164,58 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     total = bounds[-1] if bounds else video.duration(joined)
     hook_end, end_start = _polish_windows(job, total)
     cards, layers = [], []
+    # the hook and the end card own their windows outright: they are composited last, so whatever
+    # they cover is simply not visible, and unlike a fact card they cannot be moved
+    hook_win = [(0.0, hook_end)] if hook_end else []
+    end_win = [(end_start, total)] if end_start < total else []
     if job.storyboard and isinstance(plan.get("storyboard"), list):
         job.set("assembling", "drawing the story board cards")
         try:
             cards = storyboard.render_all(d, plan, clips, size,
                                           accent=config.STORYBOARD_ACCENT)
             # a fact card must never share the screen with the hook or the end card
-            cards = storyboard.trim_schedule(cards, [(0.0, hook_end)] if hook_end else [])
-            cards = storyboard.trim_schedule(cards, [(end_start, total)] if end_start < total else [])
-            layers += cards
+            cards = storyboard.trim_schedule(cards, hook_win, size=size)
+            cards = storyboard.trim_schedule(cards, end_win, size=size)
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"story board overlay failed ({e}); assembling without it")
             cards = []
+    # The panel is settled BEFORE the cards go into `layers`: when they leave it no room it
+    # reserves a window and they are trimmed out of it, so `cards` can still change here.
     page = d / "page.png"
+    scroll = None
     if job.page_scroll and page.exists():
         try:
-            # the hook and end cards are busy too: the page panel must not open underneath them
-            busy = [(c["start"], c["end"]) for c in cards]
-            busy += ([(0.0, hook_end)] if hook_end else []) + \
-                    ([(end_start, total)] if end_start < total else [])
-            win = video.scroll_window(total, busy=busy)
+            # the fact cards can be moved for the panel, the hook and end card cannot
+            soft = [(c["start"], c["end"]) for c in cards]
+            win = video.scroll_window(total, busy=soft + hook_win + end_win)
+            if not win:
+                # The cards left no gap - about 29% of three-card schedules on a 40s video, and
+                # the evenly spread ones at that. Reserve the panel a window and move the cards
+                # out of it, rather than dropping the overlay that was explicitly asked for.
+                win = video.scroll_reserve(total, soft=soft, hard=hook_win + end_win)
+                if win:
+                    kept = storyboard.trim_schedule(cards, [win], size=size)
+                    job.add_log(f"page panel reserved {win[0]:.1f}s-{win[1]:.1f}s; "
+                                f"{len(kept)} of {len(cards)} story board cards kept clear of it")
+                    cards = kept
             if win:
-                # first in the list = composited first = the fact cards draw on top of it
-                layers.insert(0, video.scroll_layer(joined, page, win[0], win[1],
-                                                    content_y=int(plan.get("page_content_y") or 0)))
+                scroll = video.scroll_layer(joined, page, win[0], win[1],
+                                            content_y=int(plan.get("page_content_y") or 0))
                 job.add_log(f"page scroll {win[0]:.1f}s-{win[1]:.1f}s")
+            elif total < video.SCROLL_MIN_TOTAL:
+                job.add_log(f"video shorter than {video.SCROLL_MIN_TOTAL:.0f}s; "
+                            "page overlay skipped")
             else:
-                job.add_log("video too short for the page overlay; skipped")
+                job.add_log("no room in the middle for the page overlay; skipped")
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"page scroll overlay failed ({e}); assembling without it")
+    elif job.page_scroll:
+        # the screenshot is only ever taken while the script is drafted, so a job reassembled
+        # without one can never grow a panel - say so rather than skipping in silence
+        job.add_log("no page screenshot on disk; the page overlay was skipped")
+    if scroll is not None:
+        layers.append(scroll)   # first in the list = composited first = the cards draw on top
+    layers += cards
     # last in the list = composited last = on top of the cards and the page panel
     polish, hits = _polish_layers(job, plan, size, total, hook_end, end_start)
     layers += polish
@@ -1205,7 +1228,7 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
         try:
             source = video.composite(joined, layers, d / "clips_overlay.mp4", subtitles=ass)
             job.add_log(f"overlays: {len(cards)} story board cards"
-                        + (" + page scroll" if len(layers) > len(cards) else "")
+                        + (" + page scroll" if scroll is not None else "")
                         + (" + captions" if ass is not None else ""))
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             if ass is not None:

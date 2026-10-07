@@ -281,11 +281,20 @@ SCROLL_MIN_TOTAL = 20.0   # shorter videos have no middle worth giving up
 SCROLL_MIN_WINDOW = 6.0
 
 
+def _busy_overlap(start: float, end: float, busy: list) -> float:
+    """Seconds of [start, end] that the `busy` ranges already occupy."""
+    return sum(max(0.0, min(end, be) - max(start, bs)) for bs, be in busy)
+
+
 def scroll_window(total: float, busy: list = None, lead: float = 0.22, tail: float = 0.22):
     """(start, end) for the page panel: the middle of the video, leaving the opening and the
     ending clear. `busy` is [(start, end), ...] of story-board cards - the window goes in the
     largest gap between them, because on a tech channel both overlays are on by default.
-    None when the video is too short to give up a middle."""
+    None when the video is too short to give up a middle.
+
+    None also when the cards leave no gap of SCROLL_MIN_WINDOW - about 29% of three-card
+    schedules on a 40s video, and specifically the evenly spread ones the LLM tends to write.
+    `scroll_reserve` is the fallback for that case."""
     total = float(total or 0.0)
     if total < SCROLL_MIN_TOTAL:
         return None
@@ -308,6 +317,62 @@ def scroll_window(total: float, busy: list = None, lead: float = 0.22, tail: flo
         return None
     start, end = max(gaps, key=lambda g: g[1] - g[0])
     return (round(start, 3), round(end, 3))
+
+
+def scroll_reserve(total: float, soft: list = None, hard: list = None,
+                   lead: float = 0.22, tail: float = 0.22, window: float = SCROLL_MIN_WINDOW):
+    """(start, end) for the page panel when `scroll_window` found no gap at all: take a `window`
+    of the middle anyway and expect the caller to trim the story board cards out of it
+    (storyboard.trim_schedule). Without this the overlay was simply dropped, so a video at the
+    common 30-45s length with evenly spread cards never showed the page it was asked to show.
+
+    `soft` (the story board cards) is what the panel is placed to OVERLAP LEAST - those cards can
+    be moved. `hard` (the hook and end cards) instead CLAMPS the band, because polish layers are
+    composited after the panel and therefore on top of it: a panel under one is simply invisible,
+    and unlike a fact card it cannot be trimmed out of the way. At the default 3s/4s they never
+    reach the band, but both are settings (0-6s and 0-10s), and at END_CARD_SECONDS=10 on a 20s
+    video the end card starts at 10.0 - inside the band.
+
+    `window` is SCROLL_MIN_WINDOW rather than anything roomier on purpose. Reserving the whole
+    band would drop two cards in three (at 40s the band is 22.4s); even 8s costs 2.3s of card time
+    and more than halves one fact card, against 0.3s at 6s, and buys only 110px more travel. The
+    band is 0.56*total, so at the SCROLL_MIN_TOTAL floor it is 11.2s wide and this window always
+    fits - which is what makes a panel on a >=20s video a guarantee rather than a hope."""
+    total = float(total or 0.0)
+    if total < SCROLL_MIN_TOTAL:
+        return None
+    lo, hi = round(total * lead, 3), round(total * (1.0 - tail), 3)
+    for hs, he in sorted((float(s), float(e)) for s, e in (hard or [])):
+        if he <= lo or hs >= hi:
+            continue
+        if hs <= lo and he >= hi:
+            return None                       # the band is entirely covered
+        if hs <= lo:
+            lo = he                           # eats the opening of the band
+        elif he >= hi:
+            hi = hs                           # eats the ending of the band
+        elif hs - lo >= hi - he:              # strictly inside: keep the roomier side
+            hi = hs
+        else:
+            lo = he
+    if hi - lo < window:
+        return None
+    soft = [(float(s), float(e)) for s, e in (soft or [])]
+    # Overlap as a function of the window's start is piecewise linear, and its breakpoints are
+    # only where a card's edge meets the window's start or its end. A piecewise-linear minimum
+    # sits at a breakpoint or an interval end, so this candidate set is exact - and a few values
+    # rather than a grid sweep, which would also round the answer to its step.
+    last = round(hi - window, 3)
+    cands = {lo, last}
+    for bs, be in soft:
+        for c in (bs, be, bs - window, be - window):
+            if lo <= c <= last:
+                cands.add(round(c, 3))
+    mid = (lo + hi) / 2.0
+    start = min(sorted(cands),      # sorted() so equal placements resolve the same way every run
+                key=lambda c: (round(_busy_overlap(c, c + window, soft), 3),
+                               abs(c + window / 2.0 - mid)))
+    return (round(start, 3), round(start + window, 3))
 
 
 def scroll_layer(video: Path, page_png: Path, start: float, end: float, content_y: int = 0,

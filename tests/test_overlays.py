@@ -182,6 +182,39 @@ class TrimSchedule(unittest.TestCase):
         lyr = self.layer(10.0, 20.0)
         self.assertEqual(storyboard.trim_schedule([lyr], [(0.0, 3.2)]), [lyr])
 
+    def test_a_card_moved_by_the_page_panel_keeps_its_motion(self):
+        """motion_xy bakes the start into an ffmpeg ease-out, so a trimmed card whose expression
+        is left alone eases from a start it no longer has - it just appears in place."""
+        lyr = dict(self.layer(10.0, 20.0), template="lower_third")
+        lyr["x"], lyr["y"] = cardtemplates.motion_xy("lower_third", (1080, 1920), 10.0, 20.0)
+        got = storyboard.trim_schedule([lyr], [(0.0, 14.0)], size=(1080, 1920))
+        self.assertEqual(got[0]["start"], 14.2)
+        moved = [v for v in (got[0]["x"], got[0]["y"]) if isinstance(v, str)]
+        self.assertTrue(moved, "the card lost its motion expression entirely")
+        for expr in moved:
+            self.assertIn("t-14.200", expr)      # re-anchored to the new start
+
+    def test_an_untouched_card_keeps_its_expression_byte_for_byte(self):
+        lyr = dict(self.layer(10.0, 20.0), template="lower_third")
+        lyr["x"], lyr["y"] = cardtemplates.motion_xy("lower_third", (1080, 1920), 10.0, 20.0)
+        self.assertEqual(storyboard.trim_schedule([lyr], [(0.0, 3.2)], size=(1080, 1920)), [lyr])
+
+    def test_a_card_without_a_template_is_left_alone(self):
+        """motion_xy returns (0, 0) for a template it does not know, so recomputing a layer that
+        carries no template would quietly wipe whatever x/y it already had."""
+        lyr = dict(self.layer(10.0, 20.0), x="sentinel", y="sentinel")
+        got = storyboard.trim_schedule([lyr], [(0.0, 14.0)], size=(1080, 1920))
+        self.assertEqual((got[0]["x"], got[0]["y"]), ("sentinel", "sentinel"))
+
+    def test_the_reserved_panel_window_is_trimmed_out_of_the_cards(self):
+        cards = [self.layer(s, e) for s, e in [(5.35, 9.65), (15.35, 19.65), (25.35, 29.65)]]
+        win = video.scroll_reserve(40, soft=[(c["start"], c["end"]) for c in cards],
+                                   hard=[(0.0, 3.2), (36.0, 40.0)])
+        got = storyboard.trim_schedule(cards, [win])
+        self.assertEqual(len(got), 3)            # the panel costs 0.3s, not a whole card
+        for c in got:
+            self.assertFalse(c["end"] > win[0] and c["start"] < win[1])
+
     def test_no_busy_windows_changes_nothing(self):
         lyr = self.layer(1.0, 9.0)
         self.assertEqual(storyboard.trim_schedule([lyr], []), [lyr])
