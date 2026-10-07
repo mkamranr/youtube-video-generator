@@ -16,20 +16,22 @@ import config
 _REST = 0.5         # silence shorter than this is not worth its own timeline entry
 
 
-def beat_count(target_seconds: float, clip_seconds: float) -> int:
+def beat_count(target_seconds: float, clip_seconds: float, model: str = "") -> int:
     """How many scenes a story of this target length is told in, clamped to the STORY_*_BEATS range.
 
     A pure function of its arguments, so a resume recomputes the same number - but the pipeline
-    freezes len(beats) anyway, so a Settings change can never re-cut a job already in flight."""
-    full = config.actual_clip_seconds(clip_seconds)
+    freezes len(beats) anyway, so a Settings change can never re-cut a job already in flight.
+
+    model: the job's video model, which decides what a requested clip length really renders as."""
+    full = config.actual_clip_seconds(clip_seconds, model)
     n = round(float(target_seconds or 0.0) / full) if full else 0
     return max(int(config.STORY_MIN_BEATS), min(int(config.STORY_MAX_BEATS), int(n)))
 
 
-def line_words(clip_seconds: float) -> int:
+def line_words(clip_seconds: float, model: str = "") -> int:
     """Word budget for one spoken line: what fits in a clip at the story speaking pace, with the
     lead-in and the tail silence taken out first."""
-    speak = (config.actual_clip_seconds(clip_seconds)
+    speak = (config.actual_clip_seconds(clip_seconds, model)
              - config.STORY_LINE_LEAD - config.STORY_LINE_GAP)
     return max(4, int(speak * config.STORY_WPS))
 
@@ -40,18 +42,20 @@ def max_line_words() -> int:
     return max(6, int(speak * config.STORY_WPS))
 
 
-def clip_durations(line_seconds: list, clip_seconds: float) -> list:
+def clip_durations(line_seconds: list, clip_seconds: float, model: str = "") -> list:
     """Real length of each clip: the preset, or longer when its line needs the room.
 
     The floor is what keeps the pacing - a run of terse lines still renders full-length clips, so a
     story can only ever come out longer than its target, never shorter. There is no ceiling: a line
     that still runs long after its one rewrite buys the clip it needs, because cutting a child off
-    mid-sentence is worse than one slow shot."""
-    full = config.actual_clip_seconds(clip_seconds)
+    mid-sentence is worse than one slow shot.
+
+    model: the job's video model, which decides what each length really renders as."""
+    full = config.actual_clip_seconds(clip_seconds, model)
     out = []
     for s in line_seconds:
         want = config.STORY_LINE_LEAD + max(0.0, float(s)) + config.STORY_LINE_GAP
-        out.append(config.actual_clip_seconds(max(full, want)))
+        out.append(config.actual_clip_seconds(max(full, want), model))
     return out
 
 

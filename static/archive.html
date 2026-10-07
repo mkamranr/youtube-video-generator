@@ -65,6 +65,7 @@ function jobCard(j) {
         ${j.owner_name ? `<span>${ownerBadge(j.owner_name)}</span>` : ""}
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
+        ${videoModelBadge(j)}
         ${resolutionBadge(j)}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${clipTimingText(j)}

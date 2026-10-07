@@ -93,6 +93,8 @@ class Submit(BaseModel):
     channel_id: str = ""       # required: a channel the caller owns (admins: any channel)
     aspect_ratio: str = ""
     megapixels: float | None = None   # clip resolution (0.2-1.0); None -> Settings default
+    video_model: str = ""     # which video model renders the clips (GET /options video_models);
+                              # "" -> Settings default
     resolution: str = ""      # final-video upscale target (GET /options resolutions); "" -> Settings default
     art_style: str = ""
     video_length: str = ""
@@ -217,6 +219,7 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     captions_flag=body.captions,
                                                     polish_flag=body.polish,
                                                     megapixels=body.megapixels, owner=owner,
+                                                    video_model=body.video_model,
                                                     resolution=body.resolution,
                                                     song_voice=body.song_voice,
                                                     lyrics=body.lyrics,
@@ -229,6 +232,7 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                          captions_flag=body.captions,
                                          polish_flag=body.polish,
                                          megapixels=body.megapixels, owner=owner,
+                                         video_model=body.video_model,
                                          resolution=body.resolution,
                                          song_voice=body.song_voice,
                                          lyrics=body.lyrics,
@@ -274,6 +278,7 @@ class JobSetup(BaseModel):
     """The parameters a planned job is still missing; empty fields fall back to the channel."""
     aspect_ratio: str = ""
     megapixels: float | None = None
+    video_model: str = ""      # "" inherits the planned job's own model
     resolution: str = ""
     art_style: str = ""
     video_length: str = ""
@@ -304,6 +309,7 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                captions_flag=body.captions,
                                                polish_flag=body.polish,
                                                megapixels=body.megapixels,
+                                               video_model=body.video_model,
                                                resolution=body.resolution,
                                                song_voice=body.song_voice,
                                                lyrics=body.lyrics,
@@ -723,6 +729,7 @@ def options(user: dict = Depends(auth.require_user)):
     return {"me": users.public(user),
             "aspect_ratios": config.ASPECT_RATIOS, "default_aspect_ratio": config.DEFAULT_ASPECT_RATIO,
             "megapixels_options": config.MEGAPIXELS_OPTIONS, "default_megapixels": config.DEFAULT_MEGAPIXELS,
+            "video_models": list(config.VIDEO_MODELS), "default_video_model": config.DEFAULT_VIDEO_MODEL,
             "resolutions": list(config.OUTPUT_RESOLUTIONS), "default_resolution": config.DEFAULT_RESOLUTION,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
@@ -742,6 +749,7 @@ def get_settings(admin: dict = Depends(auth.require_admin)):
             for k, v in config.EDITABLE_SETTINGS.items()}
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
             "megapixels_options": config.MEGAPIXELS_OPTIONS, "resolutions": list(config.OUTPUT_RESOLUTIONS),
+            "video_models": list(config.VIDEO_MODELS),
             "art_styles": list(config.ART_STYLES), "video_lengths": list(config.VIDEO_LENGTHS),
             "storyboard_template_sets": list(config.STORYBOARD_TEMPLATE_SETS),
             "yt_categories": config.YT_CATEGORIES,

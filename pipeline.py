@@ -35,6 +35,11 @@ class Job:
     url: str
     aspect_ratio: str = config.DEFAULT_ASPECT_RATIO
     megapixels: float | None = None  # clip resolution; None (legacy jobs) = the current Settings default
+    # which ComfyUI workflow renders the clips (config.VIDEO_MODELS); "" (legacy jobs) = the
+    # current Settings default. Frozen once the video is planned: plan["clip_seconds"] holds the
+    # real clip lengths as THIS model quantises them, and the two models disagree, so changing it
+    # afterwards would slide the audio out from under the clips.
+    video_model: str = ""
     resolution: str = ""            # final-video upscale target (config.OUTPUT_RESOLUTIONS); "" (legacy) = native
     # on-demand upscales of the finished final.mp4 (job page): [{label, file, width, height, created}];
     # `upscaling` holds the label of the one being rendered right now ("" = idle)
@@ -495,6 +500,8 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     # legacy plans without it render the Settings default
     clip_secs = plan.get("clip_seconds") or []
     seconds = clip_secs[i - 1] if i - 1 < len(clip_secs) else None
+    # only LTX 2.5 has a negative prompt; build() drops it for a model whose graph has none
+    negative = config.ltx_negative((job.channel or {}).get("video_type", ""))
 
     def progress(msg):
         job.set("clips", f"{label}: {msg}")
@@ -504,7 +511,7 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
         try:
             wf = client.build(template, prompt, f"videogen/{job.id}/clip_{i:02d}",
                               first_frame=first_frame, seconds=seconds, aspect_ratio=job.aspect_ratio,
-                              megapixels=job.megapixels)
+                              megapixels=job.megapixels, model=job.video_model, negative=negative)
             client.run(wf, dest, on_progress=progress,
                        should_stop=lambda: job.cancel_requested,
                        cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
@@ -759,7 +766,7 @@ def _story_audio(job: Job, plan: dict) -> tuple:
         _save_plan(job, plan)
 
     line_seconds = [float(ln.get("seconds") or 0.0) for ln in lines]
-    durs = story.clip_durations(line_seconds, _clip_seconds(job))
+    durs = story.clip_durations(line_seconds, _clip_seconds(job), job.video_model)
     long = [i for i, dur in enumerate(durs, 1) if dur > config.STORY_MAX_CLIP_SECONDS]
     if long:
         job.add_log(f"line(s) {', '.join(map(str, long))} speak longer than "
@@ -1263,8 +1270,8 @@ def _run_maintenance(job: Job):
         if job.regen_queue:
             plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
             client = comfy.ComfyClient()
-            t2v = client.load_workflow(config.T2V_WORKFLOW)
-            i2v = client.load_workflow(config.I2V_WORKFLOW)
+            t2v = client.load_workflow(config.model_workflow(job.video_model))
+            i2v = client.load_workflow(config.model_workflow(job.video_model, True))
             while job.regen_queue:
                 _check_cancel(job)
                 i = job.regen_queue[0]
@@ -1527,7 +1534,7 @@ def _run(job: Job):
             plan["music_final"] = {"try": 0, "wps": 0.0, "duration": round(duration, 3),
                                    "reason": "upload"}
             _save_plan(job, plan)
-        durs = config.clip_durations(duration, _clip_seconds(job, duration))
+        durs = config.clip_durations(duration, _clip_seconds(job, duration), job.video_model)
         n = len(durs)
         music_plan = plan.get("music") or {}
         final = plan.get("music_final") or {}
@@ -1601,7 +1608,7 @@ def _run(job: Job):
                                       on_progress=_progress(job, "tts"),
                                       ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
             job.add_log(f"narration: {duration:.1f}s")
-        durs = config.clip_durations(duration, _clip_seconds(job))
+        durs = config.clip_durations(duration, _clip_seconds(job), job.video_model)
         n = len(durs)
         sync_text = plan["narration"]
         segments = None
@@ -1639,7 +1646,7 @@ def _run(job: Job):
                                           channel=job.channel, used=plan.get("cast_used"),
                                           opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None,
                                           timelines=timelines, clip_secs=durs, aligned=aligned,
-                                          beats=beats)
+                                          beats=beats, model=job.video_model)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
@@ -1687,7 +1694,8 @@ def _run(job: Job):
             mclient = comfy.ComfyClient()
             mwf = mclient.build_music(mclient.load_workflow(config.MUSIC_WORKFLOW),
                                       music_plan["caption"], music_plan.get("lyrics", ""),
-                                      sum(plan.get("clip_seconds") or [config.actual_clip_seconds()] * n) * 1.05 + 2,
+                                      sum(plan.get("clip_seconds")
+                                          or [config.actual_clip_seconds(model=job.video_model)] * n) * 1.05 + 2,
                                       f"videogen/{job.id}/music")
             music_file = mclient.run(mwf, d / "music.mp3",
                                      on_progress=lambda m: job.set("music", f"music: {m}"),
@@ -1710,12 +1718,14 @@ def _run(job: Job):
 
     # 7. clips
     mp = job.megapixels if job.megapixels is not None else config.DEFAULT_MEGAPIXELS
+    model = job.video_model or config.DEFAULT_VIDEO_MODEL
     if any(not _clip_on_disk(d / f"clip_{i:02d}.mp4") for i in range(1, n + 1)):
         _gpu_gate(job)   # park in the previous status: the `clips` timing starts with the first real render
-    job.set("clips", f"generating {n} clips ({job.aspect_ratio}, {mp:g} MP)", clips_total=n, clips_done=0)
+    job.set("clips", f"generating {n} clips ({model}, {job.aspect_ratio}, {mp:g} MP)",
+            clips_total=n, clips_done=0)
     client = comfy.ComfyClient()
-    t2v = client.load_workflow(config.T2V_WORKFLOW)
-    i2v = client.load_workflow(config.I2V_WORKFLOW)
+    t2v = client.load_workflow(config.model_workflow(job.video_model))
+    i2v = client.load_workflow(config.model_workflow(job.video_model, True))
     prev_clip = None
     job.clips = []
     for i, scene in enumerate(scenes, 1):
@@ -1853,9 +1863,10 @@ class JobManager:
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
                          audio_mode: str, voice_id: str, channel: dict | None,
                          storyboard_flag=None, megapixels=None, resolution=None, song_voice: str = "",
-                         captions_flag=None, polish_flag=None):
+                         captions_flag=None, polish_flag=None, video_model=None):
         """Per-video choices: request value -> channel default -> global default; validated.
-        Megapixels and the output resolution have no channel level: request value -> Settings default.
+        Megapixels, the video model and the output resolution have no channel level: request value
+        -> Settings default.
         Real/tech-video channels always use the built-in live-action look (art_style stays "");
         the story board overlay and the burned-in captions default to the channel setting (both on
         for tech channels)."""
@@ -1896,6 +1907,9 @@ class JobManager:
         resolution = resolution or config.DEFAULT_RESOLUTION
         if resolution not in config.OUTPUT_RESOLUTIONS:
             raise ValueError(f"unsupported output resolution: {resolution}")
+        video_model = video_model or config.DEFAULT_VIDEO_MODEL
+        if video_model not in config.VIDEO_MODELS:
+            raise ValueError(f"unsupported video model: {video_model}")
         if ch.get("video_type") in config.REALISTIC_VIDEO_TYPES:
             art_style = ""
         else:
@@ -1906,10 +1920,10 @@ class JobManager:
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
-        # captions sits beside storyboard, NOT at the end: callers and tests index [-1] for the
-        # output resolution
+        # captions sits beside storyboard and the video model before the megapixels, NOT at the
+        # end: callers and tests index [-1] for the output resolution
         return (aspect_ratio, art_style, video_length, audio_mode, voice_id, song_voice, ch.get("id", ""), snap,
-                storyboard_flag, captions_flag, polish_flag, mp, resolution)
+                storyboard_flag, captions_flag, polish_flag, video_model, mp, resolution)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
@@ -1917,22 +1931,23 @@ class JobManager:
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
                lyrics: str = "", music_upload_id: str = "", video_mode: str = "",
-               captions_flag=None, polish_flag=None) -> Job:
+               captions_flag=None, polish_flag=None, video_model: str = "") -> Job:
         video_mode = resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
         if video_mode == "story":
             # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
             # and a kids channel usually defaults to music - the narrator would lose their voice
             audio_mode, storyboard_flag = "narration+music", False
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, mp, res = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, vm, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
-                                  polish_flag)
+                                  polish_flag, video_model)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
             video_length = "Auto"      # the lyrics / the track set the length: keep no unused preset
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
-                  aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
+                  aspect_ratio=aspect_ratio, megapixels=mp, video_model=vm,
+                  resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
                   storyboard=sb, captions=cap, polish=pol, lyrics=lyrics,
                   owner=owner or (channel or {}).get("owner", ""),
@@ -2046,7 +2061,8 @@ class JobManager:
                       owner: str = "", resolution: str = "", song_voice: str = "",
                       start: bool = True, title: str = "", plan: dict | None = None,
                       page_scroll=None, lyrics: str = "", music_upload_id: str = "",
-                      video_mode: str = "", captions_flag=None, polish_flag=None) -> Job:
+                      video_mode: str = "", captions_flag=None, polish_flag=None,
+                      video_model: str = "") -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -2065,10 +2081,10 @@ class JobManager:
         video_mode = resolve_video_mode(video_mode, channel, source_kind, lyrics, music_upload_id)
         if video_mode == "story":       # see the note in submit(): forced before the resolve
             audio_mode, storyboard_flag = "narration+music", False
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, mp, res = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, vm, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
-                                  polish_flag)
+                                  polish_flag, video_model)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -2082,7 +2098,7 @@ class JobManager:
                   detail=(("writing the story with the LLM" if video_mode == "story"
                            else "writing script with the LLM") if start else
                           "needs setup - open the job to choose length and resolution"),
-                  aspect_ratio=aspect_ratio, megapixels=mp,
+                  aspect_ratio=aspect_ratio, megapixels=mp, video_model=vm,
                   resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
@@ -2108,7 +2124,7 @@ class JobManager:
                       storyboard_flag=None, megapixels=None, resolution: str = "",
                       song_voice: str = "", lyrics: str = "",
                       music_upload_id: str = "", video_mode: str = "", captions_flag=None,
-                      polish_flag=None) -> Job:
+                      polish_flag=None, video_model: str = "") -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -2133,10 +2149,11 @@ class JobManager:
                                         lyrics, music_upload_id)
             if vmode == "story":        # see the note in submit(): forced before the resolve
                 audio_mode, storyboard_flag = "narration+music", False
-            ar, style, vlen, mode, voice, sv, _cid, _snap, sb, cap, pol, mp, res = self._resolve_choices(
+            ar, style, vlen, mode, voice, sv, _cid, _snap, sb, cap, pol, vm, mp, res = self._resolve_choices(
                 aspect_ratio, art_style, video_length, audio_mode, voice_id, ch, storyboard_flag,
                 megapixels if megapixels not in (None, "", 0) else job.megapixels,
-                resolution or job.resolution, song_voice, captions_flag, polish_flag)
+                resolution or job.resolution, song_voice, captions_flag, polish_flag,
+                video_model or job.video_model)
             # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
             # lyrics are the one field a blank does NOT inherit from the job: an empty box means
             # the user cleared it (and switching to a voiceover clears it in the form too)
@@ -2152,13 +2169,13 @@ class JobManager:
                     aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
                     storyboard=sb, captions=cap, polish=pol, megapixels=mp, resolution=res,
-                    lyrics=words,
+                    video_model=vm, lyrics=words,
                     setup_done=True,
                     video_mode=vmode,
                     music_upload=(up or {}).get("name", ""),
                     music_seconds=float((up or {}).get("seconds", 0.0)))
             job.add_log(f"setup confirmed ({'your uploaded track' if up else 'your lyrics' if words else vlen}, "
-                        f"{ar}, {mp} MP, {res}, "
+                        f"{vm}, {ar}, {mp} MP, {res}, "
                         f"{'story' if vmode == 'story' else 'song' if mode == 'music' else 'voiceover'})"
                         " - writing the script")
         self._start_draft(job)
@@ -2188,12 +2205,13 @@ class JobManager:
         text = job.topic if job.source in PROMPT_SOURCES else _youtube_transcript(job, "drafting")
         clip_s = _clip_seconds(job)
         target = _length_params(job)[1] or float(config.TARGET_VIDEO_SECONDS or 0) or 60.0
-        n = story.beat_count(target, clip_s)
+        n = story.beat_count(target, clip_s, job.video_model)
         job.set("drafting", f"planning {n} story scenes with the LLM")
         plan = llm.write_story_beats(text, job.source, n, clip_s,
                                      art_style=config.ART_STYLES.get(job.art_style, ""),
                                      feedback=feedback, previous=previous,
-                                     channel=job.channel, hook=job.hook)
+                                     channel=job.channel, hook=job.hook,
+                                     model=job.video_model)
         beats = plan.pop("beats")
         plan["video_mode"] = "story"
         plan["audio_mode"] = job.audio_mode
@@ -2208,7 +2226,7 @@ class JobManager:
         used = _set_cast_used(job, plan, _story_blob(plan))
         job.add_log("cast in this story: " + (", ".join(used) or "none"))
 
-        max_words = story.line_words(clip_s)
+        max_words = story.line_words(clip_s, job.video_model)
         job.set("drafting", f"writing what is said over the {len(beats)} scenes")
         lines, issues = llm.write_story_lines(beats, used, channel=job.channel, used=used,
                                               max_words=max_words)

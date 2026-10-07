@@ -75,6 +75,7 @@
     <span id="vlenLabel"></span>
     <span id="aspect"></span>
     <span id="mp"></span>
+    <span id="vmodelLabel"></span>
     <span id="resLabel"></span>
     <span id="created"></span>
     <span id="clipTiming" hidden></span>
@@ -110,6 +111,7 @@
         <div class="hint" id="suVlenHint" hidden></div></div>
       <div class="grow" style="min-width:180px"><label for="suAr">Aspect ratio</label><select id="suAr"></select></div>
       <div class="grow" style="min-width:140px"><label for="suMp">Resolution (megapixels)</label><select id="suMp"></select></div>
+      <div class="grow" style="min-width:160px"><label for="suVmodel">Video model</label><select id="suVmodel"></select></div>
       <div class="grow" style="min-width:160px"><label for="suRes">Output resolution</label><select id="suRes"></select></div>
     </div>
     <div id="suMusicBlock" style="margin-top:12px" hidden>
@@ -614,6 +616,7 @@ function update(j) {
       : (j.video_length && j.video_length !== "Auto") ? "target " + j.video_length : "";
   $("#aspect").textContent = j.aspect_ratio || "";
   $("#mp").textContent = j.megapixels ? j.megapixels + " MP" : "";
+  $("#vmodelLabel").textContent = j.video_model || "";
   $("#resLabel").textContent = resolutionLabel(j);
   $("#created").textContent = "created " + timeAgo(j.created);
   const ct = clipTimingText(j);
@@ -921,12 +924,14 @@ async function fillSetup(j) {
   $("#suAr").innerHTML = (o.aspect_ratios || []).map(a => opt(a)).join("");
   $("#suVlen").innerHTML = (o.video_lengths || []).map(a => opt(a)).join("");
   $("#suMp").innerHTML = (o.megapixels_options || []).map(v => opt(v, `${v} MP`)).join("");
+  $("#suVmodel").innerHTML = (o.video_models || []).map(m => opt(m)).join("");
   $("#suRes").innerHTML = (o.resolutions || []).map(r => opt(r)).join("");
   $("#suStyle").innerHTML = (o.art_styles || []).map(a => opt(a)).join("");
   // prefilled from the job: submit_prompt already resolved the channel's defaults onto it
   $("#suAr").value = j.aspect_ratio || o.default_aspect_ratio;
   $("#suVlen").value = j.video_length || o.default_video_length;
   $("#suMp").value = j.megapixels || o.default_megapixels;
+  $("#suVmodel").value = j.video_model || o.default_video_model;
   $("#suRes").value = j.resolution || o.default_resolution;
   $("#suAudio").value = j.audio_mode === "music" ? "music" : "narration+music";
   $("#suVmode").innerHTML = (o.video_modes || ["song"]).map(m =>
@@ -1051,7 +1056,8 @@ $("#startBtn").onclick = async () => {
     await api(`/jobs/${jobId}/setup`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aspect_ratio: $("#suAr").value,
         video_length: (suLyricsOn() || suMusicOn()) ? "" : $("#suVlen").value,
-        megapixels: Number($("#suMp").value), resolution: $("#suRes").value,
+        megapixels: Number($("#suMp").value), video_model: $("#suVmodel").value,
+        resolution: $("#suRes").value,
         art_style: real ? "" : $("#suStyle").value,
         audio_mode: suStoryOn() ? "narration+music" : $("#suAudio").value,
         video_mode: $("#suVmodeField").hidden ? "" : $("#suVmode").value,

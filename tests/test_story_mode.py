@@ -326,8 +326,9 @@ class ResolveVideoMode(unittest.TestCase):
 
     def test_resolve_choices_signature_is_untouched(self):
         r = pipeline.JobManager._resolve_choices("", "", "", "", "", {"audience": "kids", "defaults": {}})
-        self.assertEqual(len(r), 13)
+        self.assertEqual(len(r), 14)   # ..., polish, video_model, megapixels, resolution
         self.assertEqual(r[-1], config.DEFAULT_RESOLUTION)   # tests/test_resolution.py indexes [-1]
+        self.assertEqual(r[-3], config.DEFAULT_VIDEO_MODEL)
 
 
 # ------------------------------------------------------------------- job plumbing

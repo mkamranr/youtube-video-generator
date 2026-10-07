@@ -50,23 +50,43 @@ class ComfyClient:
     @staticmethod
     def build(template: dict, prompt: str, filename_prefix: str, seed: int | None = None,
               first_frame: str | None = None, seconds: float | None = None,
-              aspect_ratio: str | None = None, megapixels: float | None = None) -> dict:
+              aspect_ratio: str | None = None, megapixels: float | None = None,
+              model: str = "", negative: str | None = None) -> dict:
+        """Patch one render's values into a workflow template.
+
+        Which nodes those values go to depends on the model AND on whether a first frame was
+        given - the text-to-video and first-frame graphs are separate files with their own node
+        numbering - so `template` has to be the graph config.model_workflow(model, bool(
+        first_frame)) names. Everything model-specific is read from config.VIDEO_MODELS; nothing
+        here knows a node id.
+
+        `negative` is ignored by a model whose graph has no negative prompt (MiniMax H3)."""
         seconds = config.CLIP_SECONDS if seconds is None else seconds
         aspect_ratio = aspect_ratio or config.DEFAULT_ASPECT_RATIO
         megapixels = config.DEFAULT_MEGAPIXELS if megapixels is None else float(megapixels)
-        wf = copy.deepcopy(template)
-        wf[config.NODE_PROMPT]["inputs"]["prompt"] = prompt
-        wf[config.NODE_SEED]["inputs"]["noise_seed"] = seed if seed is not None else random.randint(0, 2**53)
-        wf[config.NODE_DURATION]["inputs"]["value"] = seconds
-        wf[config.NODE_SAVE]["inputs"]["filename_prefix"] = filename_prefix
-        if config.NODE_LIGHTNING in wf:
-            wf[config.NODE_LIGHTNING]["inputs"]["value"] = bool(config.LIGHTNING_LORA)
         if aspect_ratio not in config.ASPECT_RATIOS:
             raise ValueError(f"unsupported aspect ratio: {aspect_ratio}")
-        wf[config.NODE_RESOLUTION]["inputs"]["aspect_ratio"] = aspect_ratio
-        wf[config.NODE_RESOLUTION]["inputs"]["megapixels"] = megapixels
+        spec = config.model_variant(model, first_frame is not None)
+        wf = copy.deepcopy(template)
+        node, field = spec["prompt"]
+        wf[node]["inputs"][field] = prompt
+        if spec["negative"] and negative is not None:
+            node, field = spec["negative"]
+            wf[node]["inputs"][field] = negative
+        seed = random.randint(0, 2**53) if seed is None else int(seed)
+        # one seed per noise node: a model that samples in two passes (LTX 2.5) would otherwise
+        # keep its second pass pinned to whatever the template shipped with
+        for i, (node, field) in enumerate(spec["seeds"]):
+            wf[node]["inputs"][field] = seed + i
+        node, field = spec["duration"]
+        wf[node]["inputs"][field] = config.model_duration_value(seconds, model)
+        wf[spec["save"]]["inputs"]["filename_prefix"] = filename_prefix
+        if spec["lightning"]:
+            wf[spec["lightning"]]["inputs"]["value"] = bool(config.LIGHTNING_LORA)
+        wf[spec["resolution"]]["inputs"]["aspect_ratio"] = aspect_ratio
+        wf[spec["resolution"]]["inputs"]["megapixels"] = megapixels
         if first_frame is not None:
-            wf[config.NODE_LOAD_IMAGE]["inputs"]["image"] = first_frame
+            wf[spec["load_image"]]["inputs"]["image"] = first_frame
         return wf
 
     @classmethod
@@ -75,11 +95,17 @@ class ComfyClient:
                         aspect_ratio: str = "16:9 (Widescreen)",
                         first_frame: str | None = None, seconds: float | None = None) -> dict:
         """~1 MP render used as a thumbnail source: minimal length (5 frames) by default, or a
-        short clip seeded from `first_frame` (an uploaded cast portrait) whose last frame is kept."""
+        short clip seeded from `first_frame` (an uploaded cast portrait) whose last frame is kept.
+
+        Always config.STILLS_VIDEO_MODEL, whatever video model the job picked: a 5-frame render is
+        a length only that graph can express (LTX 2.5's duration node is whole seconds, so its
+        shortest clip is a second). Callers pass the matching config.T2V_WORKFLOW /
+        config.I2V_WORKFLOW template."""
         wf = cls.build(template, prompt, filename_prefix, seed=seed,
                        seconds=0.1 if seconds is None else seconds, aspect_ratio=aspect_ratio,
-                       first_frame=first_frame)
-        wf[config.NODE_RESOLUTION]["inputs"]["megapixels"] = 1.0
+                       first_frame=first_frame, model=config.STILLS_VIDEO_MODEL)
+        spec = config.model_variant(config.STILLS_VIDEO_MODEL, first_frame is not None)
+        wf[spec["resolution"]]["inputs"]["megapixels"] = 1.0
         return wf
 
     @staticmethod
@@ -311,17 +337,21 @@ class ComfyClient:
 if __name__ == "__main__":
     from services.video import last_frame
 
+    # python -m services.comfy ["LTX 2.5"]  - two clips, the second seeded from the first
+    model = sys.argv[1] if len(sys.argv) > 1 else config.DEFAULT_VIDEO_MODEL
     c = ComfyClient()
     prompt = ("A calm mountain lake at sunrise, mist drifting over the water, a lone wooden canoe. "
               "[0s-5s] slow push-in across the water. Camera: static tripod, slow dolly. "
               "Audio: gentle water, birds. No text, subtitles, logos or watermarks of any kind.")
     out = Path("output/_comfy_test")
-    wf = c.build(c.load_workflow(config.T2V_WORKFLOW), prompt, "videogen/_test/clip_01")
+    wf = c.build(c.load_workflow(config.model_workflow(model)), prompt, "videogen/_test/clip_01",
+                 model=model, negative=config.ltx_negative())
     clip1 = c.run(wf, out / "clip_01.mp4", on_progress=print)
     print("clip 1:", clip1)
     frame = last_frame(clip1, out / "frame_01.jpg")
     name = c.upload_image(frame, "videogen_test_frame_01.jpg")
-    wf = c.build(c.load_workflow(config.I2V_WORKFLOW), prompt + " The canoe starts to drift.",
-                 "videogen/_test/clip_02", first_frame=name)
+    wf = c.build(c.load_workflow(config.model_workflow(model, True)),
+                 prompt + " The canoe starts to drift.", "videogen/_test/clip_02",
+                 first_frame=name, model=model, negative=config.ltx_negative())
     clip2 = c.run(wf, out / "clip_02.mp4", on_progress=print)
     print("clip 2:", clip2)

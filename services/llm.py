@@ -447,7 +447,7 @@ BEAT_RULES = """BEAT RULES:
 
 def write_story_beats(text: str, source_kind: str, n: int, clip_seconds: float,
                       art_style: str = "", feedback: str = "", previous: dict | None = None,
-                      channel: dict | None = None, hook: str = "") -> dict:
+                      channel: dict | None = None, hook: str = "", model: str = "") -> dict:
     """The VIDEO content of a story video: title, premise, visual style and exactly n story beats.
 
     One call, not one per beat: the beats have to work as a single story, unlike write_scenes, where
@@ -456,8 +456,10 @@ def write_story_beats(text: str, source_kind: str, n: int, clip_seconds: float,
     Written with the cast sheet in `brief` mode, so the beats carry no appearance detail at all -
     the canonical look is re-attached deterministically by cast.with_prefix at render time and by
     write_scenes' own full sheet. Returns {title, premise, style, beats, cast_chosen}, where each
-    beat is {"setting", "action", "characters"}."""
-    secs = _secs(config.actual_clip_seconds(clip_seconds))
+    beat is {"setting", "action", "characters"}.
+
+    model: the job's video model, which decides what a requested clip length really renders as."""
+    secs = _secs(config.actual_clip_seconds(clip_seconds, model))
     if source_kind == "description":
         task = ('The user wrote the following description / outline for a story video. Build the '
                 f'story from it, staying FAITHFUL to their {_faithful_keys(channel)} - expand and '
@@ -655,7 +657,7 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  on_review_issue=None, channel: dict | None = None,
                  opening: dict | None = None, used: list | None = None,
                  timelines: list | None = None, clip_secs: list | None = None,
-                 aligned: bool = True, beats: list | None = None) -> list:
+                 aligned: bool = True, beats: list | None = None, model: str = "") -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
@@ -663,8 +665,8 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     entries mean nothing is heard during that clip (instrumental/silence).
     timelines: optional per-clip lyric timelines (lyrics.format_timeline), times relative to
     the clip start, so the storyboard beats can follow the singing.
-    clip_secs: the real length of each clip (config.clip_durations); default: the quantised
-    CLIP_SECONDS for every clip.
+    clip_secs: the real length of each clip (config.clip_durations); default: CLIP_SECONDS as
+    `model` quantises it, for every clip.
     aligned: False when the segment text is raw speech recognition (may contain mis-hearings).
     opening: the cast character whose portrait is clip 1's first frame, if any.
     used: the names of this video's cast (plan["cast_used"]); None = legacy plan, all cast.
@@ -675,7 +677,7 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     segments = (list(segments) + [""] * n)[:n]
     timelines = (list(timelines or []) + [""] * n)[:n]
     beats = (list(beats or []) + [None] * n)[:n]
-    clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds()] * n)[:n]
+    clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds(model=model)] * n)[:n]
     cast_rule = ""
     roster = cast.active(channel)
     if roster:

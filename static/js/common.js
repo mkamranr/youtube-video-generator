@@ -144,6 +144,11 @@ function resolutionBadge(j) {
   const r = resolutionLabel(j);
   return r ? `<span title="Final video upscaled to this size">${esc(r)}</span>` : "";
 }
+/* which video model rendered the clips (legacy jobs carry none: nothing shown) */
+function videoModelBadge(j) {
+  const m = j && j.video_model ? String(j.video_model) : "";
+  return m ? `<span title="Video model used for the clips">${esc(m)}</span>` : "";
+}
 
 function pct(j) {
   if (j.status === "done") return 100;

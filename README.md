@@ -31,7 +31,8 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 - **Weekly planner** — the Planner page writes a week of video ideas for one channel in a single LLM call: seven dated rows, each with the cast it needs, a title, a 2-4 sentence story from beginning to end, a thumbnail idea and the spoken opening line. Earlier titles from that channel are sent along so a new week never repeats one. Rewrite any day you do not like (with optional feedback), then confirm the rows you want — each becomes a **paused** job that runs nothing until you open it and press Start. On a kids channel with a cast you can pick **Video type → Story based** for the whole week, and every video confirmed from it arrives already set up as a story, so a week of stories is one choice rather than seven. The plan remembers that choice, and the week is written knowing it — a story is rendered as clips that each continue from the previous one, so its ideas stay in one or two connected places instead of hopping across the world.
 - **Story videos (kids channels)** — a per-video **Video type** choice next to the audio options: *Song based* (everything above) or *Story based*. A story video is the other way round from a song: the LLM first invents the **scenes** that build the story — one beat per clip, each a single visible action in a place the previous beat can walk into — and only then writes the **voiceover from those beats**. That order is the whole feature. The spoken lines are nothing but what happens and what the characters say (*“Ellie waited for the train to arrive.”*, *“All aboard!”*), never a description of the picture: the writer is never even shown the character looks, a worked wrong/right example is in the prompt, and a deterministic check catches any line that still names a colour, a garment, a species or the camera and has just that line written again. **Every character speaks in its own voice** — give each cast member a reference voice on the Settings page, or set one **default character voice** for the channel (a child sample makes the whole channel sound like kids); a character with neither gets a voice invented once and kept for the whole video. Each line is spoken on its own and laid out on the clip grid, so the picture and the words are in sync **by construction** — no transcription, no alignment. A clip is the usual length, or longer when its line needs the room, and **you review and edit every scene and line before anything renders**.
 - **Lyric-accurate visuals** — the generated song is transcribed with word timestamps (faster-whisper); each clip's scene is written from the words *actually sung during that clip's window*, so what you hear is what you see. Instrumental passages get atmosphere/transition scenes.
-- **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow.
+- **Two video models, chosen per video** — clips render on either **MiniMax H3** or **LTX 2.5**. Pick the default on the Settings page and override it per video in the New Video dialog (or a planned job's setup card); the jobs list, the archive and the job page all badge which model a video used. The two round clip length differently — a requested 5 s comes out as 5.17 s on H3 and 5.04 s on LTX — and that real length is what the lyric windows, the story line timing and the clip count are built from, so the choice is **frozen when the video is planned**: it cannot be switched under a job whose audio is already laid out. LTX 2.5 also takes a **negative prompt**, which defaults by channel type (naming cartoon and video-game looks helps a Real/Tech channel and fights an animated one) and is editable in Settings. Thumbnails, cast portraits and story board stills always render on MiniMax H3 whatever a video picked — they are 5-frame renders, a length only that graph can express. Adding a third model is one entry in `config.VIDEO_MODELS` plus its workflow JSON: no node id lives anywhere else.
+- **Continuous clips** — clip 1 is text-to-video; every following clip is seeded with the last frame of the previous one for smooth visual flow. Both models ship a text-to-video and a first-frame graph, so the chaining works the same either way.
 - **Thumbnail generation** — an LLM-designed scene that instantly shows what the video is about, rendered through the video model as a JPG matching the video aspect ratio (1280×720 for 16:9, 720×1280 for portrait, etc.), with the **channel's logo** overlaid top-right. One-click regeneration on any finished job.
 - **SEO metadata** — a keyword-optimized YouTube title and description (with hashtags and a subscribe call-to-action) generated for every video.
 - **LLM review pass** — every generated scene and every drafted script is reviewed a second time by the LLM against the exact audio/content it must match, and inconsistencies (a wrong letter, a mismatched object, an unsafe detail) are fixed automatically. The reviewer is transcription-aware: if the speech recognizer misheard a letter, it trusts the word ("fairy" belongs to F). Toggleable via `SCRIPT_REVIEW`.
@@ -86,7 +87,8 @@ YouTube URL
        │                      │    Clips     │────────────────────▶│   Assemble   │
        └─────────────────────▶│ (ComfyUI     │   clip N → N+1      │ (ffmpeg      │
                               │  MiniMax H3  │                     │  concat +    │
-                              │  T2V / I2V)  │                     │  audio mix)  │
+                              │  or LTX 2.5, │                     │  audio mix)  │
+                              │  T2V / I2V)  │                     │              │
                               └──────────────┘                     └──────┬───────┘
                                                                           ▼
                                               final.mp4 + thumbnail.jpg + SEO metadata
@@ -96,7 +98,7 @@ YouTube URL
 
 | Service | Purpose | Default endpoint |
 |---|---|---|
-| ComfyUI (MiniMax H3 T2V/I2V + Music3 workflows) | Video clips, music, thumbnail renders | `http://<gpu-host>:8188` |
+| ComfyUI (MiniMax H3 and LTX 2.5 T2V/I2V + Music3 workflows) | Video clips, music, thumbnail renders | `http://<gpu-host>:8188` |
 | vLLM (OpenAI-compatible) | Story, scenes, lyrics, SEO, thumbnail prompts | `http://<gpu-host>:8000/v1` |
 | Fish Speech (Gradio) | TTS narration (narration modes) | `http://<gpu-host>:7860` |
 | faster-whisper (local, CPU) | Word-timestamped lyric transcription | in-process |
@@ -112,7 +114,17 @@ Requirements: Windows or Linux, Python 3.10+, network access to the three GPU se
 pip install -r requirements.txt
 ```
 
-`static-ffmpeg` downloads modern ffmpeg/ffprobe binaries on first use; `faster-whisper` downloads its `base` model on first transcription. The three ComfyUI workflow JSONs ship in `workflows/` and require the corresponding MiniMax H3 / Music3 models installed on the ComfyUI server.
+`static-ffmpeg` downloads modern ffmpeg/ffprobe binaries on first use; `faster-whisper` downloads its `base` model on first transcription.
+
+The five ComfyUI workflow JSONs ship in `workflows/` and require the matching models installed **on the ComfyUI server**:
+
+| Workflow | Needs |
+|---|---|
+| `video_minimax_h3_t2v.json`, `video_minimax_h3_t2v_first_frame.json` | MiniMax H3 UNET, its video + audio VAEs, the Qwen3-VL CLIP and the 8-step turbo LoRA (the graph names the LoRA whether or not `LIGHTNING_LORA` is on) |
+| `video_ltx_2_5_t2v.json`, `video_ltx_2_5_i2v.json` | the LTX 2.5 distilled transformer, its video/audio VAEs, both Gemma CLIPs and the x2 latent spatial upscaler |
+| `audio_minimax_music_3.json` | MiniMax Music 3 |
+
+A file ComfyUI cannot find makes its validation reject the graph when the **first clip is queued** (the job fails in the `clips` stage) with an error naming the node, so install the weights for whichever models you intend to offer before selecting one. `python -m unittest tests.test_video_models` checks the JSONs against `config.VIDEO_MODELS` locally (node ids and field names only — it needs no GPU and no server).
 
 Point the app at your services in `config.py` (defaults) or later at runtime via the Settings page.
 
@@ -134,7 +146,7 @@ Open **http://localhost:8080** — the first visit shows the one-time **Create t
 
 ## Usage
 
-1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; a **description / short script**; or a **transcript / script** you paste, kept as the script with only fixes — one job per topic/description/transcript), a **Video length** (Auto … 4-5 min, a soft target for script and audio duration), an **Aspect ratio**, a **Resolution** in megapixels (0.2–1.0; higher = sharper clips but slower renders), an **Output resolution** (Native, 1080p, 2K or 4K — the joined clips are upscaled with ffmpeg to that size during assembly; upscaling adds pixels, not detail), an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), an optional **Song lyrics** box (kids channels set to Generate Song only — paste your own sheet and it is sung verbatim, which also greys out *Video length* because your lyrics decide it), an **Art style** (type to search; a preview image shows how each style looks — hidden for Real and Tech channels, which use the built-in live-action look), and the **Add story board cards** switch (on by default for Tech channels): styled fact cards with related images drawn over the video. The fields pre-select your defaults from Settings. You need to be signed in; every user sees the same job list. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
+1. **Create** — click **Create new video**. In the dialog, choose the source in *Create from* (YouTube URLs, one per line; a **topic**; a **description / short script**; or a **transcript / script** you paste, kept as the script with only fixes — one job per topic/description/transcript), a **Video length** (Auto … 4-5 min, a soft target for script and audio duration), an **Aspect ratio**, a **Resolution** in megapixels (0.2–1.0; higher = sharper clips but slower renders), a **Video model** (which ComfyUI workflow renders the clips — MiniMax H3 or LTX 2.5; defaults to the `DEFAULT_VIDEO_MODEL` setting), an **Output resolution** (Native, 1080p, 2K or 4K — the joined clips are upscaled with ffmpeg to that size during assembly; upscaling adds pixels, not detail), an **Audio** choice (**Generate Song** or **Generate Voiceover**; picking Voiceover reveals a **Voice** dropdown listing your reference voices, or the default voice), an optional **Song lyrics** box (kids channels set to Generate Song only — paste your own sheet and it is sung verbatim, which also greys out *Video length* because your lyrics decide it), an **Art style** (type to search; a preview image shows how each style looks — hidden for Real and Tech channels, which use the built-in live-action look), and the **Add story board cards** switch (on by default for Tech channels): styled fact cards with related images drawn over the video. The fields pre-select your defaults from Settings. You need to be signed in; every user sees the same job list. Video jobs run one at a time on the GPU; script drafting runs immediately in parallel.
    - **Topic/description/transcript jobs**: the LLM writes the script right away and the job waits at *review script*. Open it, edit the title/script if you like, and click **Approve & generate video** (or **Request new draft** with feedback). Only approved jobs enter the video-generation queue.
    - **Transcript / script jobs** keep your text as the script: the LLM only fixes typos and grammar and strips timestamps, cue tags like `[Music]`, speaker labels and section tags like `[Verse]`/`[Chorus]` — it never expands, shortens or reorders your words, and the *Video length* target is not applied (the audio is as long as your text). The pasted text is shown in the job page's **Transcript** card. Pair it with **Generate Voiceover** for a read-aloud script. To choose the exact words that are *sung*, use the separate **Song lyrics** box instead (kids channels + Generate Song).
 2. **Watch** — the job page shows a live pipeline stepper, progress, per-clip previews as they render, the generated song with caption/lyrics, the narration/story, per-clip scene prompts, transcript, log, and all raw files.
@@ -178,6 +190,9 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
 | `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
+| `DEFAULT_VIDEO_MODEL` | `MiniMax H3` | Which ComfyUI workflow renders the clips (`MiniMax H3` or `LTX 2.5`); each video can override it in the New Video dialog. The two round clip length differently — a requested 5 s renders as 5.17 s (124 frames) on MiniMax H3 and 5.04 s (121 frames) on LTX 2.5 — and that length is frozen into `plan["clip_seconds"]` when the video is planned, so the choice cannot be changed afterwards. Thumbnails, cast portraits and story board images always render on MiniMax H3, whatever a video picked |
+| `LTX_NEGATIVE_ANIMATED` | see `config.py` | Negative prompt sent to LTX 2.5 on an `animated` channel. MiniMax H3 has no negative-prompt input and ignores it |
+| `LTX_NEGATIVE_REAL` | see `config.py` | The same for a `real` or `tech` channel, where naming cartoon and video-game looks helps rather than fighting the art style |
 | `DEFAULT_MEGAPIXELS` | `0.4` | Default clip resolution in megapixels (0.2–1.0, 0.1 steps); each video can override it in the New Video dialog. Thumbnails always render at 1 MP |
 | `DEFAULT_RESOLUTION` | `Native (clip size)` | Final-video size: `1080p (Full HD)`, `2K (1440p)` or `4K (2160p)` upscale the joined clips with ffmpeg (lanczos, libx264 CRF 18) before the story board cards are drawn; Native keeps the clips' own size. Never downscales; each video can override it in the New Video dialog |
 | `NARRATION_WORDS` | `170` | Narration length target (narration modes) |
@@ -186,7 +201,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `MUSIC_VOLUME` | `0.25` | Music level under narration (narration+music mode); ducked further while the voice speaks |
 | `STORYBOARD_MAX_IMAGES` | `6` | Story board: max related images rendered per video (one short ComfyUI render each; 0 = text cards only) |
 | `STORYBOARD_ACCENT` | `#e9a13b` | Story board: accent colour of the cards (kicker text, side bar) |
-| `LIGHTNING_LORA` | `off` | 8-step turbo sampling: ~3× faster, lower quality |
+| `LIGHTNING_LORA` | `off` | 8-step turbo sampling: ~3× faster, lower quality. **MiniMax H3 only** — LTX 2.5 is already a distilled model and has no such switch |
 | `CLIP_RETRIES` | `1` | Retries per failed clip before the job fails |
 | `MIN_TRANSCRIPT_WORDS` | `50` | Refuse videos with fewer transcript words |
 | `MIN_TRANSCRIPT_WPM` | `20` | Refuse transcripts too sparse for the video length |
@@ -219,7 +234,7 @@ clips_joined.mp4    concatenated clips        clips_overlay.mp4  clips with the 
 resource.md/.txt/.pdf   the document that ships with the video: the thing the script promised,
                         or - for a repo/Hugging Face video - the project's setup guide
 final.mp4           finished video with mixed audio
-job.json            job state (enables crash-safe resume)
+job.json            job state incl. the video model the clips render on (enables crash-safe resume)
 ```
 
 `output/` and `settings.json` are intentionally untracked.
@@ -231,3 +246,5 @@ job.json            job state (enables crash-safe resume)
 - **Server died / machine rebooted** — just start it again (`start_server.bat` restarts automatically). Interrupted jobs are re-queued and **resume**: every completed artifact (transcript, plan, song, scenes, finished clips) is reused; at most the in-flight render is lost.
 - **A song mentions another channel** — shouldn't happen (channel branding rule), but resubmit the video or regenerate the affected clips.
 - **Service health** — the Settings page pings ComfyUI, vLLM and Fish Speech and shows latency or the exact error.
+- **"Workflow validation errors" / "unsupported video model"** — a workflow JSON re-exported from ComfyUI gets its nodes **renumbered**, which silently breaks the node ids in `config.VIDEO_MODELS`. Run `python -m unittest tests.test_video_models` after replacing any file in `workflows/`: it reports the exact node and field that no longer exists, in milliseconds, instead of letting a job die after minutes of GPU time. The same error with every node intact means the model's weights are missing on the ComfyUI server (see *Installation*).
+- **A video renders at a clip length I did not pick** — no model renders exactly the length it is asked for; each rounds to a frame count its graph can produce (H3 to a multiple-of-17 grid, LTX to whole seconds plus one frame). The real lengths are frozen into `plan.json` as `clip_seconds` when the video is planned, and everything that lines audio up with the picture uses them, so this is by design — which is also why the video model cannot be changed after planning.

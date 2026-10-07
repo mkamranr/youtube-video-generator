@@ -313,6 +313,21 @@
           <div class="hint">Duration of each generated clip</div>
         </div>
         <div class="field">
+          <label for="DEFAULT_VIDEO_MODEL">Video model</label>
+          <select id="DEFAULT_VIDEO_MODEL"></select>
+          <div class="hint">Which ComfyUI workflow renders the clips; can be changed per video in the New Video dialog. The models round clip length differently (5 s renders as 5.17 s on MiniMax H3, 5.04 s on LTX 2.5), so the choice is frozen once a video is planned. Thumbnails, cast portraits and story board images always render on MiniMax H3</div>
+        </div>
+        <div class="field">
+          <label for="LTX_NEGATIVE_ANIMATED">LTX negative prompt (animated)</label>
+          <textarea id="LTX_NEGATIVE_ANIMATED" rows="2"></textarea>
+          <div class="hint">What LTX 2.5 should steer away from on an animated channel. MiniMax H3 has no negative prompt and ignores this</div>
+        </div>
+        <div class="field">
+          <label for="LTX_NEGATIVE_REAL">LTX negative prompt (real / tech)</label>
+          <textarea id="LTX_NEGATIVE_REAL" rows="2"></textarea>
+          <div class="hint">The same for a live-action or tech channel, where naming cartoon and video-game looks helps instead of fighting the art style</div>
+        </div>
+        <div class="field">
           <label for="DEFAULT_MEGAPIXELS">Clip resolution (megapixels)</label>
           <select id="DEFAULT_MEGAPIXELS"></select>
           <div class="hint">Default for every clip; can be changed per video in the New Video dialog. Thumbnails always render at 1 MP</div>
@@ -605,7 +620,8 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
-                "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_CATEGORY_ID", "YT_MAX_TAGS", "YT_CHAPTERS", "YT_CHAPTER_MIN_SECONDS",
+                "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_VIDEO_MODEL",
+                "LTX_NEGATIVE_ANIMATED", "LTX_NEGATIVE_REAL", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_CATEGORY_ID", "YT_MAX_TAGS", "YT_CHAPTERS", "YT_CHAPTER_MIN_SECONDS",
                 "WHISPER_MODEL", "KIDS_SONG_BPM", "KIDS_SONG_WPS",
                 "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT",
                 "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION",
@@ -643,6 +659,8 @@ async function load() {
   const d = await api("/api/settings");
   $("#DEFAULT_MEGAPIXELS").innerHTML = (d.megapixels_options || []).map(v =>
     `<option value="${v}">${v} MP</option>`).join("");
+  $("#DEFAULT_VIDEO_MODEL").innerHTML = (d.video_models || []).map(m =>
+    `<option value="${esc(m)}">${esc(m)}</option>`).join("");
   $("#DEFAULT_RESOLUTION").innerHTML = (d.resolutions || []).map(r =>
     `<option value="${esc(r)}">${esc(r)}</option>`).join("");
   $("#STORYBOARD_TEMPLATE_SET").innerHTML = (d.storyboard_template_sets || []).map(r =>

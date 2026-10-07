@@ -388,7 +388,7 @@ class GivenLyrics(unittest.TestCase):
     def test_resolve_choices_signature_is_untouched(self):
         import pipeline
         r = pipeline.JobManager._resolve_choices("", "", "", "", "", {"audience": "kids", "defaults": {}})
-        self.assertEqual(len(r), 13)
+        self.assertEqual(len(r), 14)   # ..., polish, video_model, megapixels, resolution
         self.assertEqual(r[5], "child")
 
     def _music(self, reply, **kw):

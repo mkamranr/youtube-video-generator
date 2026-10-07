@@ -146,18 +146,34 @@ class Thumbnail(unittest.TestCase):
 
     def test_build_thumbnail_seeds_from_a_portrait(self):
         from services.comfy import ComfyClient
-        nodes = (config.NODE_PROMPT, config.NODE_SEED, config.NODE_DURATION, config.NODE_SAVE,
-                 config.NODE_RESOLUTION, config.NODE_LOAD_IMAGE)
-        template = {n: {"inputs": {}} for n in nodes}
-        plain = ComfyClient.build_thumbnail(template, "p", "videogen/x/thumb", aspect_ratio=config.DEFAULT_ASPECT_RATIO)
-        self.assertEqual(plain[config.NODE_DURATION]["inputs"]["value"], 0.1)
-        self.assertNotIn("image", plain[config.NODE_LOAD_IMAGE]["inputs"])
-        self.assertEqual(plain[config.NODE_RESOLUTION]["inputs"]["megapixels"], 1.0)
-        seeded = ComfyClient.build_thumbnail(template, "p", "videogen/x/thumb", aspect_ratio=config.DEFAULT_ASPECT_RATIO,
-                                             first_frame="videogen_x_cast.jpg", seconds=config.THUMB_SEED_SECONDS)
-        self.assertEqual(seeded[config.NODE_DURATION]["inputs"]["value"], config.THUMB_SEED_SECONDS)
-        self.assertEqual(seeded[config.NODE_LOAD_IMAGE]["inputs"]["image"], "videogen_x_cast.jpg")
-        self.assertEqual(seeded[config.NODE_PROMPT]["inputs"]["prompt"], "p")
+        # a thumbnail always renders on the stills model (config.STILLS_VIDEO_MODEL), so its node
+        # ids come from there rather than from whatever model a video picked
+        stills = config.VIDEO_MODELS[config.STILLS_VIDEO_MODEL]
+        t2v, i2v = stills["t2v"], stills["i2v"]
+        prompt_n, prompt_f = t2v["prompt"]
+        dur_n, dur_f = t2v["duration"]
+        img_n = i2v["load_image"]
+
+        def template(spec):
+            """A stand-in graph holding exactly the nodes build() writes to."""
+            nodes = {prompt_n, dur_n, img_n, spec["save"], spec["resolution"]}
+            nodes |= {n for n, _ in spec["seeds"]}
+            if spec["lightning"]:
+                nodes.add(spec["lightning"])
+            return {n: {"inputs": {}} for n in nodes}
+
+        plain = ComfyClient.build_thumbnail(template(t2v), "p", "videogen/x/thumb",
+                                            aspect_ratio=config.DEFAULT_ASPECT_RATIO)
+        self.assertEqual(plain[dur_n]["inputs"][dur_f], 0.1)
+        self.assertNotIn("image", plain[img_n]["inputs"])
+        self.assertEqual(plain[t2v["resolution"]]["inputs"]["megapixels"], 1.0)
+        seeded = ComfyClient.build_thumbnail(template(i2v), "p", "videogen/x/thumb",
+                                             aspect_ratio=config.DEFAULT_ASPECT_RATIO,
+                                             first_frame="videogen_x_cast.jpg",
+                                             seconds=config.THUMB_SEED_SECONDS)
+        self.assertEqual(seeded[dur_n]["inputs"][dur_f], config.THUMB_SEED_SECONDS)
+        self.assertEqual(seeded[img_n]["inputs"]["image"], "videogen_x_cast.jpg")
+        self.assertEqual(seeded[prompt_n]["inputs"][prompt_f], "p")
 
 
 class SpokenCalls(unittest.TestCase):

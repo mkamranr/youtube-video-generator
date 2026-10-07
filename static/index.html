@@ -89,6 +89,10 @@
               <select id="mp"></select>
             </div>
             <div class="grow" style="min-width:160px">
+              <label for="vmodel">Video model</label>
+              <select id="vmodel"></select>
+            </div>
+            <div class="grow" style="min-width:160px">
               <label for="res">Output resolution</label>
               <select id="res"></select>
             </div>
@@ -398,6 +402,7 @@ async function submit() {
   }
   let body = { channel_id: $("#channel").value,
                aspect_ratio: $("#ar").value, megapixels: Number($("#mp").value),
+               video_model: $("#vmodel").value,
                resolution: $("#res").value,
                art_style: real ? "" : $("#artstyle").value,
                video_length: (lyricsOn() || musicUpOn()) ? "" : $("#vlen").value,
@@ -500,6 +505,7 @@ function jobCard(j) {
                 : j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
         <span>${esc(j.aspect_ratio || "")}</span>
         ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
+        ${videoModelBadge(j)}
         ${resolutionBadge(j)}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${clipTimingText(j)}
@@ -684,6 +690,8 @@ async function loadOptions() {
   $("#ar").innerHTML = o.aspect_ratios.map(a => `<option ${a === o.default_aspect_ratio ? "selected" : ""}>${a}</option>`).join("");
   $("#mp").innerHTML = (o.megapixels_options || []).map(v =>
     `<option value="${v}" ${v === o.default_megapixels ? "selected" : ""}>${v} MP</option>`).join("");
+  $("#vmodel").innerHTML = (o.video_models || []).map(m =>
+    `<option value="${esc(m)}" ${m === o.default_video_model ? "selected" : ""}>${esc(m)}</option>`).join("");
   $("#res").innerHTML = (o.resolutions || []).map(r =>
     `<option value="${esc(r)}" ${r === o.default_resolution ? "selected" : ""}>${esc(r)}</option>`).join("");
   $("#vmode").innerHTML = (o.video_modes || ["song"]).map(m =>

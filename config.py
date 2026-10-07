@@ -39,20 +39,99 @@ VLLM_URL = "http://localhost:8000/v1"
 VLLM_MODEL = "agents-a1"
 FISH_URL = "http://localhost:7860/"
 
-# ---- workflows and node ids (fixed) ---------------------------------------
-T2V_WORKFLOW = WORKFLOWS_DIR / "video_minimax_h3_t2v.json"
-I2V_WORKFLOW = WORKFLOWS_DIR / "video_minimax_h3_t2v_first_frame.json"
+# ---- video models ---------------------------------------------------------
+def _quantise(frames, quantum: int, rest: int) -> int:
+    """Smallest f >= frames with f % quantum == rest % quantum."""
+    f = int(frames)
+    return f + (rest - f) % quantum
+
+
+# One entry per ComfyUI video workflow family the app can render clips with. A model carries its
+# own frame arithmetic - how its graph turns requested seconds into a frame count, and what its
+# duration node wants to be handed - plus a node map per variant: "t2v" for a clip rendered from
+# text alone and "i2v" for one seeded with a first frame. The two variants are separate graphs
+# with their own node numbering, so the map belongs to the variant, not the model.
+#
+#   file       - template file under WORKFLOWS_DIR
+#   prompt     - (node, input field) carrying the positive prompt
+#   negative   - the same for the negative prompt, or None when the graph has none
+#   seeds      - every noise node, in sampling order; each is given its own seed
+#   duration   - (node, input field) carrying the clip length
+#   save       - SaveVideo node (filename_prefix)
+#   resolution - ResolutionSelector node (aspect_ratio + megapixels)
+#   load_image - LoadImage node, or None for a text-to-video graph
+#   lightning  - Lightning LoRA boolean, or None when the model has no such switch
+#
+# Nothing model-specific lives outside this dict: a third model is one new entry plus its JSON.
+VIDEO_MODELS = {
+    "MiniMax H3": {
+        "fps": 24,
+        # node 140:132: max(5, round(a * 24)), raised to the next f = 5 (mod 17)
+        "frames": lambda s, fps: _quantise(max(5, round(float(s) * fps)), 17, 5),
+        # a float of seconds: the graph quantises it itself, so it round-trips unchanged
+        "duration_value": lambda s, frames, fps: float(s),
+        "t2v": {"file": "video_minimax_h3_t2v.json",
+                "prompt": ("140:131", "prompt"), "negative": None,
+                "seeds": (("140:129", "noise_seed"),),
+                "duration": ("140:133", "value"),
+                "save": "92", "resolution": "115",
+                "load_image": None, "lightning": "140:139"},
+        "i2v": {"file": "video_minimax_h3_t2v_first_frame.json",
+                "prompt": ("140:131", "prompt"), "negative": None,
+                "seeds": (("140:129", "noise_seed"),),
+                "duration": ("140:133", "value"),
+                "save": "92", "resolution": "115",
+                "load_image": "141", "lightning": "140:139"},
+    },
+    "LTX 2.5": {
+        "fps": 24,
+        # node 398:378 / 405:378: duration * 24 + 1, i.e. the next f = 1 (mod 24)
+        "frames": lambda s, fps: _quantise(max(fps + 1, math.ceil(float(s) * fps - 1)), fps, 1),
+        # a PrimitiveInt of whole seconds, derived from the frame count rather than passed
+        # straight through, so the node reproduces exactly the length the planner froze
+        "duration_value": lambda s, frames, fps: int(round((frames - 1) / fps)),
+        "t2v": {"file": "video_ltx_2_5_t2v.json",
+                "prompt": ("405:376", "value"),       # PrimitiveStringMultiline
+                "negative": ("405:373", "text"),      # CLIPTextEncode
+                "seeds": (("405:339", "noise_seed"), ("405:338", "noise_seed")),
+                "duration": ("405:362", "value"),     # PrimitiveInt: whole seconds only
+                "save": "75", "resolution": "409",
+                "load_image": None, "lightning": None},
+        "i2v": {"file": "video_ltx_2_5_i2v.json",
+                "prompt": ("398:376", "value"),
+                "negative": ("398:373", "text"),
+                "seeds": (("398:339", "noise_seed"), ("398:338", "noise_seed")),
+                "duration": ("398:362", "value"),
+                "save": "75", "resolution": "403",
+                "load_image": "395", "lightning": None},
+    },
+}
+
+
+def video_model(name: str = "") -> dict:
+    """A model's registry entry; the Settings default for "" (legacy jobs) and unknown names."""
+    return VIDEO_MODELS.get(name or DEFAULT_VIDEO_MODEL) or VIDEO_MODELS[DEFAULT_VIDEO_MODEL]
+
+
+def model_variant(name: str = "", first_frame: bool = False) -> dict:
+    """The node map for the graph this render needs: the first-frame one when a seed frame was
+    given, the text-to-video one otherwise."""
+    return video_model(name)["i2v" if first_frame else "t2v"]
+
+
+def model_workflow(name: str = "", first_frame: bool = False) -> Path:
+    return WORKFLOWS_DIR / model_variant(name, first_frame)["file"]
+
+
+# Thumbnails, cast portraits, story board images and the art-style previews are 5-frame stills at
+# 1 MP - a length only the H3 graph can express, since LTX's duration node is whole seconds - so
+# they stay on MiniMax H3 whatever model a video picked. These three are for those stills only.
+STILLS_VIDEO_MODEL = "MiniMax H3"
+T2V_WORKFLOW = WORKFLOWS_DIR / VIDEO_MODELS[STILLS_VIDEO_MODEL]["t2v"]["file"]
+I2V_WORKFLOW = WORKFLOWS_DIR / VIDEO_MODELS[STILLS_VIDEO_MODEL]["i2v"]["file"]
+
+# ---- music workflow and its node ids (fixed) ------------------------------
 MUSIC_WORKFLOW = WORKFLOWS_DIR / "audio_minimax_music_3.json"
-
-NODE_PROMPT = "140:131"
-NODE_SEED = "140:129"
-NODE_DURATION = "140:133"
-NODE_SAVE = "92"
-NODE_LOAD_IMAGE = "141"
-NODE_LIGHTNING = "140:139"
-NODE_RESOLUTION = "115"
-
-# music workflow node ids
 NODE_MUSIC_ENCODE = "37:13"
 NODE_MUSIC_SEED = "37:38"
 NODE_MUSIC_SAVE = "35"
@@ -123,6 +202,11 @@ def video_length_range(name: str):
     return (v[0], v[1]) if v else None
 
 
+def ltx_negative(video_type: str = "") -> str:
+    """The LTX negative prompt for a channel: the anti-cartoon terms only where they help."""
+    return LTX_NEGATIVE_REAL if video_type in REALISTIC_VIDEO_TYPES else LTX_NEGATIVE_ANIMATED
+
+
 def video_length_clip_seconds(name: str) -> float:
     """Requested clip length for a target preset; CLIP_SECONDS for Auto and unknown names."""
     v = VIDEO_LENGTHS.get(name)
@@ -157,6 +241,14 @@ OUTPUT_RESOLUTIONS = {
 
 # ---- generation defaults (editable in Settings) ---------------------------
 DEFAULT_ASPECT_RATIO = ASPECT_RATIOS[0]
+DEFAULT_VIDEO_MODEL = "MiniMax H3"   # which VIDEO_MODELS entry renders the clips; per-video
+                                     # override in the New Video dialog. Stills (thumbnails, cast
+                                     # portraits, story board images) always use MiniMax H3.
+# LTX 2.5 takes a negative prompt (MiniMax H3 has no such input). The anti-cartoon terms help a
+# live-action channel and actively fight an animated one, so the two are kept apart.
+LTX_NEGATIVE_ANIMATED = ("blurry, low quality, distorted, deformed, watermark, text, subtitles, "
+                         "logo, black frames, static image")
+LTX_NEGATIVE_REAL = LTX_NEGATIVE_ANIMATED + ", cartoon, anime, childish, video game, overly CG look"
 DEFAULT_MEGAPIXELS = 0.4        # clip resolution in megapixels; per-video override in the New Video dialog (thumbnails: 1.0)
 DEFAULT_RESOLUTION = "Native (clip size)"   # final-video upscale target (OUTPUT_RESOLUTIONS); per-video override
 CLIP_SECONDS = 5                # length of each generated clip
@@ -276,40 +368,56 @@ MIN_LYRIC_WORDS = 8             # fewer sung words than this is not a song
 MAX_LYRIC_WORDS = 250           # ~278 s at KIDS_SONG_WPS: 1.3x headroom under the hard cut
 
 # ---- clip length as the video model really renders it ----------------------
-# The MiniMax H3 workflow (node 140:132) quantises the requested seconds to a frame count
-# f = max(5, round(s * 24)) rounded UP to f ≡ 5 (mod 17): 5 s -> 124 frames = 5.1667 s.
-# Everything that lines audio up with clips (lyric windows, scene timelines, the clip count)
-# must use these real lengths, not CLIP_SECONDS.
-VIDEO_FPS = 24
-FRAME_QUANTUM = 17
+# No model renders exactly the length it is asked for; each quantises it to a frame count its
+# graph can produce (see the "frames" lambdas in VIDEO_MODELS). MiniMax H3 rounds to
+# f ≡ 5 (mod 17), so 5 s comes out as 124 frames = 5.1667 s; LTX 2.5 renders whole seconds plus
+# one frame, so 5 s comes out as 121 frames = 5.0417 s. Everything that lines audio up with clips
+# (lyric windows, scene timelines, the clip count) must use these real lengths, not CLIP_SECONDS -
+# and must pass the job's own model, because the two disagree.
+VIDEO_FPS = 24                  # both models render at 24 fps (VIDEO_MODELS[...]["fps"])
+FRAME_QUANTUM = 17              # MiniMax H3's frame quantum
 MIN_LAST_CLIP_SECONDS = 2.0     # shortest trailing clip when the last clip is trimmed to the audio
 
 
-def clip_frames(seconds: float) -> int:
-    """Frame count the H3 workflow renders for a requested clip length (mirrors node 140:132)."""
-    f = max(5, round(float(seconds) * VIDEO_FPS))
-    return f + (5 - f % FRAME_QUANTUM) % FRAME_QUANTUM
+def clip_frames(seconds: float, model: str = "") -> int:
+    """Frame count `model` renders for a requested clip length (mirrors its length node)."""
+    m = video_model(model)
+    return m["frames"](seconds, m["fps"])
 
 
-def actual_clip_seconds(seconds: float | None = None) -> float:
-    """Real length of a clip requested at `seconds` (default CLIP_SECONDS)."""
-    return clip_frames(CLIP_SECONDS if seconds is None else seconds) / VIDEO_FPS
+def actual_clip_seconds(seconds: float | None = None, model: str = "") -> float:
+    """Real length of a clip `model` renders when asked for `seconds` (default CLIP_SECONDS).
+
+    A fixed point: feeding its own result back in returns the same value, which is what lets a
+    frozen plan["clip_seconds"] be re-quantised at render time without drifting."""
+    secs = CLIP_SECONDS if seconds is None else seconds
+    return clip_frames(secs, model) / video_model(model)["fps"]
 
 
-def clip_durations(total_seconds: float, clip_seconds: float | None = None) -> list:
+def model_duration_value(seconds: float, model: str = ""):
+    """What `model`'s duration node wants to be handed for a clip of `seconds`: a float of
+    seconds for H3, whose graph quantises them itself, or the whole seconds behind the frame
+    count for LTX, whose duration node is a PrimitiveInt."""
+    m = video_model(model)
+    return m["duration_value"](seconds, clip_frames(seconds, model), m["fps"])
+
+
+def clip_durations(total_seconds: float, clip_seconds: float | None = None, model: str = "") -> list:
     """Per-clip real lengths covering an audio track of total_seconds: full clips plus one
     trailing clip quantised from the remainder (at least MIN_LAST_CLIP_SECONDS), so the video
     ends with the audio instead of a silent tail.
 
     clip_seconds: requested length of a full clip (default CLIP_SECONDS); the per-job target
-    length picks it (video_length_clip_seconds) so long videos do not become 60 clips."""
-    full = actual_clip_seconds(clip_seconds)
+    length picks it (video_length_clip_seconds) so long videos do not become 60 clips.
+
+    model: the job's video model, which decides what the requested lengths really render as."""
+    full = actual_clip_seconds(clip_seconds, model)
     total = max(0.0, float(total_seconds))
     n = max(1, math.ceil(total / full - 1e-6))
     rem = total - (n - 1) * full
     if n > 1 and rem < 0.5:     # a few hundred ms of fade-out are not worth a whole extra clip
         return [full] * (n - 1)
-    last = actual_clip_seconds(max(MIN_LAST_CLIP_SECONDS, rem))
+    last = actual_clip_seconds(max(MIN_LAST_CLIP_SECONDS, rem), model)
     return [full] * (n - 1) + [last]
 
 
@@ -361,6 +469,18 @@ EDITABLE_SETTINGS = {
     "KIDS_SONG_WPS": (float, lambda v: 0.4 <= v <= 2.0, "Kids song words/second",
                       "Sung-words-per-second budget for kids songs (sizes the lyrics); a song measured 40% faster "
                       "than this is re-rendered once with a slower caption and fewer words"),
+    "DEFAULT_VIDEO_MODEL": (str, lambda v: v in VIDEO_MODELS, "Video model",
+                            "Which ComfyUI workflow renders the clips; can be changed per video in "
+                            "the New Video dialog. The models quantise clip length differently "
+                            "(5 s renders as 5.17 s on MiniMax H3, 5.04 s on LTX 2.5), so the "
+                            "choice is frozen when the video is planned. Thumbnails, cast "
+                            "portraits and story board images always render on MiniMax H3"),
+    "LTX_NEGATIVE_ANIMATED": (str, lambda v: len(v) <= 600, "LTX negative prompt (animated)",
+                              "What LTX 2.5 should steer away from on an animated channel. MiniMax "
+                              "H3 has no negative prompt and ignores this"),
+    "LTX_NEGATIVE_REAL": (str, lambda v: len(v) <= 600, "LTX negative prompt (real / tech)",
+                          "The same for a live-action or tech channel, where naming cartoon and "
+                          "video-game looks helps instead of fighting the art style"),
     "DEFAULT_MEGAPIXELS": (float, lambda v: any(abs(v - o) < 1e-6 for o in MEGAPIXELS_OPTIONS),
                            "Clip resolution (megapixels)",
                            "Default ResolutionSelector megapixels for every clip (0.2-1.0 in 0.1 steps); "
@@ -379,7 +499,8 @@ EDITABLE_SETTINGS = {
                               "Voiceover + music videos also mix in the clips' own generated sound. Off (default) = "
                               "narration + music bed only, which avoids the three-layer clash"),
     "LIGHTNING_LORA": (bool, lambda v: True, "Lightning LoRA (fast preview)",
-                       "8-step turbo sampling: ~3x faster, lower quality"),
+                       "8-step turbo sampling: ~3x faster, lower quality. MiniMax H3 only - "
+                       "LTX 2.5 is already a distilled model and has no such switch"),
     "CLIP_RETRIES": (int, lambda v: 0 <= v <= 5, "Clip retries",
                      "Retries per failed clip before failing the job"),
     "GPU_SCHEDULE_ENABLED": (bool, lambda v: True, "GPU schedule",
