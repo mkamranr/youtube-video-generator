@@ -120,7 +120,11 @@
         <div class="msec" id="sbBlock">
           <div class="msec-title">On-screen story board</div>
           <label class="switch"><input type="checkbox" id="storyboard"><span class="track"></span> Add story board cards</label>
-          <div class="hint">Styled fact cards (key facts, numbers, takeaways) with related images are drawn over the video, timed to what is being said. On by default for Tech channels.</div>
+          <div class="hint">Styled fact cards (key facts, numbers, takeaways) with related images are drawn over the video, timed to what is being said. Each card uses one of eight layouts, picked from its own content, so no two cards in a row look the same. On by default for Tech channels.</div>
+          <label class="switch" style="margin-top:10px"><input type="checkbox" id="captions"><span class="track"></span> Burn in captions</label>
+          <div class="hint">Word-synced subtitles over the video, with the spoken word highlighted. The words come from the script itself, so they are never a mis-hearing. On by default for Tech channels.</div>
+          <label class="switch" style="margin-top:10px"><input type="checkbox" id="polish"><span class="track"></span> Hook card, end card &amp; progress bar</label>
+          <div class="hint">The opening line shown full-screen over the first seconds, a subscribe card at the end, a thin progress bar and a short whoosh as each card appears. On by default for Tech channels.</div>
         </div>
         <div class="msec" id="pageScrollBlock" hidden>
           <div class="msec-title">Page scroll overlay</div>
@@ -323,6 +327,8 @@ function applyChannel() {
   $("#artstyleBlock").hidden = real;
   if (!real && d.art_style) $("#artstyle").value = d.art_style;
   $("#storyboard").checked = d.storyboard != null ? !!d.storyboard : ch.video_type === "tech";
+  $("#captions").checked = d.captions != null ? !!d.captions : ch.video_type === "tech";
+  $("#polish").checked = d.polish != null ? !!d.polish : ch.video_type === "tech";
   // repository videos are a Tech-channel feature (the server enforces it too). The option is
   // added and removed rather than hidden: a hidden <option> that is selected still shows.
   const sel = $("#source"), opt = sel.querySelector('option[value="repo"]');
@@ -398,7 +404,9 @@ async function submit() {
                audio_mode: storyOn() ? "narration+music" : $("#audio").value,
                video_mode: $("#vmodeField").hidden ? "" : $("#vmode").value,
                voice_id: (!storyOn() && $("#audio").value === "music") ? "" : $("#voice").value,
-               storyboard: $("#storyboard").checked };
+               storyboard: $("#storyboard").checked,
+               captions: $("#captions").checked,
+               polish: $("#polish").checked };
   if (lyricsOn()) body.lyrics = $("#lyrics").value.trim();
   if (musicUpOn()) body.music_upload_id = musicUp.id;
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);

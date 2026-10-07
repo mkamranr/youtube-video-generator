@@ -185,7 +185,9 @@ class ScrollFilter(unittest.TestCase):
         filt = argv[argv.index("-filter_complex") + 1]
         self.assertIn("crop=w=336:h=604:x=0:y='", filt)
         self.assertIn("clip((t-13.200)/33.600,0,1)", filt)   # window-relative, commas quoted
-        self.assertIn("overlay=72:130:enable='between(t,13.200,46.800)'", filt)
+        # an integer position is still written bare, so the panel's centring is unaffected by
+        # the story board cards' per-frame motion expressions
+        self.assertIn("overlay=72:130:eval=frame:enable='between(t,13.200,46.800)'", filt)
 
     def test_the_image_input_gets_the_video_frame_rate(self):
         argv = self._argv()
@@ -225,8 +227,10 @@ class AssembleOrder(unittest.TestCase):
                                            side_effect=lambda src, out, **kw: Path(out)),
             "composite": mock.patch.object(pipeline.video, "composite",
                                            side_effect=lambda v, layers, out, **kw: Path(out)),
-            "render_all": mock.patch.object(pipeline.storyboard, "render_all",
-                                            return_value=[(TMP / "card_01.png", 2.0, 8.0)]),
+            "render_all": mock.patch.object(
+                pipeline.storyboard, "render_all",
+                return_value=[{"png": TMP / "card_01.png", "start": 2.0, "end": 8.0,
+                               "x": 0, "y": 0, "template": "lower_third"}]),
         }
         self.m = {k: p.start() for k, p in patches.items()}
         for p in patches.values():

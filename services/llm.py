@@ -1136,7 +1136,11 @@ Write YouTube upload metadata optimized for SEO and reach. Return JSON with keys
 Never mention that the video is AI-generated unless the content is about AI. Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
                  {"role": "user", "content": user}])
+    # seo_keywords is asked for above and used to be thrown away here, so every upload went out
+    # with no tags at all - the keywords now reach services/youtube.clean_tags.
+    kws = out.get("seo_keywords")
     return {"seo_title": str(out.get("seo_title", "")).strip()[:100],
+            "seo_keywords": [str(k).strip() for k in (kws or []) if str(k).strip()][:12],
             "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
 
 
@@ -1352,12 +1356,30 @@ must INSTANTLY understand what the video is about. Return JSON with key:
   Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
   Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
+- "thumbnail_texts": 2-3 alternative overlay lines for this same picture, each 3-5 words and under
+  22 characters, no full stops, no quotation marks. Each must be readable at thumbnail size on a
+  phone and must say something the picture alone cannot - the stake, the number, the surprise.
+  Best first. They are drawn over the picture afterwards, so the picture itself still contains no
+  letters of any kind.
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     tp = str(out.get("thumbnail_prompt", "")).strip()
     if not tp:
         raise RuntimeError("vLLM returned no thumbnail prompt")
-    return {"thumbnail_prompt": tp}
+    from services import thumbtext   # lazy: thumbtext pulls storyboard, which imports this module
+
+    # Missing overlay lines is not an error: the video simply ships the clean render, which is
+    # exactly what every video did before this existed.
+    raw = out.get("thumbnail_texts") or out.get("thumbnail_text") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    texts, seen = [], set()
+    for t in list(raw)[:4]:
+        t = thumbtext.normalize(t)
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            texts.append(t)
+    return {"thumbnail_prompt": tp, "thumbnail_texts": texts}
 
 
 MUSIC_CAPTION_EXAMPLE = ("Global Metadata: Lo-fi hip-hop, chillhop. 78 BPM, D flat major. Laid-back and dreamy "

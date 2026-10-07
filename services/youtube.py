@@ -6,6 +6,7 @@ Google account on the consent screen and stores its own token file. Only the
 youtube.upload scope is requested.
 """
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -93,31 +94,85 @@ def _credentials(token_file=None):
     return creds
 
 
+TAG_LIMIT = 500      # YouTube's cap on the sum of all tags; over it, the whole insert is rejected
+MAX_TAG_CHARS = 60   # a "tag" longer than this is a sentence
+
+
+def clean_tags(keywords, title: str = "", max_tags: int = 30, limit: int = TAG_LIMIT) -> list:
+    """Video tags from the SEO keywords, packed under YouTube's 500-character cap.
+
+    The budget is not a bare sum of lengths: YouTube counts a tag containing a space as its length
+    plus the two quotes it gets wrapped in, plus a separator per tag. Going over rejects the entire
+    insert, and losing an upload over a tag would be absurd, so the packing is deliberately
+    conservative. '<' and '>' are dropped for the same reason services/resource.py drops them: the
+    API rejects them outright."""
+    out, seen, used = [], set(), 0
+    cands = [str(k) for k in (keywords or [])]
+    if title:
+        cands.append(str(title))
+    for raw in cands:
+        t = re.sub(r"\s+", " ", raw.replace("<", "").replace(">", "").replace('"', "")).strip()
+        t = t.strip("#,;:.-").strip()
+        if not (2 <= len(t) <= MAX_TAG_CHARS) or t.lower() in seen:
+            continue
+        cost = len(t) + (2 if " " in t else 0) + 1
+        if used + cost > limit or len(out) >= max_tags:
+            continue
+        seen.add(t.lower())
+        out.append(t)
+        used += cost
+    return out
+
+
 def upload(video_path, thumb_path, title: str, description: str,
-           privacy: str, made_for_kids: bool, on_progress=None, token_file=None):
-    """Resumable upload; returns (video_id, thumbnail_error_or_empty)."""
+           privacy: str, made_for_kids: bool, on_progress=None, token_file=None,
+           tags=None, category_id: str = ""):
+    """Resumable upload; returns (video_id, thumbnail_error_or_empty, tag_error_or_empty).
+
+    A rejected tag must never cost an upload, so a failed insert carrying tags is retried once
+    without them."""
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
     yt = build("youtube", "v3", credentials=_credentials(token_file), cache_discovery=False)
+    cat = str(category_id or config.YT_CATEGORY_ID)
+    if cat not in config.YT_CATEGORIES:
+        cat = config.YT_CATEGORY_ID
     body = {
         "snippet": {
             "title": (title or "Untitled")[:100],
             "description": (description or "")[:config.YT_DESCRIPTION_LIMIT],
-            "categoryId": "24",
+            "categoryId": cat,
         },
         "status": {
             "privacyStatus": privacy,
             "selfDeclaredMadeForKids": bool(made_for_kids),
         },
     }
-    media = MediaFileUpload(str(video_path), chunksize=8 * 1024 * 1024,
-                            resumable=True, mimetype="video/mp4")
-    req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
-    resp = None
-    while resp is None:
-        status, resp = req.next_chunk()
-        if status and on_progress:
-            on_progress(int(status.progress() * 100))
+    if tags:
+        body["snippet"]["tags"] = list(tags)
+
+    def _insert():
+        # a resumable MediaFileUpload cannot be reused once it has been consumed, so the retry
+        # below builds a fresh one
+        media = MediaFileUpload(str(video_path), chunksize=8 * 1024 * 1024,
+                                resumable=True, mimetype="video/mp4")
+        req = yt.videos().insert(part="snippet,status", body=body, media_body=media)
+        resp = None
+        while resp is None:
+            status, resp = req.next_chunk()
+            if status and on_progress:
+                on_progress(int(status.progress() * 100))
+        return resp
+
+    tag_error = ""
+    try:
+        resp = _insert()
+    except Exception as e:  # noqa: BLE001 - retried without the tags, then re-raised
+        if "tags" not in body["snippet"]:
+            raise
+        tag_error = str(e)[:200]
+        body["snippet"].pop("tags")
+        resp = _insert()
     video_id = resp["id"]
     thumb_error = ""
     if thumb_path and Path(thumb_path).exists():
@@ -128,4 +183,4 @@ def upload(video_path, thumb_path, title: str, description: str,
             ).execute()
         except Exception as e:  # noqa: BLE001 - custom thumbnails may need channel verification
             thumb_error = str(e)
-    return video_id, thumb_error
+    return video_id, thumb_error, tag_error

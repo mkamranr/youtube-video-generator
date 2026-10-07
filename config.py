@@ -188,12 +188,62 @@ MAX_STORY_LINE_CHARS = 400      # one spoken line, as edited on the approval scr
 MUSIC_VOLUME = 0.25             # music level under the narration (narration+music mode, auto-ducked)
 STORYBOARD_MAX_IMAGES = 6       # story board overlay: max related images rendered per video (0 = text only)
 STORYBOARD_ACCENT = "#e9a13b"   # story board overlay accent colour (kicker text, side bar)
+# Which card layouts a video may draw from. () = every template in services/cardtemplates.TEMPLATES;
+# otherwise the allowed template names. The set is read at PLANNING time only - each card's pick is
+# frozen into plan.json, so changing this never restyles a finished video (regenerate its story
+# board for that). Names, not families: a family-level set could not express "classic only", since
+# the classic family still alternates two variants.
+STORYBOARD_TEMPLATE_SETS = {
+    "Mixed (all layouts)": (),
+    "Panels only (no full-bleed)": ("lower_third", "ribbon", "big_stat", "split", "photo_stack"),
+    "Classic lower third only": ("lower_third",),
+}
+STORYBOARD_TEMPLATE_SET = "Mixed (all layouts)"
+STORYBOARD_MOTION = True        # cards ease into place instead of only fading in
+# Thumbnail overlay text. The generated picture never contains letters (image models spell badly,
+# and the prompt forbids typography), so the line is drawn with Pillow afterwards - which is what
+# makes the variants free: one GPU render, several text treatments over copies of it.
+THUMB_TEXT_ENABLED = True
+THUMB_TEXT_VARIANTS = 3         # text versions offered on the job page (0 = the clean render only)
+THUMB_TEXT_ACCENT = ""          # "" = use STORYBOARD_ACCENT
+# Burned-in captions. The words come from the script itself: the narration is timed with whisper
+# and snapped back onto the written text, so captions show what was written, not what whisper
+# thought it heard. Story and music videos are already timed and pay nothing.
+CAPTION_HIGHLIGHTS = ["off", "word"]
+CAPTIONS_ENABLED = True         # default for a new channel's videos (per channel, per video)
+CAPTION_MAX_WORDS = 3
+CAPTION_MAX_CHARS = 26
+CAPTION_HIGHLIGHT = "word"
+CAPTION_ACCENT = "#2ba1e9"
+CAPTION_FONT_SCALE = 1.0
+CAPTION_BOTTOM_MARGIN = 0.10    # fraction of the frame height; portrait never goes below 0.14
+# Retention furniture: a hook card over the opening, a subscribe card at the end, a progress bar
+# and a whoosh as each card appears. All of them are layers in the overlay pass that already runs
+# plus one audio input, so none of them costs an extra encode.
+POLISH = True                   # default for a new channel's videos (per channel, per video)
+HOOK_CARD_SECONDS = 3.0
+END_CARD_SECONDS = 4.0
+END_CARD_TEXT = "Subscribe for more"
+PROGRESS_BAR_HEIGHT = 0.6       # percent of the frame height (0 = off)
+SFX_VOLUME = 0.3                # card whoosh level (0 = silent)
+SFX_FILE = ""                   # your own whoosh; empty = synthesized with ffmpeg once and cached
+LOUDNESS_LUFS = -14.0           # EBU R128 target; YouTube normalises to about this (0 = off)
 TARGET_VIDEO_SECONDS = 90       # music mode: requested song length (the model may end earlier)
 MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
 COMFY_CLEANUP = True            # delete each artifact from the ComfyUI server once downloaded
 SCRIPT_REVIEW = True            # LLM double-checks every generated scene and drafted script
 YT_DESCRIPTION_LIMIT = 4900     # YouTube caps descriptions at 5000; uploads are cut here
+# The category an upload is filed under. 24 (Entertainment) used to be hardcoded, which mis-files
+# every technical video; a channel whose video type is "tech" now goes to 28 automatically.
+YT_CATEGORIES = {"1": "Film & Animation", "10": "Music", "17": "Sport", "20": "Gaming",
+                 "22": "People & Blogs", "23": "Comedy", "24": "Entertainment",
+                 "26": "Howto & Style", "27": "Education", "28": "Science & Technology"}
+YT_CATEGORY_ID = "24"
+YT_CATEGORY_BY_TYPE = {"tech": "28"}
+YT_MAX_TAGS = 20                # how many SEO keywords are uploaded as video tags (0 = none)
+YT_CHAPTERS = True              # add a timestamp list to the description
+YT_CHAPTER_MIN_SECONDS = 20.0   # shortest chapter; YouTube's own floor is 10 s
 YT_PRIVACY = "private"          # privacy of uploaded YouTube videos
 PUBLIC_BASE_URL = ""            # https://host users open the app with; "" = localhost OAuth redirect
 YT_MADE_FOR_KIDS = False        # selfDeclaredMadeForKids on uploads (default: not made for kids)
@@ -351,12 +401,101 @@ EDITABLE_SETTINGS = {
     "STORYBOARD_ACCENT": (str, lambda v: bool(re.fullmatch(r"#[0-9a-fA-F]{6}", v)),
                           "Story board: accent colour",
                           "Hex colour of the story board cards' accent (kicker label and side bar), e.g. #e9a13b"),
+    "STORYBOARD_TEMPLATE_SET": (str, lambda v: v in STORYBOARD_TEMPLATE_SETS,
+                                "Story board: card layouts",
+                                "Which card layouts new videos draw from. Mixed uses all eight: the card's own "
+                                "content picks the family (a figure, a picture, a closing takeaway) and a "
+                                "per-video seed picks the variant, never the same layout twice in a row. "
+                                "Classic uses only the lower-third panel. Applies to newly planned story "
+                                "boards; regenerate a job's story board to restyle it"),
+    "POLISH": (bool, lambda v: True, "Hook card, end card and progress bar",
+               "Default for new videos: a full-screen hook card over the opening seconds, a subscribe "
+               "card at the end, a thin progress bar and a short whoosh as each story board card "
+               "appears. Can be changed per channel and per video. All of it rides in the overlay "
+               "pass that already runs, so it costs no extra encode"),
+    "HOOK_CARD_SECONDS": (float, lambda v: 0 <= v <= 6, "Hook card (s)",
+                          "Seconds the opening line is shown as a full-screen card (0 = off). It is "
+                          "already the first spoken line; this puts it on screen too, for the viewer "
+                          "who has not unmuted yet"),
+    "END_CARD_SECONDS": (float, lambda v: 0 <= v <= 10, "End card (s)",
+                         "Seconds of subscribe card at the end (0 = off). Skipped on videos shorter "
+                         "than three times this, and kept clear of the lower-right quarter where "
+                         "YouTube draws its own end-screen elements"),
+    "END_CARD_TEXT": (str, lambda v: len(v) <= 60, "End card line",
+                      "The line on the end card, e.g. 'Subscribe for more'"),
+    "PROGRESS_BAR_HEIGHT": (float, lambda v: 0 <= v <= 2.0, "Progress bar height (% of frame)",
+                            "A thin bar across the bottom that fills as the video plays (0 = off). "
+                            "0.6 is about 6 pixels on a 1080p frame"),
+    "SFX_VOLUME": (float, lambda v: 0 <= v <= 1, "Card whoosh volume",
+                   "A short whoosh when an overlay card appears (0 = silent). It is deliberately NOT "
+                   "ducked under the narration: a whoosh you cannot hear while the voice talks is "
+                   "pointless"),
+    "SFX_FILE": (str, lambda v: v == "" or Path(v).exists(), "Card whoosh file",
+                 "Your own sound file for the card whoosh; empty = one is synthesized with ffmpeg on "
+                 "first use and cached, so the repository ships no audio binary"),
+    "LOUDNESS_LUFS": (float, lambda v: v == 0 or -24 <= v <= -8, "Loudness target (LUFS)",
+                      "EBU R128 normalisation of the final mix (0 = off). YouTube normalises "
+                      "everything to about -14, so a quieter master is simply played quiet"),
+    "CAPTIONS_ENABLED": (bool, lambda v: True, "Burned-in captions",
+                         "Default for new videos: word-synced subtitles burned into the picture. Can be "
+                         "changed per channel and per video. The words come from the script itself - the "
+                         "narration is timed with whisper and snapped back onto the written text, so "
+                         "captions show your words, not what whisper thought it heard"),
+    "CAPTION_MAX_WORDS": (int, lambda v: 1 <= v <= 6, "Captions: words per group",
+                          "How many words appear on screen at once (1-6). Two or three reads fastest "
+                          "on a phone"),
+    "CAPTION_MAX_CHARS": (int, lambda v: 10 <= v <= 48, "Captions: characters per group",
+                          "A group also breaks at this many characters (10-48), so one line always fits "
+                          "the frame"),
+    "CAPTION_HIGHLIGHT": (str, lambda v: v in CAPTION_HIGHLIGHTS, "Captions: word highlight",
+                          "word = the word being spoken is coloured as the line plays (karaoke); off = "
+                          "the whole group is one colour. Only the colour changes - resizing the spoken "
+                          "word would reflow the line and make it jump on every word"),
+    "CAPTION_ACCENT": (str, lambda v: bool(re.fullmatch(r"#[0-9a-fA-F]{6}", v)),
+                       "Captions: highlight colour", "Hex colour of the spoken word, e.g. #2ba1e9"),
+    "CAPTION_FONT_SCALE": (float, lambda v: 0.6 <= v <= 1.8, "Captions: text size",
+                           "Multiplier on the caption text size (0.6-1.8); 1.0 is about 5% of the "
+                           "frame height"),
+    "CAPTION_BOTTOM_MARGIN": (float, lambda v: 0.03 <= v <= 0.35, "Captions: bottom margin",
+                              "Distance from the bottom of the frame as a fraction of its height "
+                              "(0.03-0.35). Portrait videos never go below 0.14, which is what keeps "
+                              "the text clear of the Shorts UI"),
+    "THUMB_TEXT_ENABLED": (bool, lambda v: True, "Thumbnail text",
+                           "Draw a short punchy line over the generated thumbnail. The picture itself is "
+                           "always generated without letters (image models spell badly), so the text is "
+                           "drawn afterwards with the same font the story board cards use"),
+    "THUMB_TEXT_VARIANTS": (int, lambda v: 0 <= v <= 3, "Thumbnail: text variants",
+                            "How many text versions of the thumbnail to offer on the job page (0-3). They "
+                            "cost no GPU time: one picture is rendered and the text is drawn over copies "
+                            "of it, so switching between them is instant"),
+    "THUMB_TEXT_ACCENT": (str, lambda v: v == "" or bool(re.fullmatch(r"#[0-9a-fA-F]{6}", v)),
+                          "Thumbnail: text accent colour",
+                          "Hex colour of the thumbnail text's highlight; empty = use the story board "
+                          "accent colour"),
+    "STORYBOARD_MOTION": (bool, lambda v: True, "Story board: card motion",
+                          "Cards ease into place (a short slide or rise) instead of only fading in. Costs "
+                          "nothing: the movement is a per-frame position in the overlay pass that already runs"),
     "TARGET_VIDEO_SECONDS": (float, lambda v: v == 0 or 15 <= v <= 300, "Target video length (s)",
                              "music mode: requested song length; 0 = no target, the song covers the full content"),
     "MIN_TRANSCRIPT_WORDS": (int, lambda v: 0 <= v <= 2000, "Min transcript words",
                              "Refuse videos whose transcript has fewer words than this"),
     "MIN_TRANSCRIPT_WPM": (float, lambda v: 0 <= v <= 200, "Min transcript words/min",
                            "Refuse when the transcript is too sparse for the video length (music/no speech)"),
+    "YT_CATEGORY_ID": (str, lambda v: v in YT_CATEGORIES, "YouTube category",
+                       "Category every upload is filed under. 24 (Entertainment) was the old fixed value "
+                       "and it buries technical videos; a channel whose video type is 'tech' uses "
+                       "28 (Science & Technology) automatically, whatever this is set to"),
+    "YT_MAX_TAGS": (int, lambda v: 0 <= v <= 30, "YouTube: tags per video",
+                    "How many of the generated SEO keywords are uploaded as video tags (0 = none). "
+                    "YouTube caps all tags together at 500 characters, so fewer may actually be sent"),
+    "YT_CHAPTERS": (bool, lambda v: True, "Chapters in the description",
+                    "Add a timestamp list so YouTube splits the player into chapters. It needs at least "
+                    "3 chapters, the first at 0:00, each at least 10 seconds - a video too short for "
+                    "that simply gets none, because YouTube ignores a partial list entirely"),
+    "YT_CHAPTER_MIN_SECONDS": (float, lambda v: 10 <= v <= 120, "Chapters: shortest chapter (s)",
+                               "Chapters are coarser than the story board cards on purpose: a clip is "
+                               "about 5 seconds, so one chapter per card would be under YouTube's "
+                               "10-second floor. 20 gives four to six chapters on a typical video"),
     "YT_PRIVACY": (str, lambda v: v in ("private", "unlisted", "public"), "YouTube privacy",
                    "Privacy of uploaded videos: private (review in YouTube Studio first), unlisted or public"),
     "PUBLIC_BASE_URL": (str, lambda v: v == "" or v.startswith("http"), "Public base URL (YouTube OAuth)",

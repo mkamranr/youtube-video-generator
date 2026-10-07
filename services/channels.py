@@ -31,7 +31,7 @@ CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: d
 MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
 DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice",
                 "video_mode", "character_voice")
-BOOL_DEFAULT_KEYS = ("storyboard",)   # story board overlay on by default for this channel's videos
+BOOL_DEFAULT_KEYS = ("storyboard", "captions", "polish")   # on by default for a tech channel
 
 
 def _read_index() -> dict:
@@ -42,6 +42,8 @@ def _read_index() -> dict:
                 if isinstance(c, dict):
                     c.setdefault("made_for_kids", c.get("audience") == "kids")
                     c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
+                    c["defaults"].setdefault("captions", c.get("video_type") == "tech")
+                    c["defaults"].setdefault("polish", c.get("video_type") == "tech")
                     c["defaults"].setdefault("song_voice", default_song_voice(c.get("audience")))
                     c["defaults"].setdefault("video_mode", config.DEFAULT_VIDEO_MODE)
                     c["defaults"].setdefault("character_voice", "")
@@ -180,7 +182,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
            "made_for_kids": False, "cast": [], "cast_opening": True, "characters_enabled": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
-                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
+                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None, "captions": None, "polish": None,
                         "song_voice": "", "video_mode": "", "character_voice": ""}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
@@ -221,8 +223,9 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     if rec["video_type"] not in config.VIDEO_TYPES:
         raise ValueError(f"video_type must be one of {config.VIDEO_TYPES}")
     df = rec["defaults"]
-    if df.get("storyboard") is None:   # unset -> on for tech channels, off otherwise
-        df["storyboard"] = rec["video_type"] == "tech"
+    for key in BOOL_DEFAULT_KEYS:      # unset -> on for tech channels, off otherwise
+        if df.get(key) is None:
+            df[key] = rec["video_type"] == "tech"
     if rec["video_type"] in config.REALISTIC_VIDEO_TYPES:
         df["art_style"] = ""  # realistic channels use the built-in live-action direction
     elif df["art_style"] and df["art_style"] not in config.ART_STYLES:

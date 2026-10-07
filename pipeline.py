@@ -12,8 +12,10 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (browser, cast, channels, comfy, llm, lyrics, music_upload, repo, resource,
-                      schedule, story, storyboard, transcript, tts, video, voices)
+from services import (browser, cast, chapters, channels, comfy, llm, lyrics, music_upload, repo,
+                      resource, schedule, sfx, story, storyboard, thumbtext, transcript, tts,
+                      video, voices)
+from services import cardtemplates
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -63,6 +65,10 @@ class Job:
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, characters_enabled, ...}
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     page_scroll: bool = False       # repo jobs: scroll the page screenshot as a panel over the video
+    captions: bool = False          # burned-in word-synced subtitles over the video
+    polish: bool = False            # hook card, end card, progress bar and the card whoosh
+    thumb_variant: int = -1         # active thumbnail text variant (0 = plain render,
+                                    # -1 = nobody has chosen, so the model's best line wins)
     script_approved: bool = False
     # weekly planner (services/planner.py): the plan row this job was created from. A planned job
     # rests at status "planned" until the user sets its parameters on the job page.
@@ -774,6 +780,38 @@ def _story_audio(job: Job, plan: dict) -> tuple:
     return narration_file, durs, line_seconds
 
 
+def _thumb_variants(job: Job, plan: dict, select=None) -> int:
+    """Draw the thumbnail text variants from thumb_base.jpg and make one of them active.
+
+    Pure Pillow and cheap, so it runs on every pass rather than being frozen: an edited line or a
+    new accent colour then applies without another GPU render. The active one is COPIED to
+    thumbnail.jpg, which keeps its exact existing meaning - so the download route, the publish
+    bundle and the YouTube upload need no knowledge of variants at all.
+
+    Non-fatal throughout: the clean render is always a perfectly good thumbnail."""
+    d = job.dir
+    base = d / "thumb_base.jpg"
+    if not base.exists():
+        # a job made before variants existed: adopt its finished thumbnail as the base, so the
+        # feature works retroactively on every video ever made
+        if (d / "thumbnail.jpg").exists():
+            shutil.copyfile(d / "thumbnail.jpg", base)
+        else:
+            return 0
+    recs = []
+    if config.THUMB_TEXT_ENABLED and config.THUMB_TEXT_VARIANTS > 0:
+        try:
+            recs = thumbtext.variants(base, d, (plan.get("thumbnail_texts") or [])
+                                      [:config.THUMB_TEXT_VARIANTS])
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"thumbnail text failed ({e}); the plain thumbnail is kept")
+            recs = []
+    plan["thumbnail_variants"] = recs
+    k = thumbtext.activate(d, recs, job.thumb_variant if select is None else select)
+    job.set(thumb_variant=k)
+    return k
+
+
 def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None) -> tuple:
     """Render plan["thumbnail_prompt"] into dest (JPG at the job's thumbnail size, logo overlaid).
 
@@ -910,6 +948,200 @@ def _upscale_joined(job: Job, joined: Path) -> Path:
     return out
 
 
+def _polish_windows(job: Job, total: float) -> tuple:
+    """(hook_end, end_start) in seconds. Both collapse to "no card" when the video is too short to
+    give those seconds up."""
+    if not job.polish:
+        return 0.0, float(total)
+    hook = config.HOOK_CARD_SECONDS
+    tail = config.END_CARD_SECONDS
+    hook_end = round(0.2 + hook, 3) if hook > 0 and total > 2 * hook else 0.0
+    end_start = round(total - tail, 3) if tail > 0 and total > 3 * tail else float(total)
+    return hook_end, end_start
+
+
+def _polish_layers(job: Job, plan: dict, size: tuple, total: float, hook_end: float,
+                   end_start: float) -> tuple:
+    """The hook card, end card and progress bar as composite layers, plus the times a whoosh
+    should sound. Each piece is guarded on its own, so a broken end card still leaves the rest."""
+    if not job.polish:
+        return [], []
+    d = job.dir
+    out, hits = [], []
+    if hook_end > 0:
+        try:
+            text = job.hook or plan.get("seo_title") or plan.get("title") or ""
+            if text.strip():
+                png = cardtemplates.render_hook(text, size, d / "hook_card.png",
+                                                accent=config.STORYBOARD_ACCENT)
+                out.append({"png": png, "start": 0.2, "end": hook_end, "fade": 0.35})
+                hits.append(0.2)
+                job.add_log(f"hook card 0.2s-{hook_end:.1f}s")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"hook card failed ({e}); assembling without it")
+    if end_start < total:
+        try:
+            png = cardtemplates.render_end(size, d / "end_card.png",
+                                           channel=(job.channel or {}).get("name", ""),
+                                           logo=_logo_for(job), line=config.END_CARD_TEXT,
+                                           accent=config.STORYBOARD_ACCENT)
+            out.append({"png": png, "start": end_start, "end": total, "fade": 0.4})
+            hits.append(end_start)
+            job.add_log(f"end card {end_start:.1f}s-{total:.1f}s")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"end card failed ({e}); assembling without it")
+    if config.PROGRESS_BAR_HEIGHT > 0:
+        try:
+            out += video.progress_layers(size, total, d, color=config.STORYBOARD_ACCENT,
+                                         height_pct=config.PROGRESS_BAR_HEIGHT)
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"progress bar failed ({e}); assembling without it")
+    return out, hits
+
+
+def _sfx_track(job: Job, hits: list, total: float):
+    """One full-length wav with a whoosh at each hit, or None."""
+    if not (job.polish and config.SFX_VOLUME > 0 and hits):
+        return None
+    try:
+        return sfx.build_track(hits, job.dir / "sfx.wav", total)
+    except Exception as e:  # noqa: BLE001 - never lose the mix over a sound effect
+        job.add_log(f"sound effects skipped ({e})")
+        return None
+
+
+def _song_words(plan: dict) -> list:
+    """The word timings music mode already produced for the lyric-synced scenes."""
+    final = plan.get("music_final") or {}
+    tries = plan.get("music_tries") or []
+    i = int(final.get("try") or 0)
+    if 1 <= i <= len(tries) and tries[i - 1].get("words"):
+        return tries[i - 1]["words"]
+    return (plan.get("music_words") or {}).get("words") or []
+
+
+def _caption_assets(job: Job, plan: dict):
+    """Word timings for the burned-in captions, cached once in plan["caption_words"].
+
+    Only the voiceover path costs anything. A story video's timings are exact by construction
+    (every line is spoken alone and laid on the clip grid) and a music video was already
+    transcribed for its lyric-synced scenes; a voiceover needs one whisper pass over
+    narration.wav. It runs BEFORE the clip loop so a failure surfaces early and a resume finds it
+    cached rather than paying for whisper twice.
+
+    Non-fatal: without timings the video is simply assembled with no captions."""
+    if plan.get("caption_words"):
+        job.add_log("resume: reusing the caption word timings")
+        return
+    d = job.dir
+    try:
+        if _is_story(job) and (plan.get("story") or {}).get("lines"):
+            st = plan["story"]
+            words = captions.words_from_lines(st["lines"], st.get("clip_seconds") or [],
+                                              lead=config.STORY_LINE_LEAD)
+            src = "story"
+        elif _song_words(plan):
+            words, src = captions.words_from_timeline(plan.get("timed_segments")) or [], "song"
+            if not words:
+                words = _song_words(plan)
+        else:
+            nar = d / "narration.wav"
+            if not (nar.exists() and nar.stat().st_size > 1000):
+                return
+            job.set("tts", "timing the words for captions (whisper)")
+            heard = lyrics.transcribe_words(nar, initial_prompt=plan.get("narration", "")[:600],
+                                            on_progress=_progress(job, "tts"))
+            # align_to_lyrics already solves "snap whisper onto text we wrote": it keeps our
+            # spelling and punctuation and interpolates words whisper missed, so the captions
+            # show the script rather than a mis-hearing of it
+            aligned, ratio = lyrics.align_to_lyrics(heard, plan.get("narration", ""))
+            words = aligned if ratio >= config.LYRIC_ALIGN_MIN_RATIO else heard
+            src = "script" if ratio >= config.LYRIC_ALIGN_MIN_RATIO else "whisper"
+        if not words:
+            return
+        plan["caption_words"] = {"words": words, "source": src,
+                                 "whisper_model": config.WHISPER_MODEL}
+        _save_plan(job, plan)
+        job.add_log(f"captions: {len(words)} words timed ({src})")
+    except JobCancelled:
+        raise
+    except Exception as e:  # noqa: BLE001 - a video with no captions is still a video
+        job.add_log(f"caption timing failed ({e}); assembling without captions")
+
+
+def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float):
+    """Write captions.ass for this frame size, or None. Redone on every assembly, so a settings
+    change applies on reassembly and the track always matches the final resolution."""
+    if not (job.captions and (plan.get("caption_words") or {}).get("words")):
+        return None
+    try:
+        job.set("assembling", "writing the captions")
+        phrases = captions.clamp(
+            captions.group(plan["caption_words"]["words"], max_words=config.CAPTION_MAX_WORDS,
+                           max_chars=config.CAPTION_MAX_CHARS), total)
+        if not phrases:
+            return None
+        # a card owns the lower third for whole clips at a time, so the caption moves above it
+        # for that window rather than being suppressed
+        lifts = captions.lift_spans(
+            [(c["start"], c["end"], c.get("rect")) for c in cards], size)
+        family, _fdir = captions.font_family(bold=True)
+        ass = captions.write_ass(phrases, size, job.dir / "captions.ass",
+                                 accent=config.CAPTION_ACCENT, font=family,
+                                 bottom_margin=config.CAPTION_BOTTOM_MARGIN,
+                                 highlight=config.CAPTION_HIGHLIGHT, lifts=lifts)
+        if not video.subtitles_ok(ass):
+            job.add_log("this ffmpeg build cannot burn subtitles; assembling without captions")
+            return None
+        job.add_log(f"captions: {len(phrases)} on-screen groups")
+        return ass
+    except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
+        job.add_log(f"captions failed ({e}); assembling without them")
+        return None
+
+
+def _chapters(job: Job, plan: dict, bounds: list):
+    """Work out the YouTube chapter list from the real clip cut points.
+
+    Recomputed on every assembly rather than frozen: regenerating a clip changes the boundaries,
+    and the chapters have to follow them. Non-fatal - a video with no chapters is just a video."""
+    if not config.YT_CHAPTERS:
+        plan.pop("chapters", None)
+        return
+    try:
+        plan["chapters"] = chapters.build(
+            bounds, cards=plan.get("storyboard"), segments=plan.get("segments"),
+            beats=(plan.get("story") or {}).get("beats"),
+            total=bounds[-1] if bounds else 0.0, min_gap=config.YT_CHAPTER_MIN_SECONDS)
+        _save_plan(job, plan)
+        if plan["chapters"]:
+            job.add_log(f"{len(plan['chapters'])} chapters for the description")
+        else:
+            job.add_log("too short for YouTube chapters (it needs 3, each at least 10 s); none added")
+    except Exception as e:  # noqa: BLE001 - the description is fine without them
+        job.add_log(f"chapters failed ({e}); the description gets none")
+
+
+def upload_description(plan: dict) -> str:
+    """The description actually uploaded: the SEO text plus the chapter block.
+
+    The chapters go last and are never merged into plan["seo_description"], which has a carefully
+    ordered tail (call to action, then the hashtag line, then any viewer resource - see
+    services/resource.py) and is rewritten wholesale when the resource is regenerated. YouTube
+    scans the whole description for timestamps, so appending costs nothing.
+
+    When the two together overflow the limit, the DESCRIPTION is trimmed rather than the chapters:
+    chapters drive retention and navigation, and the resource is a file in the bundle anyway."""
+    desc = str(plan.get("seo_description") or "")
+    block = chapters.format_block(plan.get("chapters") or [])
+    if not block:
+        return desc[:config.YT_DESCRIPTION_LIMIT]
+    room = config.YT_DESCRIPTION_LIMIT - len(block) - 2
+    if room < 0:
+        return block[:config.YT_DESCRIPTION_LIMIT]
+    return f"{desc[:room].rstrip()}\n\n{block}"
+
+
 def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     """Concat the clips, overlay the story board cards (if enabled) and mix the audio
     for the job's audio mode into final.mp4."""
@@ -917,24 +1149,34 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     clips = [d / c for c in job.clips]
     joined = video.concat_clips(clips, d / "clips_joined.mp4")
     bounds = video.clip_boundaries(clips)
+    _chapters(job, plan, bounds)
     joined = _upscale_joined(job, joined)
-    # Both overlays go into ONE encode: a second full-size libx264 pass costs as much as the
-    # first (~190 s for a 3-minute 4K video) and leaves another copy on disk.
+    # Both overlays and the captions go into ONE encode: a second full-size libx264 pass costs as
+    # much as the first (~190 s for a 3-minute 4K video) and leaves another copy on disk.
+    size = video.frame_size(joined)
+    total = bounds[-1] if bounds else video.duration(joined)
+    hook_end, end_start = _polish_windows(job, total)
     cards, layers = [], []
     if job.storyboard and isinstance(plan.get("storyboard"), list):
         job.set("assembling", "drawing the story board cards")
         try:
-            cards = storyboard.render_all(d, plan, clips, video.frame_size(joined),
+            cards = storyboard.render_all(d, plan, clips, size,
                                           accent=config.STORYBOARD_ACCENT)
-            layers += [{"png": p, "start": s, "end": e} for p, s, e in cards]
+            # a fact card must never share the screen with the hook or the end card
+            cards = storyboard.trim_schedule(cards, [(0.0, hook_end)] if hook_end else [])
+            cards = storyboard.trim_schedule(cards, [(end_start, total)] if end_start < total else [])
+            layers += cards
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"story board overlay failed ({e}); assembling without it")
             cards = []
     page = d / "page.png"
     if job.page_scroll and page.exists():
         try:
-            win = video.scroll_window(bounds[-1] if bounds else video.duration(joined),
-                                      busy=[(s, e) for _, s, e in cards])
+            # the hook and end cards are busy too: the page panel must not open underneath them
+            busy = [(c["start"], c["end"]) for c in cards]
+            busy += ([(0.0, hook_end)] if hook_end else []) + \
+                    ([(end_start, total)] if end_start < total else [])
+            win = video.scroll_window(total, busy=busy)
             if win:
                 # first in the list = composited first = the fact cards draw on top of it
                 layers.insert(0, video.scroll_layer(joined, page, win[0], win[1],
@@ -944,28 +1186,47 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
                 job.add_log("video too short for the page overlay; skipped")
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"page scroll overlay failed ({e}); assembling without it")
+    # last in the list = composited last = on top of the cards and the page panel
+    polish, hits = _polish_layers(job, plan, size, total, hook_end, end_start)
+    layers += polish
+    hits += [c["start"] for c in cards]
+    ass = _caption_track(job, plan, size, cards, total)
     source = joined
-    if layers:
-        job.set("assembling", f"overlaying {len(layers)} layers")
+    if layers or ass is not None:
+        job.set("assembling", f"overlaying {len(layers)} layers"
+                + (" and the captions" if ass is not None else ""))
         try:
-            source = video.composite(joined, layers, d / "clips_overlay.mp4")
+            source = video.composite(joined, layers, d / "clips_overlay.mp4", subtitles=ass)
             job.add_log(f"overlays: {len(cards)} story board cards"
-                        + (" + page scroll" if len(layers) > len(cards) else ""))
+                        + (" + page scroll" if len(layers) > len(cards) else "")
+                        + (" + captions" if ass is not None else ""))
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
-            job.add_log(f"overlay failed ({e}); assembling without it")
-            source = joined
+            if ass is not None:
+                # subtitles_ok() already caught a missing libass and a malformed file, so this is
+                # a last resort rather than a routine cost
+                job.add_log(f"overlay failed ({e}); retrying without the captions")
+                try:
+                    source = video.composite(joined, layers, d / "clips_overlay.mp4")
+                except Exception as e2:  # noqa: BLE001
+                    job.add_log(f"overlay failed ({e2}); assembling without it")
+                    source = joined
+            else:
+                job.add_log(f"overlay failed ({e}); assembling without it")
+                source = joined
     job.set("assembling", "mixing audio")
+    hit_track = _sfx_track(job, hits, total)
+    fx = {"sfx": hit_track, "sfx_volume": config.SFX_VOLUME} if hit_track else {}
     mode = job.audio_mode or "narration+music"
     if mode == "music":
         return video.mix_audio(source, d / "final.mp4", music=music_file,
-                               music_volume=1.0, clip_volume=0)
+                               music_volume=1.0, clip_volume=0, **fx)
     if mode == "narration+music":
         # the clips' own sound is dropped by default: voice + music + per-clip effects clash
         clip_vol = config.CLIP_AUDIO_VOLUME if config.CLIP_AUDIO_WITH_MUSIC else 0
         return video.mix_audio(source, d / "final.mp4", narration=narration_file,
-                               music=music_file, clip_volume=clip_vol, clip_boundaries=bounds)
+                               music=music_file, clip_volume=clip_vol, clip_boundaries=bounds, **fx)
     return video.mix_audio(source, d / "final.mp4", narration=narration_file,
-                           clip_boundaries=bounds)
+                           clip_boundaries=bounds, **fx)
 
 
 def _do_assemble(job: Job):
@@ -976,6 +1237,9 @@ def _do_assemble(job: Job):
     plan = _load_plan(job)
     if job.storyboard and not storyboard.assets_ready(d, plan):
         _storyboard_assets(job, plan, len(job.clips))
+        job.set("assembling", "re-merging clips and mixing audio")
+    if job.captions and not plan.get("caption_words"):
+        _caption_assets(job, plan)
         job.set("assembling", "re-merging clips and mixing audio")
     music_file = d / "music.mp3" if (d / "music.mp3").exists() else None
     narration_file = d / "narration.wav" if (d / "narration.wav").exists() else None
@@ -1381,8 +1645,9 @@ def _run(job: Job):
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
     job.add_log(f"{n} scenes written, one per audio segment")
 
-    # 5. thumbnail: LLM prompt -> single-frame render -> 1280x720 JPG (non-fatal)
-    thumb = d / "thumbnail.jpg"
+    # 5. thumbnail: LLM prompt -> single-frame render -> 1280x720 JPG (non-fatal), then the text
+    # variants drawn over copies of it
+    thumb = d / "thumb_base.jpg"
     if thumb.exists() and thumb.stat().st_size > 1000:
         job.add_log("resume: reusing thumbnail")
     else:
@@ -1403,6 +1668,7 @@ def _run(job: Job):
             raise
         except Exception as e:  # noqa: BLE001
             job.add_log(f"thumbnail generation failed ({e}); continuing without it")
+    _thumb_variants(job, plan)
 
     # 6. secondary music track (narration+music mode only; non-fatal; reused on resume)
     if mode == "narration+music" and (d / "music.mp3").exists() and (d / "music.mp3").stat().st_size > 1000:
@@ -1437,6 +1703,10 @@ def _run(job: Job):
         _storyboard_assets(job, plan, n)
     elif job.storyboard:
         job.add_log("resume: reusing story board assets")
+
+    # 6c. caption word timings (before the clips, so a failure surfaces early; non-fatal)
+    if job.captions:
+        _caption_assets(job, plan)
 
     # 7. clips
     mp = job.megapixels if job.megapixels is not None else config.DEFAULT_MEGAPIXELS
@@ -1582,18 +1852,26 @@ class JobManager:
     @staticmethod
     def _resolve_choices(aspect_ratio: str, art_style: str, video_length: str,
                          audio_mode: str, voice_id: str, channel: dict | None,
-                         storyboard_flag=None, megapixels=None, resolution=None, song_voice: str = ""):
+                         storyboard_flag=None, megapixels=None, resolution=None, song_voice: str = "",
+                         captions_flag=None, polish_flag=None):
         """Per-video choices: request value -> channel default -> global default; validated.
         Megapixels and the output resolution have no channel level: request value -> Settings default.
         Real/tech-video channels always use the built-in live-action look (art_style stays "");
-        the story board overlay defaults to the channel setting (on for tech channels)."""
+        the story board overlay and the burned-in captions default to the channel setting (both on
+        for tech channels)."""
         ch = channel or {}
         defaults = ch.get("defaults") or {}
-        if storyboard_flag is None:
-            storyboard_flag = defaults.get("storyboard")
-            if storyboard_flag is None:
-                storyboard_flag = ch.get("video_type") == "tech"
-        storyboard_flag = bool(storyboard_flag)
+
+        def _flag(given, key):
+            if given is None:
+                given = defaults.get(key)
+                if given is None:
+                    given = ch.get("video_type") == "tech"
+            return bool(given)
+
+        storyboard_flag = _flag(storyboard_flag, "storyboard")
+        captions_flag = _flag(captions_flag, "captions")
+        polish_flag = _flag(polish_flag, "polish")
         audio_mode = audio_mode or defaults.get("audio_mode") or config.AUDIO_MODE
         if audio_mode not in config.AUDIO_MODES:
             raise ValueError(f"unsupported audio mode: {audio_mode}")
@@ -1628,23 +1906,27 @@ class JobManager:
         if video_length not in config.VIDEO_LENGTHS:
             raise ValueError(f"unsupported video length: {video_length}")
         snap = channels.snapshot(ch) if ch.get("id") else {}
+        # captions sits beside storyboard, NOT at the end: callers and tests index [-1] for the
+        # output resolution
         return (aspect_ratio, art_style, video_length, audio_mode, voice_id, song_voice, ch.get("id", ""), snap,
-                storyboard_flag, mp, resolution)
+                storyboard_flag, captions_flag, polish_flag, mp, resolution)
 
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
-               lyrics: str = "", music_upload_id: str = "", video_mode: str = "") -> Job:
+               lyrics: str = "", music_upload_id: str = "", video_mode: str = "",
+               captions_flag=None, polish_flag=None) -> Job:
         video_mode = resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
         if video_mode == "story":
             # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
             # and a kids channel usually defaults to music - the narrator would lose their voice
             audio_mode, storyboard_flag = "narration+music", False
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels, resolution, song_voice)
+                                  storyboard_flag, megapixels, resolution, song_voice, captions_flag,
+                                  polish_flag)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -1652,7 +1934,8 @@ class JobManager:
         job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6], url=url.strip(),
                   aspect_ratio=aspect_ratio, megapixels=mp, resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
-                  storyboard=sb, lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
+                  storyboard=sb, captions=cap, polish=pol, lyrics=lyrics,
+                  owner=owner or (channel or {}).get("owner", ""),
                   video_mode=video_mode,
                   status="drafting" if video_mode == "story" else "queued",
                   detail="writing the story with the LLM" if video_mode == "story" else "",
@@ -1763,7 +2046,7 @@ class JobManager:
                       owner: str = "", resolution: str = "", song_voice: str = "",
                       start: bool = True, title: str = "", plan: dict | None = None,
                       page_scroll=None, lyrics: str = "", music_upload_id: str = "",
-                      video_mode: str = "") -> Job:
+                      video_mode: str = "", captions_flag=None, polish_flag=None) -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -1782,9 +2065,10 @@ class JobManager:
         video_mode = resolve_video_mode(video_mode, channel, source_kind, lyrics, music_upload_id)
         if video_mode == "story":       # see the note in submit(): forced before the resolve
             audio_mode, storyboard_flag = "narration+music", False
-        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, mp, res = \
+        aspect_ratio, art_style, video_length, audio_mode, voice_id, sv, cid, snap, sb, cap, pol, mp, res = \
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
-                                  storyboard_flag, megapixels, resolution, song_voice)
+                                  storyboard_flag, megapixels, resolution, song_voice, captions_flag,
+                                  polish_flag)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -1823,7 +2107,8 @@ class JobManager:
                       video_length: str = "", audio_mode: str = "", voice_id: str = "",
                       storyboard_flag=None, megapixels=None, resolution: str = "",
                       song_voice: str = "", lyrics: str = "",
-                      music_upload_id: str = "", video_mode: str = "") -> Job:
+                      music_upload_id: str = "", video_mode: str = "", captions_flag=None,
+                      polish_flag=None) -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -1841,16 +2126,17 @@ class JobManager:
                   "defaults": {"aspect_ratio": job.aspect_ratio, "art_style": job.art_style,
                                "video_length": job.video_length, "audio_mode": job.audio_mode,
                                "song_voice": job.song_voice, "storyboard": job.storyboard,
+                               "captions": job.captions, "polish": job.polish,
                                "voice_id": job.voice_id, "video_mode": job.video_mode}}
             # resolved against the snapshot frozen at plan time, exactly as the lyrics are below
             vmode = resolve_video_mode(video_mode or job.video_mode, ch, job.source,
                                         lyrics, music_upload_id)
             if vmode == "story":        # see the note in submit(): forced before the resolve
                 audio_mode, storyboard_flag = "narration+music", False
-            ar, style, vlen, mode, voice, sv, _cid, _snap, sb, mp, res = self._resolve_choices(
+            ar, style, vlen, mode, voice, sv, _cid, _snap, sb, cap, pol, mp, res = self._resolve_choices(
                 aspect_ratio, art_style, video_length, audio_mode, voice_id, ch, storyboard_flag,
                 megapixels if megapixels not in (None, "", 0) else job.megapixels,
-                resolution or job.resolution, song_voice)
+                resolution or job.resolution, song_voice, captions_flag, polish_flag)
             # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
             # lyrics are the one field a blank does NOT inherit from the job: an empty box means
             # the user cleared it (and switching to a voiceover clears it in the form too)
@@ -1865,7 +2151,9 @@ class JobManager:
                     "writing the story with the LLM" if vmode == "story" else "writing script with the LLM",
                     aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
-                    storyboard=sb, megapixels=mp, resolution=res, lyrics=words, setup_done=True,
+                    storyboard=sb, captions=cap, polish=pol, megapixels=mp, resolution=res,
+                    lyrics=words,
+                    setup_done=True,
                     video_mode=vmode,
                     music_upload=(up or {}).get("name", ""),
                     music_seconds=float((up or {}).get("seconds", 0.0)))
@@ -2069,19 +2357,28 @@ class JobManager:
         try:
             plan = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
             title = plan.get("seo_title") or plan.get("title") or job.title
-            desc = plan.get("seo_description", "")
+            desc = upload_description(plan)
+            cat = (config.YT_CATEGORY_BY_TYPE.get((job.channel or {}).get("video_type", ""))
+                   or config.YT_CATEGORY_ID)
+            tags = youtube.clean_tags(plan.get("seo_keywords") or [], title,
+                                      max_tags=config.YT_MAX_TAGS) if config.YT_MAX_TAGS else []
             token_file = channels.token_path(job.channel_id) if job.channel_id else config.YT_TOKEN_FILE
             made_for_kids = job.channel.get("made_for_kids",
                                             job.channel.get("audience") == "kids") \
                 if job.channel else config.YT_MADE_FOR_KIDS
             target = f' to "{job.channel["name"]}"' if job.channel.get("name") else ""
             job.add_log(f"YouTube upload started{target}")
-            vid, thumb_err = youtube.upload(
+            vid, thumb_err, tag_err = youtube.upload(
                 job.dir / "final.mp4", job.dir / "thumbnail.jpg", title, desc,
                 config.YT_PRIVACY, made_for_kids,
-                on_progress=lambda p: job.set(yt_progress=p), token_file=token_file)
+                on_progress=lambda p: job.set(yt_progress=p), token_file=token_file,
+                tags=tags, category_id=cat)
             job.set(yt_status="uploaded", yt_progress=100, yt_video_id=vid)
             job.add_log(f"uploaded to YouTube ({config.YT_PRIVACY}): https://youtu.be/{vid}")
+            job.add_log(f"filed under {config.YT_CATEGORIES.get(cat, cat)}, {len(tags)} tags, "
+                        f"{len(plan.get('chapters') or [])} chapters")
+            if tag_err:
+                job.add_log(f"note: tags rejected by YouTube ({tag_err[:100]}); uploaded without them")
             if thumb_err:
                 job.add_log(f"note: custom thumbnail not set ({thumb_err[:100]})")
             else:
@@ -2146,12 +2443,30 @@ class JobManager:
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             job.set("thumbnail", "rendering the new thumbnail")
-            tw, th = _render_thumbnail(job, plan, d / "thumbnail.jpg", on_progress=_progress(job, "thumbnail"))
+            tw, th = _render_thumbnail(job, plan, d / "thumb_base.jpg", on_progress=_progress(job, "thumbnail"))
+            _thumb_variants(job, plan, select=thumbtext.AUTO)   # a fresh concept, a fresh best line
+            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("done", "thumbnail regenerated")
             job.add_log(f"thumbnail regenerated ({tw}x{th})")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"thumbnail regeneration failed: {e}")
             job.set("done", f"thumbnail regeneration failed: {e}")
+
+    def set_thumbnail(self, job_id: str, variant=None, texts=None) -> Job:
+        """Pick which thumbnail the video ships with, and/or replace the overlay lines.
+
+        Pillow only - three draws on a 1280x720 JPG - so it runs inline rather than in a thread or
+        the GPU queue."""
+        with self.lock:
+            job = self._maintenance_target(job_id)
+        d = job.dir
+        plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
+        if texts is not None:
+            plan["thumbnail_texts"] = [thumbtext.normalize(t) for t in texts if str(t).strip()]
+        _thumb_variants(job, plan, select=variant)
+        (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        job.add_log(f"thumbnail variant {job.thumb_variant or 'none (plain render)'}")
+        return job
 
     def _maintenance_target(self, job_id: str):
         job = self.jobs.get(job_id)

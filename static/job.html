@@ -134,6 +134,8 @@
       </div>
     </div>
     <label class="switch" id="suSbLabel" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
+    <label class="switch" id="suCapLabel" style="margin-top:12px"><input type="checkbox" id="suCap"><span class="track"></span> Burn in captions</label>
+    <label class="switch" id="suPolLabel" style="margin-top:12px"><input type="checkbox" id="suPol"><span class="track"></span> Hook card, end card &amp; progress bar</label>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="startBtn">Start video generation</button>
     </div>
@@ -239,6 +241,10 @@
   <section class="card" id="thumbSec" hidden>
     <h2>Thumbnail <span class="count">(matches the video aspect, ready for YouTube)</span></h2>
     <img id="thumbImg" alt="thumbnail" style="max-width:480px;width:100%;border-radius:8px;display:block">
+    <div id="thumbVars" hidden style="margin-top:12px">
+      <div class="hint" style="margin-bottom:6px">Pick the one that gets the click — same picture, different line. Switching is instant.</div>
+      <div class="row" id="thumbVarRow" style="flex-wrap:wrap;gap:8px"></div>
+    </div>
     <div class="row" style="margin-top:12px">
       <a class="btn secondary sm" id="thumbDl">Download thumbnail</a>
       <button class="btn sm" id="thumbRegen" hidden>Regenerate thumbnail</button>
@@ -413,12 +419,42 @@ async function loadDetails(j) {
       renderScenes(d.plan.scenes, d.plan.timed_segments, d.plan.lyric_align);
     }
     renderStoryboard(d.plan.storyboard, j);
+    renderThumbVariants(d.plan.thumbnail_variants, j);
   }
   $("#logText").textContent = (d.log || []).join("\n");
 }
 
 let lastJob = null;
 let castFromPlan = false;   // once the plan names this video's cast, the roster fallback stops overwriting it
+
+function renderThumbVariants(variants, j) {
+  const recs = Array.isArray(variants) ? variants : [];
+  const files = new Set(j.files || []);
+  const live = recs.filter(r => files.has(r.file));
+  $("#thumbVars").hidden = !(live.length && j.status === "done");
+  if ($("#thumbVars").hidden) return;
+  const active = j.thumb_variant;
+  // 0 is a real choice ("no text"), not just the absence of one
+  const opts = [{ k: 0, text: "No text", file: "thumb_base.jpg" }]
+    .concat(live.map(r => ({ k: recs.indexOf(r) + 1, text: r.text, file: r.file })));
+  $("#thumbVarRow").innerHTML = opts.map(o => `
+    <button class="btn ${o.k === active ? "" : "secondary"} sm" data-variant="${o.k}"
+            title="${esc(o.text)}" style="display:flex;flex-direction:column;gap:4px;padding:6px">
+      <img src="${F(o.file)}?v=${j.updated}" alt="" style="width:132px;border-radius:4px;display:block">
+      <span style="font-size:11px;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.text)}</span>
+    </button>`).join("");
+  for (const b of $("#thumbVarRow").querySelectorAll("button[data-variant]")) {
+    b.onclick = async () => {
+      try {
+        await api(`/jobs/${jobId}/thumbnail`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ variant: Number(b.dataset.variant) }) });
+        detailsStamp = null;      // force the next poll to re-read the plan
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+  }
+}
 
 function renderStoryboard(cards, j) {
   const show = Array.isArray(cards) && cards.length && (j.storyboard || (j.files || []).some(f => f.startsWith("card_")));
@@ -656,10 +692,13 @@ function update(j) {
     $("#audioSec").hidden = false;
     $("#narrAudio").src = F("narration.wav");
   }
-  if ((j.files || []).includes("thumbnail.jpg") && !thumbShown) {
-    thumbShown = true;
+  if ((j.files || []).includes("thumbnail.jpg")) {
+    // re-rendered whenever the job changes, not once: switching variant rewrites thumbnail.jpg
     $("#thumbSec").hidden = false;
-    $("#thumbImg").src = `${F("thumbnail.jpg")}?v=${j.updated}`;
+    if (!thumbShown || thumbShown !== j.updated) {
+      thumbShown = j.updated;
+      $("#thumbImg").src = `${F("thumbnail.jpg")}?v=${j.updated}`;
+    }
     $("#thumbDl").href = `/jobs/${jobId}/download/thumbnail`;
   }
   $("#thumbRegen").hidden = j.status !== "done";
@@ -894,6 +933,8 @@ async function fillSetup(j) {
     opt(m, (o.video_mode_labels || {})[m] || m)).join("");
   $("#suVmode").value = j.video_mode || "song";
   $("#suSb").checked = !!j.storyboard;
+  $("#suCap").checked = !!j.captions;
+  $("#suPol").checked = !!j.polish;
   // the channel may have been deleted since the plan was made: use the job's frozen snapshot
   const vt = (j.channel && j.channel.video_type) || "";
   $("#suStyleBlock").hidden = (o.realistic_video_types || ["real", "tech"]).includes(vt);
@@ -1017,7 +1058,9 @@ $("#startBtn").onclick = async () => {
         voice_id: (!suStoryOn() && $("#suAudio").value === "music") ? "" : $("#suVoice").value,
         lyrics: suLyricsOn() ? $("#suLyrics").value.trim() : "",
         music_upload_id: suMusicOn() ? suMusicUp.id : "",
-        storyboard: $("#suSb").checked }) });
+        storyboard: $("#suSb").checked,
+        captions: $("#suCap").checked,
+        polish: $("#suPol").checked }) });
     toast("Video started - the script is being written");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }

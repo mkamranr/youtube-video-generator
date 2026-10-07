@@ -7,8 +7,12 @@ import config
 from services.ffbin import ffmpeg, ffprobe
 
 
-def _run(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
+def _run(cmd, cwd=None):
+    """Run an ffmpeg command. `cwd` exists for the subtitle filter: inside a filtergraph argument
+    '\\' escapes and ':' separates options, so a Windows path like C:\\jobs\\captions.ass cannot be
+    written literally. Running from the job folder lets the filter name the bare file instead,
+    which needs no escaping and behaves the same on Windows and Linux."""
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=(str(cwd) if cwd else None))
     if r.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {' '.join(map(str, cmd))}\n{r.stderr[-2000:]}")
     return r
@@ -161,53 +165,114 @@ def _even(v) -> int:
     return max(2, int(round(float(v) / 2)) * 2)
 
 
-def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5) -> Path:
+def _pos(v) -> str:
+    """An overlay x/y: a plain integer, or an ffmpeg per-frame expression given as a string.
+
+    Expressions are single-quoted so their commas do not split the filtergraph - the same trick
+    scroll_layer uses for crop's y, and safe for the same reason (_run passes a list and never
+    goes through a shell). An expression must not contain ':' or '[' / ']'."""
+    if isinstance(v, str):
+        return v if v.startswith("'") else f"'{v}'"
+    return str(int(v))
+
+
+def subtitles_ok(ass_path) -> bool:
+    """Can this ffmpeg build burn this subtitle file? A ~50 ms render of a 64x64 colour source.
+
+    Cheap insurance: libass is a build option, and finding out it is missing AFTER a 190-second 4K
+    encode would throw the whole encode away. This turns that into a logged skip."""
+    p = Path(ass_path)
+    try:
+        _run([ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+              "-vf", f"subtitles={p.name}", "-frames:v", "1", "-f", "null", "-"], cwd=p.parent)
+        return True
+    except RuntimeError:
+        return False
+
+
+def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subtitles=None) -> Path:
     """Composite timed RGBA image layers over the video in ONE encode.
 
-    layers: [{png, start, end, x, y, pre}] - `pre` is extra filter steps applied to the image
+    layers: [{png, start, end, x, y, pre, fade}] - `pre` is extra filter steps applied to the image
     stream before the alpha fades (the scrolling panel uses it for its scale+crop); x/y default
-    to 0, which is the full-frame story-board card case. The audio is copied as is.
+    to 0, which is the full-frame story-board card case, and may each be an ffmpeg per-frame
+    expression (a string) instead of a number - that is how a story board card eases into place
+    without a second pass. The audio is copied as is.
+
+    subtitles: an .ass file burned in as the LAST filter, so captions always sit on top. One filter
+    and no extra input, which is why captions are a subtitle track rather than a PNG per phrase: a
+    3-minute video is 60-120 phrases, and a full-frame RGBA PNG at 4K is ~33 MB decoded.
 
     One pass matters: at 4K a libx264 re-encode of a 3-minute video costs about 190 s, so a
     second overlay stage would nearly double the assembly time and leave another full-size
     intermediate on disk."""
     out_mp4 = Path(out_mp4)
     layers = [dict(lyr) for lyr in layers if float(lyr["end"]) > float(lyr["start"])]
-    if not layers:
+    if not layers and subtitles is None:
         _run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-c", "copy", str(out_mp4)])
         return out_mp4
-    total = duration(video) or max(float(lyr["end"]) for lyr in layers)
+    total = duration(video) or (max(float(lyr["end"]) for lyr in layers) if layers else 0.0)
+    if total <= 0:
+        raise RuntimeError("could not read the video duration")
     rate = fps(video)
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video)]
     parts, prev = [], "[0:v]"
     for i, lyr in enumerate(layers, 1):
         start, end = float(lyr["start"]), min(float(lyr["end"]), total)
-        f = max(0.05, min(fade, (end - start) / 2))
+        f = max(0.05, min(float(lyr.get("fade", fade)), (end - start) / 2))
         pre = lyr.get("pre") or ""
-        x, y = int(lyr.get("x", 0)), int(lyr.get("y", 0))
+        x, y = _pos(lyr.get("x", 0)), _pos(lyr.get("y", 0))
         # -framerate: a looped image decodes at 25 fps by default, which makes a moving crop
         # step in 25 Hz jumps no matter what the video itself runs at
         cmd += ["-loop", "1", "-framerate", f"{rate:.4f}", "-t", f"{total:.3f}",
                 "-i", str(Path(lyr["png"]))]
         parts.append(f"[{i}:v]format=rgba{pre},fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
                      f"fade=t=out:st={end - f:.3f}:d={f:.3f}:alpha=1[c{i}]")
-        parts.append(f"{prev}[c{i}]overlay={x}:{y}:enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
+        parts.append(f"{prev}[c{i}]overlay={x}:{y}:eval=frame:"
+                     f"enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
         prev = f"[v{i}]"
+    if subtitles is not None:
+        parts.append(f"{prev}subtitles={Path(subtitles).name}[vsub]")
+        prev = "[vsub]"
     cmd += ["-filter_complex", ";".join(parts), "-map", prev,
             "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
     if has_audio(video):
         cmd += ["-map", "0:a", "-c:a", "copy"]
     cmd += ["-t", f"{total:.3f}", str(out_mp4)]
-    _run(cmd)
+    # every other path in the command is absolute, so running from the subtitle file's folder
+    # changes nothing except letting the filter name it without escaping (see _run)
+    _run(cmd, cwd=Path(subtitles).parent if subtitles is not None else None)
     return out_mp4
 
 
-def overlay_cards(video: Path, cards: list, out_mp4: Path, fade: float = 0.5) -> Path:
-    """Composite timed full-frame RGBA cards over the video.
+def progress_layers(size: tuple, total: float, out_dir, color: str = "#e9a13b",
+                    height_pct: float = 0.6, alpha: int = 235, track_alpha: int = 55) -> list:
+    """Two composite layers: a dim full-width track and a bar that fills left to right.
 
-    cards: [(png_path, start_s, end_s), ...] - each PNG must match the video frame size."""
-    return composite(video, [{"png": p, "start": s, "end": e} for p, s, e in cards],
-                     out_mp4, fade=fade)
+    The bar is ONE static full-width PNG moved by the overlay x expression - its left edge
+    crossing the frame IS the progress. The obvious alternative, a crop that widens per frame,
+    does not work: that changes the overlay input's frame size mid-stream, which overlay rejects."""
+    from PIL import Image
+
+    W, H = int(size[0]), int(size[1])
+    total = float(total or 0.0)
+    h = max(2, _even(H * height_pct / 100.0))
+    if total <= 0 or h <= 0:
+        return []
+    c = (color or "#e9a13b").lstrip("#")
+    try:
+        rgb = (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
+    except ValueError:
+        rgb = (233, 161, 59)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    track = out_dir / "progress_track.png"
+    bar = out_dir / "progress_bar.png"
+    Image.new("RGBA", (W, h), rgb + (track_alpha,)).save(track)
+    Image.new("RGBA", (W, h), rgb + (alpha,)).save(bar)
+    return [{"png": track, "start": 0.0, "end": total, "x": 0, "y": H - h, "fade": 0.3},
+            {"png": bar, "start": 0.0, "end": total, "y": H - h, "fade": 0.3,
+             "x": f"-{W}+{W}*clip(t/{total:.3f},0,1)"}]
 
 
 SCROLL_PANEL = 0.70       # picture-in-picture panel: this much of each frame dimension, centred
@@ -287,7 +352,7 @@ def _dip_expr(boundaries: list, width: float = 0.35) -> str:
 def mix_audio(video: Path, out_mp4: Path, narration: Path | None = None,
               music: Path | None = None, clip_volume: float | None = None,
               music_volume: float | None = None, clip_boundaries: list | None = None,
-              duck: bool = True) -> Path:
+              duck: bool = True, sfx: Path | None = None, sfx_volume: float = 0.0) -> Path:
     """Mix any of: narration (full volume), music, clip ambience - over the video.
 
     - clip_volume=0 drops the clips' own audio; when kept, it is dipped to silence around
@@ -295,7 +360,11 @@ def mix_audio(video: Path, out_mp4: Path, narration: Path | None = None,
     - music shorter than the video is looped with a cross-fade, and always fades out at the end;
       music_volume=1.0 plays it at full level.
     - with a narration, music and ambience are side-chain ducked while the voice speaks (duck=True).
-    - the result is trimmed to the video length and soft-limited to avoid clipping."""
+    - sfx is a full-length track of card whooshes, mixed in WITHOUT ducking (see below).
+    - the result is trimmed to the video length, loudness-normalised and soft-limited.
+
+    loudnorm matters more than it looks: YouTube normalises everything to about -14 LUFS, so an
+    un-normalised mix is played several dB quiet, which reads as amateur before a word is heard."""
     clip_volume = config.CLIP_AUDIO_VOLUME if clip_volume is None else clip_volume
     music_volume = config.MUSIC_VOLUME if music_volume is None else music_volume
     out_mp4 = Path(out_mp4)
@@ -340,6 +409,14 @@ def mix_audio(video: Path, out_mp4: Path, narration: Path | None = None,
         dip = _dip_expr(clip_boundaries or []) if clip_boundaries else "1"
         chains.append(f"[0:a]volume={clip_volume},volume='{dip}':eval=frame,{pad}[bg0]")
         ducked.append(("[bg0]", "[bg]"))
+    if sfx is not None and Path(sfx).exists() and sfx_volume > 0:
+        cmd += ["-i", str(sfx)]
+        chains.append(f"[{idx}:a]volume={sfx_volume},{pad}[sx]")
+        idx += 1
+        # deliberately NOT in `ducked`: the whoosh exists to mark a card appearing WHILE the
+        # narrator is talking, so side-chaining it under the voice would delete exactly the hits
+        # it is there for
+        layers.append("[sx]")
 
     if narration is not None:
         n_copies = 1 + (len(ducked) if duck else 0)
@@ -358,11 +435,12 @@ def mix_audio(video: Path, out_mp4: Path, narration: Path | None = None,
     if not layers:  # no audio at all: keep the video silent
         _run([ffmpeg(), "-y", "-v", "error", "-i", str(video), "-c:v", "copy", "-an", str(out_mp4)])
         return out_mp4
+    norm = f"loudnorm=I={config.LOUDNESS_LUFS}:TP=-1.5:LRA=11," if config.LOUDNESS_LUFS else ""
     if len(layers) == 1:
-        chains.append(f"{layers[0]}alimiter=limit=0.97:level=0[a]")
+        chains.append(f"{layers[0]}{norm}alimiter=limit=0.97:level=0[a]")
     else:
         chains.append("".join(layers) + f"amix=inputs={len(layers)}:duration=longest:"
-                      f"dropout_transition=0:normalize=0,alimiter=limit=0.97:level=0[a]")
+                      f"dropout_transition=0:normalize=0,{norm}alimiter=limit=0.97:level=0[a]")
     cmd += ["-filter_complex", ";".join(chains), "-map", "0:v", "-map", "[a]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", str(out_mp4)]
     _run(cmd)

@@ -48,11 +48,26 @@ services/
                        download with node auto-detection, targeted interrupt, server-side scrubbing
   video.py             ffmpeg helpers: last-frame extraction, thumbnail crop (1280x720), clip concat,
                        lanczos upscale to the job's output resolution (1080p/2K/4K, before the cards
-                       are drawn so they render at the final size), timed RGBA card overlays, N-way audio mix (narration / ambience / music) with
+                       are drawn so they render at the final size), timed RGBA card overlays whose
+                       position may be a per-frame expression (card entry motion, still one encode),
+                       N-way audio mix (narration / ambience / music) with
                        side-chain ducking, music looping/fade-out and clip-cut ambience dips
   storyboard.py        Story board overlay: LLM card planning (via llm.py), related-image rendering
-                       through ComfyUI, Pillow card drawing (landscape/portrait/square layouts), schedule
-                       aligned to the real clip cut points
+                       through ComfyUI, the card-drawing dispatch and the shared Pillow primitives
+                       (fonts, wrapping, shadows, rounded images), schedule aligned to the real clip
+                       cut points, and the one-time freeze of each card's layout
+  cardtemplates.py     The eight card layouts in four families, the content rules that choose a
+                       family and the seeded pick that chooses the variant inside it; also the
+                       full-screen hook and end cards
+  captions.py          Burned-in captions: word timings (whisper for a voiceover, derived for a
+                       story, reused for a song), grouping into on-screen phrases, and the .ass
+                       track libass burns in the same encode as the overlays
+  chapters.py          Clip cut points + story board headlines -> a YouTube chapter list, or [] when
+                       the video cannot satisfy YouTube's rules (3+, first at 0:00, each 10 s+)
+  thumbtext.py         The punchy line drawn over the generated thumbnail, in three treatments;
+                       the active one is copied to thumbnail.jpg
+  sfx.py               The card whoosh, synthesized once with ffmpeg and cached, laid out on one
+                       full-length track so the mix gains a single input however many cards appear
   ffbin.py             Locates modern ffmpeg/ffprobe (static-ffmpeg bundle, env override, PATH fallback)
   users.py             Login accounts (users/users.json): username, role, scrypt password hash;
                        last-admin guards
@@ -87,7 +102,7 @@ Statuses: `queued → transcript → planning → [music | tts] → scenes → t
 - Clips: clip 1 uses the T2V workflow; clips 2..N use the first-frame workflow seeded with the previous clip's last frame (ffmpeg extraction → ComfyUI image upload), giving visual continuity.
 - **Cast** (`services/cast.py`, per-channel `cast` list and `rules` text frozen onto the job's channel snapshot): the channel's style & rules text and the character sheet are appended to the LLM system prompt (`llm._system(channel, used, rules)`). While the script is written the sheet lists the whole roster and asks the writer to pick only the characters the story needs (names found in the user's topic/description are mandatory, `llm._cast_selection_rule`; the writer also reports its choice as `characters`). `pipeline._set_cast_used` then stores `plan["cast_used"]` — every roster name found in the final title/narration in first-mention order (case-sensitive, so "a penny" is not Penny), plus the reported choice when the text names nobody or is a verbatim transcript — and recomputes it when the user approves an edited script. Every later call — scenes, both review passes, thumbnail, story board, SEO, music — gets `used=cast_used`, so only those characters' looks are resent (SEO and music skip the rules text). At render time `cast.with_prefix(..., only=cast_used)` prepends each named character's canonical look to the clip, thumbnail and story board image prompts, independent of how the LLM phrased the scene. When `cast_opening` is on and the first character of `cast_used` with an approved portrait exists (`channels/<id>_cast_<char>.png`), `_run` fits it to the job's aspect (`cast_opening.jpg`, resumable), `write_scenes` is told scene 1 starts from that image, and `_generate_clip` renders clip 1 through the first-frame workflow seeded with it — the video opens on the real character and the chain of last frames carries it forward. `services/bible.py` turns a pasted markdown character bible into cast entries and the rules text (Settings page → `POST /api/channels/parse-bible`, merged client-side, saved with the channel).
 - **Story board** (optional, `job.storyboard`, default on for `tech` channels): before the clips, the LLM plans the cards (`plan.json["storyboard"]`: clip range, kicker, headline, body, optional image prompt) and ComfyUI renders each requested related image as a 5-frame clip whose first frame is cropped to `sbimg_NN.jpg` (capped by `STORYBOARD_MAX_IMAGES`); the picture's shape follows the video orientation (`storyboard.image_spec`: square for portrait videos, 4:3 for square, 16:9 for landscape), and the card layout uses the same ratio for its picture slot, so older 16:9 images are simply cover-cropped. Both are resumable artifacts; failures degrade to text-only cards or to no overlay, never to a failed job.
-- Assembly: ffmpeg concat (stream-copy with re-encode fallback); with the story board on, the cards are drawn with Pillow at the real frame size (`card_NN.png`) and composited with alpha fades over `clips_joined.mp4` → `clips_cards.mp4`, each card timed to the measured clip cut points (0.35 s inset); then the filtergraph audio mix; video length ≈ audio length (count is the ceiling of the audio duration).
+- Assembly: ffmpeg concat (stream-copy with re-encode fallback); with the story board on, the cards are drawn with Pillow at the real frame size (`card_NN.png`) — each in the layout frozen in `plan.json["storyboard"][i]["template"]` — and composited with alpha fades over `clips_joined.mp4` → `clips_overlay.mp4`, each card timed to the measured clip cut points (0.35 s inset) and eased into place with a per-frame `overlay` position; then, in that SAME encode, the hook / end / progress-bar layers and the `captions.ass` subtitle track burned by libass; then the filtergraph audio mix (narration, music, ambience, the card whoosh un-ducked, loudness-normalised); video length ≈ audio length (count is the ceiling of the audio duration).
 
 ## Resume & idempotency
 

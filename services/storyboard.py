@@ -70,11 +70,22 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int, max_lines: int
     lines, cur = [], ""
     for w in words:
         trial = (cur + " " + w).strip()
-        if draw.textlength(trial, font=font) <= max_w or not cur:
+        if draw.textlength(trial, font=font) <= max_w:
             cur = trial
-        else:
+            continue
+        if cur:
             lines.append(cur)
-            cur = w
+            cur = ""
+        # A single word wider than the column (a long compound, a URL, a 40-character model name)
+        # used to be kept whole and drawn straight past the edge - invisible while the only layout
+        # was a wide lower-third panel, obvious in the narrow columns of the split and stat cards.
+        while len(w) > 1 and draw.textlength(w, font=font) > max_w:
+            k = len(w)
+            while k > 1 and draw.textlength(w[:k], font=font) > max_w:
+                k -= 1
+            lines.append(w[:k])
+            w = w[k:]
+        cur = w
     if cur:
         lines.append(cur)
     if len(lines) > max_lines:
@@ -146,105 +157,39 @@ def _rounded_image(img: Image.Image, size: tuple, radius: int, border: int) -> I
 
 # ---- card rendering --------------------------------------------------------
 def render_card(card: dict, size: tuple, out_png: Path, image: Path | None = None,
-                accent: str | None = None, index: int = 1, total: int = 1) -> Path:
-    """Draw one full-frame transparent card: a lower-third text panel (kicker, headline,
-    body) and, if given, a framed related image. Layout adapts to the frame orientation."""
-    W, H = size
-    accent = accent or config.STORYBOARD_ACCENT
-    portrait, square = H > W * 1.05, abs(W - H) <= W * 0.05
-    # scale unit: 1.0 at 864x480 / 480x864; square frames scale by width (their panel is
-    # only ~56% wide, so the short-side rule would make the text far too large)
-    s = W / 864.0 if square else min(W, H) / 480.0
-    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
+                accent: str | None = None, index: int = 1, total: int = 1,
+                template: str | None = None, boxes: list | None = None) -> Path:
+    """Draw one full-frame transparent card in the named layout and save it as a PNG.
 
-    f_kick = load_font(13 * s, bold=True)
-    f_head = load_font((28 if portrait else 30) * s, bold=True)
-    f_body = load_font((18 if portrait else 19) * s, bold=False)
-    f_num = load_font(12 * s, bold=True)
+    The layouts live in services/cardtemplates.py, one small function each; this is the dispatch
+    plus the two things that must behave identically for all of them: the related image is opened
+    HERE, inside the guard, so "a broken image must not lose the text card" is stated once; and an
+    unknown or retired template name falls back to the classic lower third rather than raising,
+    because plan.json may name a layout a later version dropped.
 
-    m = int((0.06 if portrait else 0.045) * W)
-    gap = int(14 * s)
-    pad = int(18 * s)
-    bar_w = max(3, int(5 * s))
-    radius = int(14 * s)
-    bottom_safe = int(0.14 * H) if portrait else m   # keep clear of the Shorts UI
+    boxes: optional list the templates append their placed rectangles to (the layout tests assert
+    on it - Pillow silently clips at the canvas edge, so an overflowing card still writes a valid
+    PNG and only the intended geometry reveals the bug)."""
+    from services import cardtemplates   # lazy: cardtemplates imports this module
 
-    # geometry of the two blocks; the picture's shape follows the frame orientation
-    _, img_ratio, _, _ = image_spec(W, H)
-    if portrait:
-        panel_w = W - 2 * m
-        img_w = int(0.8 * W)
-    elif square:
-        panel_w = int(0.56 * W)
-        img_w = int(0.34 * W)
-    else:
-        panel_w = int(0.58 * W)
-        img_w = int(0.30 * W)
-    img_h = int(img_w / img_ratio)
-    has_img = image is not None and Path(image).exists()
-
-    # text layout inside the panel
-    text_w = panel_w - 2 * pad - bar_w - int(12 * s)
-    kicker = (card.get("kicker") or "").strip().upper()[:28]
-    head_lines = _wrap(draw, card.get("headline", ""), f_head, text_w, MAX_LINES["headline"])
-    body_lines = _wrap(draw, card.get("body", ""), f_body, text_w, MAX_LINES["body"])
-    lh_head = int(f_head.size * 1.15)
-    lh_body = int(f_body.size * 1.35)
-    y_needed = pad
-    if kicker:
-        y_needed += int(f_kick.size * 1.3) + int(8 * s)
-    y_needed += lh_head * len(head_lines)
-    if body_lines:
-        y_needed += int(8 * s) + lh_body * len(body_lines)
-    panel_h = y_needed + pad
-
-    panel_x = m
-    panel_y = H - bottom_safe - panel_h
-    if portrait:
-        room = panel_y - gap - m          # vertical space between the top margin and the panel
-        if img_h > room > 0:              # shrink the picture rather than overflow the frame
-            img_h = int(room)
-            img_w = int(img_h * img_ratio)
-        img_x, img_y = (W - img_w) // 2, panel_y - gap - img_h
-    else:
-        img_x, img_y = W - m - img_w, H - bottom_safe - img_h
-
-    # panel
-    panel = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
-    pd = ImageDraw.Draw(panel)
-    pd.rounded_rectangle((0, 0, panel_w - 1, panel_h - 1), radius=radius, fill=(12, 14, 20, 196),
-                         outline=(255, 255, 255, 38), width=1)
-    pd.rounded_rectangle((pad, pad, pad + bar_w, panel_h - pad), radius=bar_w // 2, fill=_hex(accent))
-    tx = pad + bar_w + int(12 * s)
-    ty = pad
-    if kicker:
-        _spaced(pd, (tx, ty), kicker, f_kick, _hex(accent), spacing=1.6 * s)
-        num = f"{index:02d} / {total:02d}"
-        nw = pd.textlength(num, font=f_num)
-        pd.text((panel_w - pad - nw, ty + 1), num, font=f_num, fill=(150, 156, 168, 255))
-        ty += int(f_kick.size * 1.3) + int(8 * s)
-    for line in head_lines:
-        pd.text((tx, ty), line, font=f_head, fill=(255, 255, 255, 255))
-        ty += lh_head
-    if body_lines:
-        ty += int(8 * s)
-        for line in body_lines:
-            pd.text((tx, ty), line, font=f_body, fill=(214, 219, 228, 255))
-            ty += lh_body
-    _shadowed(canvas, panel, (panel_x, panel_y), blur=int(10 * s), offset=int(6 * s))
-
-    if has_img:
+    ctx = cardtemplates.context(size, accent, index, total)
+    if boxes is not None:
+        ctx.boxes = boxes
+    img = None
+    if image is not None and Path(image).exists():
         try:
-            img = _rounded_image(Image.open(image), (img_w, img_h), radius=int(12 * s),
-                                 border=max(1, int(2 * s)))
-            _shadowed(canvas, img, (img_x, img_y), blur=int(12 * s), offset=int(8 * s), opacity=180)
+            img = Image.open(image)
+            img.load()
         except Exception as e:  # noqa: BLE001 - a broken image must not lose the text card
             print(f"storyboard image skipped: {e}")
+            img = None
+    draw = cardtemplates.TEMPLATES.get(template or cardtemplates.DEFAULT_TEMPLATE,
+                                       cardtemplates.TEMPLATES[cardtemplates.DEFAULT_TEMPLATE])
+    draw(card, ctx, img)
 
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(out_png, "PNG")
+    ctx.canvas.save(out_png, "PNG")
     return out_png
 
 
@@ -326,7 +271,7 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
     todo = [(i, c) for i, c in enumerate(cards, 1)
             if c.get("image_prompt") and not image_path(d, i).exists()]
     if not todo:
-        return cards
+        return _freeze_templates(cards, job.id, add_log)
     client = comfy.ComfyClient()
     template = client.load_workflow(config.T2V_WORKFLOW)
     # the clips may not exist yet: derive the frame orientation from the job's aspect ratio
@@ -354,14 +299,66 @@ def ensure_assets(job, plan: dict, n: int, on_progress=None, add_log=None, shoul
             c["image_prompt"] = ""
         finally:
             raw.unlink(missing_ok=True)
+    _freeze_templates(cards, job.id, add_log)
     return cards
+
+
+def _freeze_templates(cards: list, seed: str, add_log=None) -> list:
+    """Assign each card its layout, once, and never re-decide it.
+
+    Runs after the image loop so the picks see which images actually rendered (a failed ComfyUI
+    render blanks image_prompt, which moves that card out of the visual family). Key PRESENCE is
+    the guard: render_all runs again on every reassemble - which happens for reasons that have
+    nothing to do with the overlay - and a recomputed pick would let a Settings change silently
+    restyle an already published video."""
+    from services import cardtemplates
+
+    missing = [c for c in cards if isinstance(c, dict) and "template" not in c]
+    if not missing:
+        return cards
+    for c, tpl in zip(cards, cardtemplates.pick_templates(cards, seed)):
+        if isinstance(c, dict):
+            c.setdefault("template", tpl)
+    if add_log:
+        used = sorted({c.get("template") for c in cards if isinstance(c, dict)})
+        add_log(f"story board layouts: {', '.join(t for t in used if t)}")
+    return cards
+
+
+def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0.2) -> list:
+    """Shorten or drop cards so they never share the screen with the hook or the end card.
+
+    Applied after the cards are drawn (the PNGs are already on disk and cost nothing to keep) but
+    before they are handed to composite, so a card squeezed out of existence simply never appears."""
+    out = []
+    for lyr in layers:
+        start, end = float(lyr["start"]), float(lyr["end"])
+        for bs, be in busy or []:
+            bs, be = float(bs) - pad, float(be) + pad
+            if be <= start or bs >= end:
+                continue
+            if bs <= start and be >= end:      # fully covered
+                start = end = 0.0
+                break
+            start = max(start, be) if bs <= start else start
+            end = min(end, bs) if be >= end else end
+        if end - start >= min_dur:
+            out.append(dict(lyr, start=round(start, 3), end=round(end, 3)))
+    return out
 
 
 def render_all(job_dir: Path, plan: dict, clips: list, size: tuple,
                accent: str | None = None) -> list:
-    """Draw every card PNG for the given frame size and return the overlay schedule
-    [(png, start_s, end_s), ...] aligned to the actual clip cut points."""
+    """Draw every card PNG for the given frame size and return the composite layer schedule
+    [{png, start, end, x, y, template}, ...] aligned to the actual clip cut points.
+
+    Each card's layout comes from its frozen plan["storyboard"][i]["template"]. A card without one
+    (a job planned before layouts existed, or a hand-edited plan.json) is filled in from the same
+    deterministic pick that would have been persisted, so the two paths cannot disagree."""
+    from services import cardtemplates
+
     cards = plan.get("storyboard") or []
+    picks = cardtemplates.pick_templates(cards, Path(job_dir).name)
     bounds = video.clip_boundaries(clips)
     n = len(bounds)
     out = []
@@ -373,8 +370,23 @@ def render_all(job_dir: Path, plan: dict, clips: list, size: tuple,
         end = bounds[b - 1] - CARD_INSET
         if end - start < 1.0:
             continue
+        tpl = c.get("template") or picks[i - 1]
         img = image_path(job_dir, i)
+        boxes = []
         png = render_card(c, size, card_path(job_dir, i), image=img if img.exists() else None,
-                         accent=accent, index=i, total=len(cards))
-        out.append((png, round(start, 3), round(end, 3)))
+                          accent=accent, index=i, total=len(cards), template=tpl, boxes=boxes)
+        x, y = cardtemplates.motion_xy(tpl, size, start, end)
+        out.append({"png": png, "start": round(start, 3), "end": round(end, 3),
+                    "x": x, "y": y, "template": tpl, "rect": _union(boxes)})
     return out
+
+
+def _union(boxes: list):
+    """The rectangle a card actually occupies, from what its template placed.
+
+    Free here (the card has just been drawn) and the captions need it: they move above a card
+    rather than being hidden while one is up, and only the template knows where it put things."""
+    if not boxes:
+        return None
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))

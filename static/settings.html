@@ -355,6 +355,113 @@
         </div>
         <div class="field">
           <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="POLISH"><span class="track"></span>
+            Hook card, end card and progress bar</label>
+          <div class="hint">Default for new videos: a full-screen hook card over the opening seconds, a subscribe card at the end, a thin progress bar and a short whoosh as each story board card appears. All of it rides in the overlay pass that already runs, so it costs no extra encode</div>
+        </div>
+        <div class="field">
+          <label for="HOOK_CARD_SECONDS">Hook card (s)</label>
+          <input type="number" id="HOOK_CARD_SECONDS" min="0" max="6" step="0.5">
+          <div class="hint">Seconds the opening line is shown as a full-screen card (0 = off). It is already the first spoken line; this puts it on screen too, for the viewer who has not unmuted yet</div>
+        </div>
+        <div class="field">
+          <label for="END_CARD_SECONDS">End card (s)</label>
+          <input type="number" id="END_CARD_SECONDS" min="0" max="10" step="0.5">
+          <div class="hint">Seconds of subscribe card at the end (0 = off). Kept clear of the lower-right quarter, where YouTube draws its own end-screen elements</div>
+        </div>
+        <div class="field">
+          <label for="END_CARD_TEXT">End card line</label>
+          <input type="text" id="END_CARD_TEXT" placeholder="Subscribe for more">
+          <div class="hint">The line under the channel name on the end card</div>
+        </div>
+        <div class="field">
+          <label for="PROGRESS_BAR_HEIGHT">Progress bar height (% of frame)</label>
+          <input type="number" id="PROGRESS_BAR_HEIGHT" min="0" max="2" step="0.1">
+          <div class="hint">A thin bar across the bottom that fills as the video plays (0 = off). 0.6 is about 6 pixels on a 1080p frame</div>
+        </div>
+        <div class="field">
+          <label for="SFX_VOLUME">Card whoosh volume</label>
+          <input type="number" id="SFX_VOLUME" min="0" max="1" step="0.05">
+          <div class="hint">A short whoosh when an overlay card appears (0 = silent). It is deliberately not ducked under the narration: a whoosh you cannot hear while the voice talks is pointless</div>
+        </div>
+        <div class="field">
+          <label for="SFX_FILE">Card whoosh file</label>
+          <input type="text" id="SFX_FILE" placeholder="empty = synthesized with ffmpeg" spellcheck="false">
+          <div class="hint">Your own sound file for the whoosh; empty = one is synthesized on first use and cached, so no audio binary ships with the app</div>
+        </div>
+        <div class="field">
+          <label for="LOUDNESS_LUFS">Loudness target (LUFS)</label>
+          <input type="number" id="LOUDNESS_LUFS" min="-24" max="-8" step="0.5">
+          <div class="hint">EBU R128 normalisation of the final mix (0 = off). YouTube normalises everything to about &minus;14, so a quieter master is simply played quiet</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="CAPTIONS_ENABLED"><span class="track"></span>
+            Burned-in captions</label>
+          <div class="hint">Default for new videos: word-synced subtitles burned into the picture. Can be changed per channel and per video. The words come from the script itself &mdash; the narration is timed with whisper and snapped back onto the written text, so captions show your words, not what whisper thought it heard</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_MAX_WORDS">Captions: words per group</label>
+          <input type="number" id="CAPTION_MAX_WORDS" min="1" max="6" step="1">
+          <div class="hint">How many words appear on screen at once (1&ndash;6). Two or three reads fastest on a phone</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_MAX_CHARS">Captions: characters per group</label>
+          <input type="number" id="CAPTION_MAX_CHARS" min="10" max="48" step="1">
+          <div class="hint">A group also breaks at this many characters, so one line always fits the frame</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_HIGHLIGHT">Captions: word highlight</label>
+          <select id="CAPTION_HIGHLIGHT">
+            <option value="word">Highlight the spoken word</option>
+            <option value="off">One colour for the whole group</option>
+          </select>
+          <div class="hint">Only the colour changes &mdash; resizing the spoken word would reflow the line and make it jump on every word</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_ACCENT">Captions: highlight colour</label>
+          <input type="text" id="CAPTION_ACCENT" placeholder="#2ba1e9" spellcheck="false">
+          <div class="hint">Hex colour of the word being spoken, e.g. #2ba1e9</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_FONT_SCALE">Captions: text size</label>
+          <input type="number" id="CAPTION_FONT_SCALE" min="0.6" max="1.8" step="0.1">
+          <div class="hint">Multiplier on the caption text size (0.6&ndash;1.8); 1.0 is about 5% of the frame height</div>
+        </div>
+        <div class="field">
+          <label for="CAPTION_BOTTOM_MARGIN">Captions: bottom margin</label>
+          <input type="number" id="CAPTION_BOTTOM_MARGIN" min="0.03" max="0.35" step="0.01">
+          <div class="hint">Distance from the bottom as a fraction of the frame height. Portrait videos never go below 0.14, which keeps the text clear of the Shorts UI</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="THUMB_TEXT_ENABLED"><span class="track"></span>
+            Thumbnail text</label>
+          <div class="hint">Draw a short punchy line over the generated thumbnail. The picture itself is always generated without letters (image models spell badly), so the text is drawn afterwards</div>
+        </div>
+        <div class="field">
+          <label for="THUMB_TEXT_VARIANTS">Thumbnail: text variants</label>
+          <input type="number" id="THUMB_TEXT_VARIANTS" min="0" max="3" step="1">
+          <div class="hint">How many text versions to offer on the job page (0&ndash;3). They cost no GPU time: one picture is rendered and the text is drawn over copies of it</div>
+        </div>
+        <div class="field">
+          <label for="THUMB_TEXT_ACCENT">Thumbnail: text accent colour</label>
+          <input type="text" id="THUMB_TEXT_ACCENT" placeholder="empty = story board accent" spellcheck="false">
+          <div class="hint">Hex colour of the thumbnail text highlight; empty = use the story board accent colour</div>
+        </div>
+        <div class="field">
+          <label for="STORYBOARD_TEMPLATE_SET">Story board: card layouts</label>
+          <select id="STORYBOARD_TEMPLATE_SET"></select>
+          <div class="hint">Which card layouts new videos draw from. Mixed uses all eight: the card's own content picks the family (a figure, a picture, a closing takeaway) and a per-video seed picks the variant, so one video shows several different cards and never the same layout twice in a row. Applies to newly planned story boards; regenerate a job's story board to restyle it</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="STORYBOARD_MOTION"><span class="track"></span>
+            Story board: card motion</label>
+          <div class="hint">Cards ease into place (a short slide or rise) instead of only fading in. Costs nothing: the movement is a per-frame position in the overlay pass that already runs</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
           <label class="switch"><input type="checkbox" id="LIGHTNING_LORA"><span class="track"></span>
             Lightning LoRA (fast preview)</label>
           <div class="hint">8-step turbo sampling: ~3× faster, lower quality</div>
@@ -379,6 +486,27 @@
             <option value="public">Public</option>
           </select>
           <div class="hint">Privacy of uploaded videos; private lets you review in YouTube Studio first</div>
+        </div>
+        <div class="field">
+          <label for="YT_CATEGORY_ID">YouTube category</label>
+          <select id="YT_CATEGORY_ID"></select>
+          <div class="hint">Category every upload is filed under. A channel whose video type is <b>Tech</b> is filed under Science &amp; Technology automatically, whatever this is set to</div>
+        </div>
+        <div class="field">
+          <label for="YT_MAX_TAGS">YouTube: tags per video</label>
+          <input type="number" id="YT_MAX_TAGS" min="0" max="30" step="1">
+          <div class="hint">How many of the generated SEO keywords are uploaded as video tags (0 = none). YouTube caps all tags together at 500 characters, so fewer may actually be sent</div>
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="YT_CHAPTERS"><span class="track"></span>
+            Chapters in the description</label>
+          <div class="hint">Add a timestamp list so YouTube splits the player into chapters. It needs at least 3, the first at 0:00, each at least 10 seconds — a video too short for that gets none, because YouTube ignores a partial list entirely</div>
+        </div>
+        <div class="field">
+          <label for="YT_CHAPTER_MIN_SECONDS">Chapters: shortest chapter (s)</label>
+          <input type="number" id="YT_CHAPTER_MIN_SECONDS" min="10" max="120" step="1">
+          <div class="hint">Chapters are coarser than the story board cards on purpose: a clip is about 5 seconds, so one chapter per card would fall under YouTube's 10-second floor. 20 gives four to six chapters on a typical video</div>
         </div>
         <div class="field full">
           <label for="PUBLIC_BASE_URL">Public base URL (YouTube OAuth redirect)</label>
@@ -477,9 +605,16 @@
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
 const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
-                "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY",
+                "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_CATEGORY_ID", "YT_MAX_TAGS", "YT_CHAPTERS", "YT_CHAPTER_MIN_SECONDS",
                 "WHISPER_MODEL", "KIDS_SONG_BPM", "KIDS_SONG_WPS",
-                "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT", "PUBLIC_BASE_URL",
+                "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT",
+                "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION",
+                "CAPTIONS_ENABLED", "CAPTION_MAX_WORDS", "CAPTION_MAX_CHARS", "CAPTION_HIGHLIGHT",
+                "CAPTION_ACCENT", "CAPTION_FONT_SCALE", "CAPTION_BOTTOM_MARGIN",
+                "THUMB_TEXT_ENABLED", "THUMB_TEXT_VARIANTS", "THUMB_TEXT_ACCENT",
+                "POLISH", "HOOK_CARD_SECONDS", "END_CARD_SECONDS", "END_CARD_TEXT",
+                "PROGRESS_BAR_HEIGHT", "SFX_VOLUME", "SFX_FILE", "LOUDNESS_LUFS",
+                "PUBLIC_BASE_URL",
                 "TTS_TEMPERATURE", "TTS_TOP_P", "TTS_REPETITION_PENALTY", "TTS_CHUNK_CHARS",
                 "GPU_SCHEDULE_ENABLED", "GPU_WINDOW_START", "GPU_WINDOW_END"];
 
@@ -510,6 +645,10 @@ async function load() {
     `<option value="${v}">${v} MP</option>`).join("");
   $("#DEFAULT_RESOLUTION").innerHTML = (d.resolutions || []).map(r =>
     `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+  $("#STORYBOARD_TEMPLATE_SET").innerHTML = (d.storyboard_template_sets || []).map(r =>
+    `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+  $("#YT_CATEGORY_ID").innerHTML = Object.entries(d.yt_categories || {}).map(([k, v]) =>
+    `<option value="${esc(k)}">${esc(v)}</option>`).join("");
   for (const k of FIELDS) {
     const el = document.getElementById(k);
     if (el.type === "checkbox") el.checked = !!d.settings[k];

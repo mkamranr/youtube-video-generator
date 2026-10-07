@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
-from pipeline import JobManager, resolve_video_mode
+from pipeline import JobManager, resolve_video_mode, upload_description
 from services import (auth, bible, browser, cast, channels, llm, music_upload, ownership, planner,
                       schedule, users, voices)
 
@@ -103,6 +103,8 @@ class Submit(BaseModel):
     music_upload_id: str = ""  # id from POST /api/music-uploads: the user's own track is used instead of
                                # a generated song and sets the video length (audio_mode "music" only)
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
+    captions: bool | None = None     # burned-in captions; None -> channel default (on for tech channels)
+    polish: bool | None = None       # hook/end card, progress bar, whoosh; None -> channel default
     video_mode: str = ""       # "" -> channel default; "story" = a kids story video (re-validated here)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
@@ -212,6 +214,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     body.art_style, body.video_length,
                                                     body.audio_mode, vid, channel=ch,
                                                     storyboard_flag=body.storyboard,
+                                                    captions_flag=body.captions,
+                                                    polish_flag=body.polish,
                                                     megapixels=body.megapixels, owner=owner,
                                                     resolution=body.resolution,
                                                     song_voice=body.song_voice,
@@ -222,6 +226,8 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
                                          storyboard_flag=body.storyboard,
+                                         captions_flag=body.captions,
+                                         polish_flag=body.polish,
                                          megapixels=body.megapixels, owner=owner,
                                          resolution=body.resolution,
                                          song_voice=body.song_voice,
@@ -278,6 +284,8 @@ class JobSetup(BaseModel):
     music_upload_id: str = ""  # the user's own track for this video; "" means none (never inherited)
     video_mode: str = ""       # "" inherits the planned job's own format (unlike lyrics)
     storyboard: bool | None = None
+    captions: bool | None = None
+    polish: bool | None = None
 
 
 @app.post("/jobs/{job_id}/setup")
@@ -293,6 +301,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
         return _job_json(manager.setup_planned(job_id, body.aspect_ratio, body.art_style,
                                                body.video_length, body.audio_mode, vid,
                                                storyboard_flag=body.storyboard,
+                                               captions_flag=body.captions,
+                                               polish_flag=body.polish,
                                                megapixels=body.megapixels,
                                                resolution=body.resolution,
                                                song_voice=body.song_voice,
@@ -540,8 +550,10 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
                 for ext in ("md", "txt", "pdf"):
                     if (d / f"resource.{ext}").exists():
                         z.write(d / f"resource.{ext}", f"{title} - {rname}.{ext}")
+            # the same description the YouTube upload sends, chapter block included, so what the
+            # user pastes by hand matches what one click would have published
             text = (f"Title: {plan.get('seo_title') or plan.get('title') or job.title}\r\n\r\n"
-                    f"Description:\r\n{plan.get('seo_description', '')}\r\n")
+                    f"Description:\r\n{upload_description(plan)}\r\n")
             z.writestr(f"{title}.txt", text)
         return FileResponse(zpath, filename=f"{title}.zip", media_type="application/zip")
     raise HTTPException(404, "unknown download kind")
@@ -731,6 +743,8 @@ def get_settings(admin: dict = Depends(auth.require_admin)):
     return {"settings": config.current_settings(), "meta": meta, "aspect_ratios": config.ASPECT_RATIOS,
             "megapixels_options": config.MEGAPIXELS_OPTIONS, "resolutions": list(config.OUTPUT_RESOLUTIONS),
             "art_styles": list(config.ART_STYLES), "video_lengths": list(config.VIDEO_LENGTHS),
+            "storyboard_template_sets": list(config.STORYBOARD_TEMPLATE_SETS),
+            "yt_categories": config.YT_CATEGORIES,
             "sources": config.SOURCES}
 
 
@@ -1173,6 +1187,23 @@ def regen_resource(job_id: str, user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)
     try:
         return _job_json(manager.regen_resource(job_id))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+class ThumbBody(BaseModel):
+    variant: int | None = None       # 1-based; 0 = the clean render with no text
+    texts: list[str] | None = None   # replace the overlay lines and redraw
+
+
+@app.put("/jobs/{job_id}/thumbnail")
+def set_thumbnail(job_id: str, body: ThumbBody, user: dict = Depends(auth.require_user)):
+    """Pick the thumbnail text variant, and/or edit the lines. Pillow only, so it returns at once."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.set_thumbnail(job_id, variant=body.variant, texts=body.texts))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
