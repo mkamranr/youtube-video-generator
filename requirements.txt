@@ -11,6 +11,13 @@ pillow
 fpdf2>=2.8
 python-multipart
 faster-whisper
+# Presenter avatar: u2net matting on the CPU, and the erode/blur/resize around it. onnxruntime
+# arrives transitively via faster-whisper and cv2 only ever arrived via a package that is not
+# in this file at all, so both are declared outright. opencv-python-headless, not
+# opencv-python: the image is python:3.11-slim, which has no libGL for the GUI build to link.
+numpy
+onnxruntime
+opencv-python-headless
 google-api-python-client
 google-auth
 google-auth-oauthlib
