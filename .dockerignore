@@ -3,6 +3,7 @@ output/
 users/
 channels/
 reference_audio/
+models/
 settings.json
 .env
 server.log

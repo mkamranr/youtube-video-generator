@@ -10,8 +10,10 @@ WORKDIR /app
 # Liberation and Noto emoji faces matter because a README is full of emoji and CJK, and DejaVu
 # alone renders those as empty boxes - which would then be what the overlay shows. Drop the
 # chromium line to save ~400 MB: repository videos still work, only the page overlay is skipped.
+# libglib2.0-0 is for opencv-python-headless (presenter avatar matting): the wheel still links
+# libgthread-2.0.so.0, which this slim image does not carry, and the import fails without it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      fonts-dejavu-core tzdata chromium fonts-liberation fonts-noto-color-emoji \
+      fonts-dejavu-core tzdata chromium fonts-liberation fonts-noto-color-emoji libglib2.0-0 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

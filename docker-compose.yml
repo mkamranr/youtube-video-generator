@@ -43,6 +43,12 @@ services:
       # Settings-page changes (GPU schedule window, clip length, URLs ...) - a directory
       # mount, so nothing has to be created by hand; see VIDEOGEN_SETTINGS_FILE above
       - ./data/settings:/app/settings
+      # Presenter avatar: the CPU matting model (u2net_human_seg.onnx, 176 MB). It is
+      # mounted rather than built into the image because it is too large for the repository
+      # and so is not in the build context on a fresh clone. Put the file in ./data/models/
+      # on the host - see docs/DEPLOYMENT.md section 2.1. Without it the presenter degrades
+      # to no overlay with a logged reason; every other feature is unaffected.
+      - ./data/models:/app/models
     restart: unless-stopped
 
 volumes:

@@ -51,7 +51,9 @@ the background away for the cut-out look and finds the head when a portrait is s
 upload. It runs on the CPU through `onnxruntime` (already in `requirements.txt`); it is
 deliberately not done on the GPU box, which is shared, serial, and cannot `pip install`
 `rembg`. Download `u2net_human_seg.onnx` from the `danielgatis/rembg` releases and drop it in
-`models/`. `VIDEOGEN_MODELS_DIR` moves that folder elsewhere.
+`models/`. `VIDEOGEN_MODELS_DIR` moves that folder elsewhere. **Under Docker** put it in
+`./data/models/` on the host instead — compose bind-mounts that to `/app/models`, and the file
+is excluded from the build context by `.dockerignore`, so it is never baked into the image.
 
 **On the ComfyUI box — the Wan 2.2 S2V weights.** Four files, ~24 GB, listed with their
 destination folders in `scripts/install_wan_s2v.sh`. Run that script on the box if it has

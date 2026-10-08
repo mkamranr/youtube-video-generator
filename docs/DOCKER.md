@@ -60,6 +60,7 @@ Booleans accept `1/true/yes/on` (case-insensitive); numbers are parsed and range
 | `/app/channels` | Channels: index, logos and per-channel YouTube tokens (Settings page) | `./data/channels` bind mount |
 | `/app/users` | Login accounts (username, role, password hash) and the session signing key — **required**, or every container recreation returns to the first-run setup screen and signs everyone out | `./data/users` bind mount |
 | `/app/settings` | Settings-page changes (`settings.json`: GPU schedule window, clip length, service URLs ...) — the container is told to keep the file here via `VIDEOGEN_SETTINGS_FILE=/app/settings/settings.json` | `./data/settings` bind mount |
+| `/app/models` | Presenter avatar: the CPU matting model `u2net_human_seg.onnx` (176 MB). Too large for the repository, so it is **not** in the image — put the file in `./data/models/` by hand (docs/DEPLOYMENT.md section 2.1). Missing it costs only the presenter overlay, with the reason logged | `./data/models` bind mount |
 
 The compose file ships with all of them configured. Without the `settings` mount every image rebuild or container recreation resets the Settings page (including the GPU schedule) to the `config.py` defaults.
 
