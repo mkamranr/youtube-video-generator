@@ -39,6 +39,27 @@ None of these are committed to git.
 
 `pip install -r requirements.txt` installs everything else, including ffmpeg/ffprobe binaries (downloaded on first use) and Pillow.
 
+### 2.1 Presenter avatar (optional) — two model files to stage by hand
+
+The talking-head presenter needs weights on both machines, and neither set is in git: one is
+too large for a repository, the other is 24 GB on a box that is air-gapped by design. Skip
+this whole section if you are not using the feature — a job logs the reason and assembles
+without a presenter rather than failing.
+
+**On the app host — the matting model.** `models/u2net_human_seg.onnx`, 176 MB, which cuts
+the background away for the cut-out look and finds the head when a portrait is squared on
+upload. It runs on the CPU through `onnxruntime` (already in `requirements.txt`); it is
+deliberately not done on the GPU box, which is shared, serial, and cannot `pip install`
+`rembg`. Download `u2net_human_seg.onnx` from the `danielgatis/rembg` releases and drop it in
+`models/`. `VIDEOGEN_MODELS_DIR` moves that folder elsewhere.
+
+**On the ComfyUI box — the Wan 2.2 S2V weights.** Four files, ~24 GB, listed with their
+destination folders in `scripts/install_wan_s2v.sh`. Run that script on the box if it has
+internet; it ends with a staging route for when it does not, which is the usual case here.
+ComfyUI 0.37.0 already ships the `WanSoundImageToVideo` nodes, so this is weights only.
+Restart ComfyUI afterwards so it rescans `models/`. The other engine, LTX 2.5, needs nothing
+new — it is the stack the clips already render on.
+
 ## 3. Configuration model
 
 Precedence, highest first:

@@ -199,6 +199,13 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
     expression (a string) instead of a number - that is how a story board card eases into place
     without a second pass. The audio is copied as is.
 
+    A layer may instead be {video, w, h, matte, ...}: a MOVING layer, which is how the talking-head
+    presenter is composited. It is resampled to the video's frame rate (the avatar engines render
+    at 16 or 24 fps regardless of the job), scaled to w x h, slid to its window with setpts, and -
+    when a `matte` grayscale video is given - cut out per frame with alphamerge. Everything after
+    that is identical to a PNG layer, so the bubble and cut-out looks share one code path and both
+    still fit in the single encode.
+
     subtitles: an .ass file burned in as the LAST filter, so captions always sit on top. One filter
     and no extra input, which is why captions are a subtitle track rather than a PNG per phrase: a
     3-minute video is 60-120 phrases, and a full-frame RGBA PNG at 4K is ~33 MB decoded.
@@ -216,18 +223,75 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
         raise RuntimeError("could not read the video duration")
     rate = fps(video)
     cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(video)]
-    parts, prev = [], "[0:v]"
+    parts, prev, nin = [], "[0:v]", 1
     for i, lyr in enumerate(layers, 1):
         start, end = float(lyr["start"]), min(float(lyr["end"]), total)
         f = max(0.05, min(float(lyr.get("fade", fade)), (end - start) / 2))
         pre = lyr.get("pre") or ""
         x, y = _pos(lyr.get("x", 0)), _pos(lyr.get("y", 0))
-        # -framerate: a looped image decodes at 25 fps by default, which makes a moving crop
-        # step in 25 Hz jumps no matter what the video itself runs at
-        cmd += ["-loop", "1", "-framerate", f"{rate:.4f}", "-t", f"{total:.3f}",
-                "-i", str(Path(lyr["png"]))]
-        parts.append(f"[{i}:v]format=rgba{pre},fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
-                     f"fade=t=out:st={end - f:.3f}:d={f:.3f}:alpha=1[c{i}]")
+        fades = (f"fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
+                 f"fade=t=out:st={end - f:.3f}:d={f:.3f}:alpha=1")
+        if lyr.get("video"):
+            # A moving layer (the talking-head presenter). Its own frame rate is the engine's,
+            # not the video's - Wan renders at 16 fps - so fps= resamples it before anything
+            # else. setpts slides it to its window; overlay's default eof_action=repeat holds
+            # the last frame if the clip is marginally shorter than the window, and the alpha
+            # fade has already taken it to zero by then.
+            w, h = _even(lyr.get("w") or 0), _even(lyr.get("h") or 0)
+            scale = f",scale={w}:{h}" if w and h else ""
+            cmd += ["-i", str(Path(lyr["video"]))]
+            vi = nin
+            nin += 1
+            if lyr.get("matte"):
+                # Per-frame alpha from a grayscale matte video: this is what makes the cut-out
+                # look possible. The circle bubble uses the same alphamerge with a STATIC png
+                # mask, which has to be looped like any other still or alphamerge starves after
+                # one frame and the layer disappears.
+                matte = Path(lyr["matte"])
+                still = matte.suffix.lower() == ".png"
+                if still:
+                    cmd += ["-loop", "1", "-framerate", f"{rate:.4f}", "-t", f"{total:.3f}"]
+                cmd += ["-i", str(matte)]
+                mi = nin
+                nin += 1
+                mshift = "" if still else f",setpts=PTS-STARTPTS+{start:.3f}/TB"
+                parts.append(f"[{vi}:v]fps={rate:.4f}{scale},format=rgba{pre},"
+                             f"setpts=PTS-STARTPTS+{start:.3f}/TB[avc{i}]")
+                shadow = float(lyr.get("shadow") or 0)
+                if shadow > 0 and not still:
+                    # A contact shadow is what stops a cut-out looking pasted on. It is the same
+                    # matte, blurred, used as the alpha of a black rectangle - so it costs one
+                    # split rather than another input or another encode.
+                    dx, dy = int(lyr.get("shadow_dx", 12)), int(lyr.get("shadow_dy", 10))
+                    op = float(lyr.get("shadow_alpha", 0.40))
+                    parts.append(f"[{mi}:v]fps={rate:.4f}{scale},format=gray{mshift},"
+                                 f"split=2[avm{i}][avs{i}]")
+                    parts.append(f"[avs{i}]gblur=sigma={shadow:.1f}[avsb{i}]")
+                    parts.append(f"color=c=black:s={w}x{h}:r={rate:.4f}:d={total:.3f}[avk{i}]")
+                    parts.append(f"[avk{i}][avsb{i}]alphamerge,colorchannelmixer=aa={op:.2f},"
+                                 f"{fades}[sh{i}]")
+                    # the presenter's x/y are plain numbers (unlike a card's easing expression),
+                    # so the offset is arithmetic; _pos still guards the expression case
+                    ox, oy = lyr.get("x", 0), lyr.get("y", 0)
+                    sx = _pos(ox + dx) if not isinstance(ox, str) else _pos(ox)
+                    sy = _pos(oy + dy) if not isinstance(oy, str) else _pos(oy)
+                    parts.append(f"{prev}[sh{i}]overlay={sx}:{sy}:eval=frame:"
+                                 f"enable='between(t,{start:.3f},{end:.3f})'[vs{i}]")
+                    prev = f"[vs{i}]"
+                else:
+                    parts.append(f"[{mi}:v]fps={rate:.4f}{scale},format=gray{mshift}[avm{i}]")
+                parts.append(f"[avc{i}][avm{i}]alphamerge,{fades}[c{i}]")
+            else:
+                parts.append(f"[{vi}:v]fps={rate:.4f}{scale},format=rgba{pre},"
+                             f"setpts=PTS-STARTPTS+{start:.3f}/TB,{fades}[c{i}]")
+        else:
+            # -framerate: a looped image decodes at 25 fps by default, which makes a moving crop
+            # step in 25 Hz jumps no matter what the video itself runs at
+            cmd += ["-loop", "1", "-framerate", f"{rate:.4f}", "-t", f"{total:.3f}",
+                    "-i", str(Path(lyr["png"]))]
+            vi = nin
+            nin += 1
+            parts.append(f"[{vi}:v]format=rgba{pre},{fades}[c{i}]")
         parts.append(f"{prev}[c{i}]overlay={x}:{y}:eval=frame:"
                      f"enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
         prev = f"[v{i}]"
@@ -273,6 +337,104 @@ def progress_layers(size: tuple, total: float, out_dir, color: str = "#e9a13b",
     return [{"png": track, "start": 0.0, "end": total, "x": 0, "y": H - h, "fade": 0.3},
             {"png": bar, "start": 0.0, "end": total, "y": H - h, "fade": 0.3,
              "x": f"-{W}+{W}*clip(t/{total:.3f},0,1)"}]
+
+
+def avatar_box(size: tuple, style: str = "", size_pct=None, cutout_pct=None,
+               margin_pct=None, corner: str = "", clear_bottom: float = 0.0) -> tuple:
+    """Where the presenter sits: (x, y, w, h).
+
+    Every dimension comes from a FRACTION of the frame, never a pixel constant, so one setting
+    covers 1080p through 4K and 16:9 / 9:16 / 1:1 alike. The bubble measures against the SHORT
+    side (a circle should not grow just because the video got wider), the cut-out against the
+    HEIGHT (it is a standing figure). Both are clamped so a portrait frame cannot end up with a
+    presenter wider than the video.
+
+    clear_bottom: fraction of the height to keep free at the bottom - the burned-in caption band,
+    so the presenter never sits on the subtitles."""
+    W, H = int(size[0]), int(size[1])
+    short = min(W, H)
+    style = style or config.DEFAULT_AVATAR_STYLE
+    margin = int(round((config.AVATAR_MARGIN_PCT if margin_pct is None else margin_pct) * short))
+    reserve = int(round(max(0.0, float(clear_bottom)) * H))
+    if style == "bubble":
+        d = _even((config.AVATAR_SIZE_PCT if size_pct is None else size_pct) * short)
+        bw = bh = max(2, min(d, W - 2 * margin, H - 2 * margin - reserve))
+    else:
+        bh = _even((config.AVATAR_CUTOUT_PCT if cutout_pct is None else cutout_pct) * H)
+        bh = max(2, min(bh, H))
+        bw = bh                      # every avatar engine renders a square frame
+        # A standing figure is sized against the height, but on a tall frame (9:16 Shorts) that
+        # alone would make it as wide as the video, so the width cap is what actually binds there.
+        cap = _even(config.AVATAR_MAX_WIDTH_PCT * W)
+        if bw > cap:
+            bw = bh = max(2, cap)
+    corner = corner or config.AVATAR_CORNER
+    x = (W - bw - margin) if "right" in corner else margin
+    if "bottom" in corner:
+        # A bubble is inset from the edge; a cut-out is anchored TO it, so the torso runs off
+        # frame - a floating head with a cut neck is the thing that looks wrong. The caption
+        # reserve therefore applies only to the bubble: lifting a cut-out off the bottom is
+        # exactly the mistake it is meant to prevent, so the captions move instead (the
+        # pipeline feeds this rect to captions.lift_spans, like a story-board card).
+        y = (H - bh - margin - reserve) if style == "bubble" else (H - bh)
+    else:
+        y = margin if style == "bubble" else 0
+    return int(x), int(max(0, y)), int(bw), int(bh)
+
+
+def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner: str = "",
+                  size_pct=None, cutout_pct=None, margin_pct=None, accent: str = "",
+                  clear_bottom: float = 0.0, fade: float = 0.4) -> list:
+    """composite() layers for the presenter.
+
+    segments: [{start, end, video, matte}] - `matte` is the per-frame cut-out alpha (None for the
+    bubble, which gets a drawn circle instead). Returns layers in draw order."""
+    from PIL import Image, ImageDraw, ImageFilter
+
+    W, H = int(size[0]), int(size[1])
+    style = style or config.DEFAULT_AVATAR_STYLE
+    x, y, bw, bh = avatar_box(size, style, size_pct, cutout_pct, margin_pct, corner, clear_bottom)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    segs = [s for s in segments if s.get("video") and float(s["end"]) > float(s["start"])]
+    if not segs or bw < 2 or bh < 2:
+        return []
+    out = []
+    if style == "bubble":
+        ss = 4      # supersample, then downscale: the circle edge has to be antialiased or it
+        mask = Image.new("L", (bw * ss, bh * ss), 0)   # crawls against moving video
+        ImageDraw.Draw(mask).ellipse((0, 0, bw * ss - 1, bh * ss - 1), fill=255)
+        mask_png = out_dir / "avatar_mask.png"
+        mask.resize((bw, bh), Image.LANCZOS).save(mask_png)
+        for s in segs:
+            out.append({"video": s["video"], "matte": mask_png, "w": bw, "h": bh,
+                        "x": x, "y": y, "start": float(s["start"]), "end": float(s["end"]),
+                        "fade": fade})
+        ring = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ImageDraw.Draw(sh).ellipse((x + 6, y + 10, x + bw + 6, y + bh + 10), fill=(0, 0, 0, 130))
+        ring.alpha_composite(sh.filter(ImageFilter.GaussianBlur(max(4, bw // 17))))
+        rr = Image.new("RGBA", (W * 2, H * 2), (0, 0, 0, 0))
+        ImageDraw.Draw(rr).ellipse((x * 2, y * 2, (x + bw) * 2, (y + bh) * 2),
+                                   outline=(accent or config.STORYBOARD_ACCENT),
+                                   width=max(4, bw // 20))
+        ring.alpha_composite(rr.resize((W, H), Image.LANCZOS))
+        ring_png = out_dir / "avatar_ring.png"
+        ring.save(ring_png)
+        # the ring is drawn AFTER the bubble so it sits on the cut edge rather than under it
+        for s in segs:
+            out.append({"png": ring_png, "x": 0, "y": 0,
+                        "start": float(s["start"]), "end": float(s["end"]), "fade": fade})
+    else:
+        for s in segs:
+            out.append({"video": s["video"], "matte": s.get("matte"), "w": bw, "h": bh,
+                        "x": x, "y": y, "start": float(s["start"]), "end": float(s["end"]),
+                        "fade": fade,
+                        # scaled with the figure so the shadow reads the same at every resolution
+                        "shadow": max(4.0, bw / 45.0),
+                        "shadow_dx": max(4, bw // 52), "shadow_dy": max(4, bw // 62),
+                        "shadow_alpha": 0.40})
+    return out
 
 
 SCROLL_PANEL = 0.70       # picture-in-picture panel: this much of each frame dimension, centred

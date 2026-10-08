@@ -1,0 +1,2 @@
+# Shell scripts run on the Linux render box; keep them LF whatever the checkout platform does.
+*.sh text eol=lf

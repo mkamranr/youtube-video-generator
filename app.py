@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager, resolve_video_mode, upload_description
-from services import (auth, bible, browser, cast, channels, llm, music_upload, ownership, planner,
-                      schedule, users, voices)
+from services import (auth, avatar, bible, browser, cast, channels, llm, music_upload, ownership,
+                      planner, schedule, users, voices)
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -110,6 +110,9 @@ class Submit(BaseModel):
     video_mode: str = ""       # "" -> channel default; "story" = a kids story video (re-validated here)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
+    avatar_id: str = ""        # which of the channel's presenter avatars speaks ("" -> channel default)
+    avatar_model: str | None = None   # avatar engine (GET /options avatar_models); None -> channel default
+    avatar_coverage: str = ""  # none|intro|outro|both|full; "" -> channel default
 
 
 def _queued_detail(job) -> str:
@@ -225,6 +228,9 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     lyrics=body.lyrics,
                                                     music_upload_id=body.music_upload_id,
                                                     page_scroll=body.page_scroll,
+                                                    avatar_id=body.avatar_id,
+                                                    avatar_model=body.avatar_model,
+                                                    avatar_coverage=body.avatar_coverage,
                                                     video_mode=body.video_mode))]
         return [_job_json(manager.submit(u, body.aspect_ratio, body.art_style, body.video_length,
                                          body.audio_mode, vid, channel=ch,
@@ -237,6 +243,9 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                          song_voice=body.song_voice,
                                          lyrics=body.lyrics,
                                          music_upload_id=body.music_upload_id,
+                                         avatar_id=body.avatar_id,
+                                         avatar_model=body.avatar_model,
+                                         avatar_coverage=body.avatar_coverage,
                                          video_mode=body.video_mode)) for u in urls]
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -291,6 +300,9 @@ class JobSetup(BaseModel):
     storyboard: bool | None = None
     captions: bool | None = None
     polish: bool | None = None
+    avatar_id: str = ""
+    avatar_model: str | None = None
+    avatar_coverage: str = ""
 
 
 @app.post("/jobs/{job_id}/setup")
@@ -314,6 +326,9 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                song_voice=body.song_voice,
                                                lyrics=body.lyrics,
                                                music_upload_id=body.music_upload_id,
+                                               avatar_id=body.avatar_id,
+                                               avatar_model=body.avatar_model,
+                                               avatar_coverage=body.avatar_coverage,
                                                video_mode=body.video_mode))
     except KeyError:
         raise HTTPException(404, "job not found")
@@ -712,7 +727,9 @@ def _channel_json(c: dict, names: dict | None = None) -> dict:
             "yt_connected": youtube.is_connected(channels.token_path(c["id"])),
             "owner_name": (_owner_names() if names is None else names).get(c.get("owner", ""), ""),
             "cast": [{**x, "has_portrait": channels.portrait_path(c["id"], x["id"]).exists()}
-                     for x in (c.get("cast") or []) if x.get("id")]}
+                     for x in (c.get("cast") or []) if x.get("id")],
+            "avatars": [{**x, "has_image": channels.avatar_path(c["id"], x["id"]).exists()}
+                        for x in (c.get("avatars") or []) if x.get("id")]}
 
 
 def _channel_secret(cid: str):
@@ -738,6 +755,11 @@ def options(user: dict = Depends(auth.require_user)):
             "video_modes": config.VIDEO_MODES, "default_video_mode": config.DEFAULT_VIDEO_MODE,
             "video_mode_labels": VIDEO_MODE_LABELS,
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
+            "avatar_models": list(config.AVATAR_MODELS),
+            "default_avatar_model": config.DEFAULT_AVATAR_MODEL,
+            "avatar_coverages": config.AVATAR_COVERAGES,
+            "default_avatar_coverage": config.DEFAULT_AVATAR_COVERAGE,
+            "avatar_estimates": _avatar_estimates(),
             "channels": chans,
             # the caller's own first channel; "" when they have none yet (admins pick explicitly)
             "default_channel_id": own[0]["id"] if own else ""}
@@ -937,7 +959,30 @@ def list_channels_api(user: dict = Depends(auth.require_user)):
             "video_lengths": list(config.VIDEO_LENGTHS), "audio_modes": config.AUDIO_MODES,
             "song_voices": config.SONG_VOICES, "song_voice_labels": config.SONG_VOICE_LABELS,
             "video_modes": config.VIDEO_MODES, "video_mode_labels": VIDEO_MODE_LABELS,
-            "max_cast": channels.MAX_CAST, "max_rules_chars": channels.MAX_RULES_CHARS}
+            "max_cast": channels.MAX_CAST, "max_rules_chars": channels.MAX_RULES_CHARS,
+            "max_avatars": channels.MAX_AVATARS,
+            "avatar_models": list(config.AVATAR_MODELS),
+            "avatar_model_default": config.DEFAULT_AVATAR_MODEL,
+            "avatar_coverages": config.AVATAR_COVERAGES,
+            "avatar_coverage_default": config.DEFAULT_AVATAR_COVERAGE,
+            "avatar_estimates": _avatar_estimates()}
+
+
+def _avatar_estimates() -> dict:
+    """Per engine, how much presenter each coverage buys and what it costs to render.
+
+    The UI shows this next to the picker because the two engines differ by ~33x and the
+    render budget silently trims coverage - better to see the cost while choosing than to
+    find it in a job log afterwards."""
+    out = {}
+    for name in config.AVATAR_MODELS:
+        secs, mins = {}, {}
+        for cov in config.AVATAR_COVERAGES:
+            s = config.avatar_coverage_seconds(cov, name)
+            secs[cov] = round(s, 1)
+            mins[cov] = round(config.avatar_estimate_seconds(s, name) / 60.0, 1) if s else 0.0
+        out[name] = {"seconds": secs, "render_minutes": mins}
+    return out
 
 
 class BibleBody(BaseModel):
@@ -1125,6 +1170,74 @@ def approve_cast_portrait(cid: str, char_id: str, body: CastApprove, user: dict 
         cast.approve_candidate(cid, char_id, body.k)
     except FileNotFoundError:
         raise HTTPException(404, "candidate not found")
+    return {"ok": True}
+
+
+# ---- channel avatars (talking-head presenters) ------------------------------
+# A channel may keep several presenter portraits and flag one default; a video picks which
+# one speaks it. The image itself is uploaded here, the name/default live on the channel
+# record, so creating one is upload-then-save exactly like a cast portrait.
+def _avatar_entry(cid: str, avatar_id: str, user: dict) -> dict:
+    _owned_channel(cid, user)
+    ch = channels.get_channel(cid)
+    a = channels.find_avatar(ch, avatar_id)
+    if a is None:
+        raise HTTPException(404, "unknown avatar")
+    return a
+
+
+@app.get("/api/channels/{cid}/avatars/{avatar_id}/image")
+def get_channel_avatar(cid: str, avatar_id: str, user: dict = Depends(auth.require_user)):
+    _avatar_entry(cid, avatar_id, user)
+    p = channels.avatar_path(cid, avatar_id)
+    if not p.exists():
+        raise HTTPException(404, "no image for this avatar")
+    return FileResponse(p, media_type="image/png")
+
+
+@app.post("/api/channels/{cid}/avatars/{avatar_id}/image")
+async def upload_channel_avatar(cid: str, avatar_id: str, file: UploadFile,
+                                user: dict = Depends(auth.require_user)):
+    """Store an avatar portrait, prepared for the engines: opaque, square, <=1024 px.
+
+    A head-and-shoulders portrait on a plain background works best: the engine animates it
+    and the matting step cuts the background away, so a busy one costs quality at both ends.
+
+    The preparation happens HERE, once, rather than on every render. Squaring needs a matte to
+    find the head (see avatar.square), and paying ~3 s of model load and inference per video
+    for a result that only ever depends on the image is waste. It also makes the settings
+    preview honest: what the channel shows is what the engine will animate."""
+    _avatar_entry(cid, avatar_id, user)
+    from PIL import Image
+    import io as _io
+    data = await file.read()
+    if len(data) > 8 * 1024 * 1024:
+        raise HTTPException(400, "image too large (max 8 MB)")
+    try:
+        img = Image.open(_io.BytesIO(data))
+        img.load()
+        if img.mode in ("RGBA", "LA", "P"):
+            # Composite onto grey rather than letting convert() drop the alpha channel: a
+            # cut-out PNG would otherwise arrive with whatever RGB sat under the transparency,
+            # which is usually black, and the engine would animate a portrait on a black slab.
+            img = img.convert("RGBA")
+            img = Image.alpha_composite(Image.new("RGBA", img.size, (128, 128, 128, 255)), img)
+        img = img.convert("RGB")
+    except Exception:
+        raise HTTPException(400, "not a valid image file")
+    img = avatar.square(img)
+    if img.width > config.AVATAR_STORE_PX:
+        side = config.AVATAR_STORE_PX
+        img = img.resize((side, side), Image.LANCZOS)
+    config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+    img.save(channels.avatar_path(cid, avatar_id), "PNG")
+    return {"ok": True, "size": [img.width, img.height]}
+
+
+@app.delete("/api/channels/{cid}/avatars/{avatar_id}/image")
+def delete_channel_avatar_image(cid: str, avatar_id: str, user: dict = Depends(auth.require_user)):
+    _avatar_entry(cid, avatar_id, user)
+    channels.avatar_path(cid, avatar_id).unlink(missing_ok=True)
     return {"ok": True}
 
 

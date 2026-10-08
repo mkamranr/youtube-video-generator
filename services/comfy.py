@@ -32,16 +32,26 @@ class ComfyClient:
         self.client_id = uuid.uuid4().hex
 
     # ---- helpers -------------------------------------------------------
-    def upload_image(self, path: Path, name: str | None = None) -> str:
+    def upload_file(self, path: Path, name: str | None = None, mime: str = "") -> str:
+        """Put a file in ComfyUI's input directory and return the name a Load* node should use.
+
+        /upload/image is the only upload route this build exposes, but it stores whatever it is
+        given: a .wav lands in the same input directory and LoadAudio lists it. That is how the
+        avatar graphs get their narration slice without a server-side change."""
         path = Path(path)
         name = name or path.name
+        mime = mime or ("audio/wav" if path.suffix.lower() in (".wav", ".mp3", ".flac")
+                        else "image/jpeg")
         with open(path, "rb") as f:
             r = requests.post(f"{self.url}/upload/image",
-                              files={"image": (name, f, "image/jpeg")},
-                              data={"overwrite": "true", "type": "input"}, timeout=120)
+                              files={"image": (name, f, mime)},
+                              data={"overwrite": "true", "type": "input"}, timeout=300)
         r.raise_for_status()
         j = r.json()
         return (j.get("subfolder") + "/" if j.get("subfolder") else "") + j["name"]
+
+    def upload_image(self, path: Path, name: str | None = None) -> str:
+        return self.upload_file(path, name, "image/jpeg")
 
     @staticmethod
     def load_workflow(path: Path) -> dict:
@@ -118,6 +128,49 @@ class ComfyClient:
         enc["max_duration"] = min(360.0, max(10.0, float(seconds)))
         wf[config.NODE_MUSIC_SEED]["inputs"]["seed"] = seed if seed is not None else random.randint(0, 2**53)
         wf[config.NODE_MUSIC_SAVE]["inputs"]["filename_prefix"] = filename_prefix
+        return wf
+
+    @staticmethod
+    def build_avatar(template: dict, engine: str, image: str, audio: str, seconds: float,
+                     filename_prefix: str, prompt: str = "", seed: int | None = None,
+                     frames: int | None = None) -> dict:
+        """Patch one presenter render into an avatar workflow.
+
+        Like build(), every node id comes from the registry (config.AVATAR_MODELS), so this
+        knows nothing engine-specific. The two engines express length differently - Wan takes a
+        frame count it renders in fixed chunks, LTX a whole-second duration - which is why the
+        registry carries `length` for one and `duration` for the other and this sets whichever
+        is present."""
+        spec = config.avatar_model(engine)
+        wf = copy.deepcopy(template)
+
+        def _set(key, value):
+            ref = spec.get(key)
+            if ref:
+                node, field = ref
+                wf[node]["inputs"][field] = value
+
+        _set("image", image)
+        _set("audio", audio)
+        if prompt:
+            _set("prompt", prompt)
+        seed = random.randint(0, 2**31) if seed is None else int(seed)
+        for i, (node, field) in enumerate(spec.get("seeds") or ()):
+            wf[node]["inputs"][field] = seed + i
+        if spec.get("steps"):
+            _set("steps", int(spec.get("default_steps") or 20))
+        if spec.get("length"):
+            _set("length", int(frames if frames else config.avatar_frames(seconds, engine)))
+        if spec.get("duration"):
+            # LTX's duration node is whole seconds; its graph renders seconds * fps + 1 frames
+            _set("duration", max(1, int(round(float(seconds)))))
+        if spec.get("width"):
+            _set("width", int(spec["square"]))
+            _set("height", int(spec["square"]))
+        if spec.get("resolution"):
+            wf[spec["resolution"]]["inputs"]["aspect_ratio"] = "1:1 (Square)"
+            wf[spec["resolution"]]["inputs"]["megapixels"] = round(spec["square"] ** 2 / 1e6, 2)
+        wf[spec["save"]]["inputs"]["filename_prefix"] = filename_prefix
         return wf
 
     # ---- queue / wait --------------------------------------------------

@@ -135,6 +135,15 @@
         <img id="suStylePreview" alt="style preview" hidden style="max-height:76px;border-radius:6px">
       </div>
     </div>
+    <div id="suAvatarBlock" style="margin-top:12px" hidden>
+      <label style="font-weight:600">Presenter avatar</label>
+      <div class="row" style="align-items:flex-end;margin-top:4px">
+        <div class="grow" style="min-width:160px"><label for="suAvCoverage">Show avatar</label><select id="suAvCoverage"></select></div>
+        <div class="grow" style="min-width:160px"><label for="suAvWho">Which avatar</label><select id="suAvWho"></select></div>
+        <div class="grow" style="min-width:160px"><label for="suAvModel">Engine</label><select id="suAvModel"></select></div>
+      </div>
+      <div class="hint" id="suAvHint" style="margin-top:6px"></div>
+    </div>
     <label class="switch" id="suSbLabel" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
     <label class="switch" id="suCapLabel" style="margin-top:12px"><input type="checkbox" id="suCap"><span class="track"></span> Burn in captions</label>
     <label class="switch" id="suPolLabel" style="margin-top:12px"><input type="checkbox" id="suPol"><span class="track"></span> Hook card, end card &amp; progress bar</label>
@@ -937,6 +946,7 @@ async function fillSetup(j) {
   $("#suVmode").innerHTML = (o.video_modes || ["song"]).map(m =>
     opt(m, (o.video_mode_labels || {})[m] || m)).join("");
   $("#suVmode").value = j.video_mode || "song";
+  suAvatarFill(j, o);
   $("#suSb").checked = !!j.storyboard;
   $("#suCap").checked = !!j.captions;
   $("#suPol").checked = !!j.polish;
@@ -1049,6 +1059,38 @@ $("#suAudio").onchange = () => {
 };
 $("#suStyle").onchange = suStylePreview;
 
+// The planned job froze its channel snapshot, so the roster comes from the job rather than a
+// live channel read: the channel may have been edited or deleted since the plan was made.
+function suAvatarFill(j, o) {
+  const usable = (((j.channel || {}).avatars) || []).filter(a => a.id);
+  const block = $("#suAvatarBlock");
+  block.hidden = !usable.length;
+  if (!usable.length) return;
+  const covs = o.avatar_coverages || {};
+  $("#suAvCoverage").innerHTML = Object.keys(covs)
+    .map(k => `<option value="${esc(k)}">${esc(covs[k])}</option>`).join("");
+  $("#suAvCoverage").value = j.avatar_coverage || o.default_avatar_coverage || "both";
+  $("#suAvWho").innerHTML = usable.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name)}${a.default ? " (default)" : ""}</option>`).join("");
+  $("#suAvWho").value = usable.some(a => a.id === j.avatar_id)
+    ? j.avatar_id : (usable.find(a => a.default) || usable[0]).id;
+  $("#suAvModel").innerHTML =
+    `<option value="">Default — ${esc(o.default_avatar_model || "")}</option>` +
+    (o.avatar_models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  $("#suAvModel").value = j.avatar_model || "";
+  const cost = () => {
+    const cov = $("#suAvCoverage").value;
+    const per = (o.avatar_estimates || {})[$("#suAvModel").value || o.default_avatar_model];
+    $("#suAvHint").textContent = cov === "none" ? "No presenter on this video."
+      : per ? `About ${(per.seconds[cov] || 0).toFixed(0)}s of presenter, roughly `
+              + `${(per.render_minutes[cov] || 0) < 1 ? "under a minute" : (per.render_minutes[cov]).toFixed(0) + " min"} of GPU time.`
+      : "";
+  };
+  $("#suAvCoverage").onchange = cost;
+  $("#suAvModel").onchange = cost;
+  cost();
+}
+
 $("#startBtn").onclick = async () => {
   const real = $("#suStyleBlock").hidden;
   $("#startBtn").disabled = true;
@@ -1066,7 +1108,11 @@ $("#startBtn").onclick = async () => {
         music_upload_id: suMusicOn() ? suMusicUp.id : "",
         storyboard: $("#suSb").checked,
         captions: $("#suCap").checked,
-        polish: $("#suPol").checked }) });
+        polish: $("#suPol").checked,
+        ...($("#suAvatarBlock").hidden ? {} : {
+          avatar_coverage: $("#suAvCoverage").value,
+          avatar_id: $("#suAvWho").value,
+          avatar_model: $("#suAvModel").value }) }) });
     toast("Video started - the script is being written");
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }

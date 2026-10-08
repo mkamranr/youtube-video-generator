@@ -121,6 +121,24 @@
           <textarea id="lyrics" maxlength="2000" placeholder="[Verse]&#10;Twinkle, twinkle, little star..."></textarea>
           <div class="hint" id="lyricsHint">Leave this empty and the LLM writes the song. Paste lyrics and they are sung exactly as written &mdash; and they, not the Video length, decide how long the video is.</div>
         </div>
+        <div class="msec" id="avatarBlock" hidden>
+          <div class="msec-title">Presenter avatar</div>
+          <div class="row" style="align-items:flex-end">
+            <div class="grow" style="min-width:170px">
+              <label for="avCoverage">Show avatar</label>
+              <select id="avCoverage"></select>
+            </div>
+            <div class="grow" style="min-width:170px">
+              <label for="avWho">Which avatar</label>
+              <select id="avWho"></select>
+            </div>
+            <div class="grow" style="min-width:170px">
+              <label for="avModel">Engine</label>
+              <select id="avModel"></select>
+            </div>
+          </div>
+          <div class="hint" id="avHint" style="margin-top:8px"></div>
+        </div>
         <div class="msec" id="sbBlock">
           <div class="msec-title">On-screen story board</div>
           <label class="switch"><input type="checkbox" id="storyboard"><span class="track"></span> Add story board cards</label>
@@ -313,10 +331,52 @@ function applyVideoMode() {
 }
 
 let channelsList = [];
+let opts = {};   // the last /options payload, for the pickers that read it lazily
 let admin = false;                  // admins see every user's channels and jobs, tagged with the owner
 let realTypes = ["real", "tech"];   // channel video types without an art-style picker
 function currentChannel() { return channelsList.find(c => c.id === $("#channel").value); }
 function isRealistic(ch) { return !!ch && realTypes.includes(ch.video_type); }
+
+// ---- presenter avatar ----
+// The whole block hides unless the channel actually has an avatar with an image: offering a
+// presenter the channel cannot supply would just be a dead control.
+function avatarFill(ch, d) {
+  const block = $("#avatarBlock");
+  const usable = ((ch && ch.avatars) || []).filter(a => a.has_image);
+  block.hidden = !usable.length;
+  if (!usable.length) return;
+  const covs = opts.avatar_coverages || {};
+  $("#avCoverage").innerHTML = Object.keys(covs)
+    .map(k => `<option value="${esc(k)}">${esc(covs[k])}</option>`).join("");
+  $("#avCoverage").value = d.avatar_coverage || opts.default_avatar_coverage || "both";
+  $("#avWho").innerHTML = usable.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.name)}${a.default ? " (default)" : ""}</option>`).join("");
+  const want = d.avatar_id && usable.some(a => a.id === d.avatar_id)
+    ? d.avatar_id : (usable.find(a => a.default) || usable[0]).id;
+  $("#avWho").value = want;
+  $("#avModel").innerHTML =
+    `<option value="">Default — ${esc(opts.default_avatar_model || "")}</option>` +
+    (opts.avatar_models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  $("#avModel").value = d.avatar_model || "";
+  avatarCost();
+}
+
+// Lip sync is by far the most expensive step, and the engines differ by ~33x, so the cost of
+// the current combination is shown while it is being chosen.
+function avatarCost() {
+  const cov = $("#avCoverage").value;
+  const model = $("#avModel").value || opts.default_avatar_model || "";
+  const per = (opts.avatar_estimates || {})[model];
+  const el = $("#avHint");
+  if (cov === "none") { el.textContent = "No presenter on this video."; return; }
+  if (!per) { el.textContent = ""; return; }
+  const secs = per.seconds[cov] || 0, mins = per.render_minutes[cov] || 0;
+  const asked = { intro: "at the start", outro: "at the end", both: "at the start and the end",
+                  full: "for the whole video" }[cov] || "";
+  el.textContent = `About ${secs.toFixed(0)}s of presenter ${asked}, roughly `
+    + `${mins < 1 ? "under a minute" : mins.toFixed(0) + " min"} of GPU time. `
+    + `Trimmed automatically if it would exceed the render budget.`;
+}
 
 function applyChannel() {
   const ch = currentChannel();
@@ -333,6 +393,9 @@ function applyChannel() {
   $("#storyboard").checked = d.storyboard != null ? !!d.storyboard : ch.video_type === "tech";
   $("#captions").checked = d.captions != null ? !!d.captions : ch.video_type === "tech";
   $("#polish").checked = d.polish != null ? !!d.polish : ch.video_type === "tech";
+  avatarFill(ch, d);
+  $("#avCoverage").onchange = avatarCost;
+  $("#avModel").onchange = avatarCost;
   // repository videos are a Tech-channel feature (the server enforces it too). The option is
   // added and removed rather than hidden: a hidden <option> that is selected still shows.
   const sel = $("#source"), opt = sel.querySelector('option[value="repo"]');
@@ -412,6 +475,11 @@ async function submit() {
                storyboard: $("#storyboard").checked,
                captions: $("#captions").checked,
                polish: $("#polish").checked };
+  if (!$("#avatarBlock").hidden) {
+    body.avatar_coverage = $("#avCoverage").value;
+    body.avatar_id = $("#avWho").value;
+    body.avatar_model = $("#avModel").value;
+  }
   if (lyricsOn()) body.lyrics = $("#lyrics").value.trim();
   if (musicUpOn()) body.music_upload_id = musicUp.id;
   if (mode === "url") body.urls = raw.split("\n").map(s => s.trim()).filter(Boolean);
@@ -673,6 +741,7 @@ function updateStylePreview() {
 let optionsLoaded = false;
 async function loadOptions() {
   const o = await api("/options");
+  opts = o;
   channelsList = o.channels || [];
   admin = isAdmin(o.me || currentUser);
   realTypes = o.realistic_video_types || realTypes;

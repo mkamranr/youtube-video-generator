@@ -16,6 +16,7 @@ server.err.log
 # python
 __pycache__/
 *.pyc
+*.stackdump
 
 # per-channel store (logos, OAuth tokens, index)
 channels/
@@ -25,3 +26,7 @@ users/
 
 # weekly content plans (Planner)
 plans/
+
+# local CPU models for the presenter avatar - u2net_human_seg.onnx is 176 MB, over GitHub's
+# per-file limit, so it is staged by hand (docs/DEPLOYMENT.md section 2.1)
+models/

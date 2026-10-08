@@ -23,6 +23,7 @@ VOICES_INDEX = VOICES_DIR / "voices.json"
 YT_CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"   # Google OAuth client (Desktop type)
 YT_TOKEN_FILE = BASE_DIR / "youtube_token.json"           # legacy global OAuth token (pre-channels)
 CHANNELS_DIR = Path(os.environ.get("VIDEOGEN_CHANNELS_DIR") or BASE_DIR / "channels")  # index, logos, tokens, portraits
+MODELS_DIR = Path(os.environ.get("VIDEOGEN_MODELS_DIR") or BASE_DIR / "models")  # local CPU models (avatar matting)
 CHANNELS_INDEX = CHANNELS_DIR / "channels.json"
 PLANS_DIR = Path(os.environ.get("VIDEOGEN_PLANS_DIR") or BASE_DIR / "plans")  # weekly content plans
 PLANS_INDEX = PLANS_DIR / "plans.json"
@@ -129,6 +130,173 @@ def model_workflow(name: str = "", first_frame: bool = False) -> Path:
 STILLS_VIDEO_MODEL = "MiniMax H3"
 T2V_WORKFLOW = WORKFLOWS_DIR / VIDEO_MODELS[STILLS_VIDEO_MODEL]["t2v"]["file"]
 I2V_WORKFLOW = WORKFLOWS_DIR / VIDEO_MODELS[STILLS_VIDEO_MODEL]["i2v"]["file"]
+
+# ---- avatar (talking-head presenter) engines -------------------------------
+# A channel can upload presenter portraits; the chosen one is animated to lip-sync the
+# voiceover and composited over the video. Two engines, with very different economics:
+#
+#   Wan 2.2 S2V - purpose-built audio-to-video. Holds the uploaded likeness. Measured at
+#                 9.16 s per output frame at 640x640/20 steps (warm; a cold run was the
+#                 same, so the weight load is not the cost). Renders in fixed 77-frame
+#                 chunks at 16 fps, chained with WanSoundImageToVideoExtend, and its first
+#                 frame is the ref-image conditioning slot and must be dropped.
+#   LTX 2.5     - the clip model, run as audio-to-video by pinning our narration into the
+#                 audio half of its joint AV latent (noise_mask 0 = keep) and masking the
+#                 video half for generation. ~33x faster at 0.28 s/frame, 24 fps, one pass
+#                 for the whole segment - but the face drifts off the uploaded portrait.
+#
+# As with VIDEO_MODELS, no node id lives outside this dict: ComfyClient.build_avatar reads
+# everything from here, so a third engine is one entry plus its JSON.
+AVATAR_MODELS = {
+    "Wan 2.2 S2V": {
+        "file": "avatar_wan_s2v.json",
+        "fps": 16,
+        # Frames per pass. The model was trained on this length and the graph renders exactly
+        # one chunk, so a segment is capped here rather than chained: WanSoundImageToVideoExtend
+        # exists for longer takes, but its latent stitching is unverified and each experiment
+        # costs a ~6 min render. 4.81 s of presenter per appearance is plenty for an intro.
+        "chunk": 77,
+        "max_segment": 77 / 16.0,
+        "square": 640,          # the size it was trained at; also what the cut-out look needs
+        "seconds_per_frame": 9.16,
+        "drop_first": True,     # frame 0 carries the ref image, not generated picture
+        "audio": ("5", "audio"),
+        "image": ("7", "image"),
+        "prompt": ("8", "text"),
+        "seeds": (("12", "seed"),),
+        "steps": ("12", "steps"),
+        # 20, not 10. Halving the steps does halve the cost (359 s vs 705 s for the same seed),
+        # but it also halves the lip sync: correlation against the speech envelope falls from
+        # +0.559 to +0.319 and mouth-open-in-speech-vs-silence from 1.47x to 1.16x. Sync is the
+        # entire point of the feature, so this is the one knob not to turn.
+        "default_steps": 20,
+        "length": ("11", "length"),          # in frames
+        "width": ("11", "width"), "height": ("11", "height"),
+        "save": "15",
+    },
+    "LTX 2.5": {
+        "file": "avatar_ltx_2_5_a2v.json",
+        "fps": 24,
+        "chunk": 0,             # 0 = no chunking, one pass covers the segment
+        "max_segment": 0.0,     # 0 = unlimited; LTX renders the whole segment at once
+        "square": 512,
+        "seconds_per_frame": 0.28,
+        "drop_first": False,
+        "audio": ("900", "audio"),
+        "image": ("395", "image"),
+        "prompt": ("398:376", "value"),
+        "negative": ("398:373", "text"),
+        "seeds": (("398:339", "noise_seed"), ("398:338", "noise_seed")),
+        "steps": None,          # distilled: the step count is baked into its sigma schedule
+        "default_steps": 0,
+        "duration": ("398:362", "value"),    # PrimitiveInt, whole seconds
+        "resolution": "403",                 # ResolutionSelector (aspect_ratio + megapixels)
+        "save": "75",
+    },
+}
+DEFAULT_AVATAR_MODEL = "Wan 2.2 S2V"
+
+# Where the presenter appears. "none" is the off switch - one control rather than a separate
+# on/off flag that could contradict it.
+AVATAR_COVERAGES = {
+    "none": "No avatar",
+    "intro": "Intro only",
+    "outro": "Outro only",
+    "both": "Intro and outro",
+    "full": "Whole video",
+}
+DEFAULT_AVATAR_COVERAGE = "both"
+AVATAR_STYLES = {"bubble": "Circle bubble", "cutout": "Cut-out (no background)"}
+DEFAULT_AVATAR_STYLE = "cutout"
+AVATAR_INTRO_SECONDS = 12.0     # how long the presenter speaks at the top
+AVATAR_OUTRO_SECONDS = 12.0     # ...and at the end
+# Two caps, because they guard different things. MAX_SECONDS is how much presenter a viewer
+# should see; MAX_RENDER_MINUTES is how much of the shared GPU a video may spend getting it.
+# They are not interchangeable: 24 s of footage costs ~70 min on Wan and ~2.5 min on LTX.
+AVATAR_MAX_SECONDS = 30.0       # footage cap per video
+AVATAR_MAX_RENDER_MINUTES = 45.0  # wall-clock cap; coverage trims to fit, with the reason logged
+AVATAR_SIZE_PCT = 0.22          # bubble diameter as a fraction of the frame's SHORT side
+AVATAR_CUTOUT_PCT = 0.58        # cut-out height as a fraction of the frame HEIGHT
+AVATAR_MAX_WIDTH_PCT = 0.45     # ...but never wider than this much of the frame WIDTH, which is
+                                # what keeps a 9:16 Short from being filled by the presenter
+AVATAR_MARGIN_PCT = 0.035       # inset from the frame edge, fraction of the short side
+AVATAR_CORNER = "bottom-right"
+AVATAR_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")
+AVATAR_MATTE_MODEL = "u2net_human_seg.onnx"   # CPU ONNX matting, in MODELS_DIR
+# Portraits are stored square and at most this wide: the squaring is done once at upload (it
+# needs a matte to find the head, which is too slow to repeat per video) and 1024 leaves room
+# above the 640 the biggest engine renders, so a better model later costs no re-upload.
+AVATAR_STORE_PX = 1024
+# What the engine is told the presenter is doing. Deliberately generic: the portrait carries
+# the likeness, and describing a face the model can already see only fights the reference.
+AVATAR_PROMPT = ("A person speaks directly to the camera, talking naturally and expressively "
+                 "to the viewer, slight natural head movement, steady framing, plain background.")
+
+
+def avatar_model(name: str = "") -> dict:
+    """An engine's registry entry; the Settings default for "" and unknown names."""
+    return AVATAR_MODELS.get(name or DEFAULT_AVATAR_MODEL) or AVATAR_MODELS[DEFAULT_AVATAR_MODEL]
+
+
+def avatar_workflow(name: str = "") -> Path:
+    return WORKFLOWS_DIR / avatar_model(name)["file"]
+
+
+def avatar_frames(seconds: float, name: str = "") -> int:
+    """Frames this engine renders for `seconds` of speech, rounded to whole chunks where the
+    engine has a fixed chunk size (Wan), so the estimate matches what actually runs."""
+    spec = avatar_model(name)
+    want = max(1, int(round(float(seconds) * spec["fps"])))
+    chunk = spec.get("chunk") or 0
+    if chunk:
+        return max(chunk, -(-want // chunk) * chunk)
+    return want
+
+
+def avatar_estimate_seconds(seconds: float, name: str = "") -> float:
+    """Wall-clock estimate for rendering `seconds` of presenter on this engine."""
+    spec = avatar_model(name)
+    return avatar_frames(seconds, name) * float(spec["seconds_per_frame"])
+
+
+def avatar_coverage_seconds(coverage: str, name: str = "", total: float = 0.0) -> float:
+    """Seconds of presenter a coverage asks for, clamped to what the engine can afford.
+
+    `total` is the finished video's length, known only once the narration exists; without it
+    "full" is quoted at the budget, which is what it will be trimmed to anyway on any video
+    longer than the budget."""
+    budget = avatar_budget_seconds(name)
+    if coverage == "none" or budget <= 0:
+        return 0.0
+    if coverage == "full":
+        want = float(total) if total else budget
+    elif coverage == "intro":
+        want = float(AVATAR_INTRO_SECONDS)
+    elif coverage == "outro":
+        want = float(AVATAR_OUTRO_SECONDS)
+    elif coverage == "both":
+        want = float(AVATAR_INTRO_SECONDS) + float(AVATAR_OUTRO_SECONDS)
+    else:
+        return 0.0
+    return max(0.0, min(want, budget))
+
+
+def avatar_budget_seconds(name: str = "") -> float:
+    """How many seconds of presenter this engine can render inside both caps.
+
+    The footage cap is a product decision and the render cap is a resource one, so the
+    affordable length is whichever binds first. On a slow engine that is the render cap,
+    which is exactly how a 70-minute job becomes a 45-minute one without anyone noticing
+    too late."""
+    spec = avatar_model(name)
+    spf, fps, chunk = float(spec["seconds_per_frame"]), spec["fps"], spec.get("chunk") or 0
+    frames = int(float(AVATAR_MAX_RENDER_MINUTES) * 60.0 / max(1e-6, spf))
+    if chunk:
+        # whole chunks only, rounded DOWN: avatar_frames() rounds a request up to the next
+        # chunk, so budgeting a partial one would quietly overshoot the cap it just enforced
+        frames = (frames // chunk) * chunk
+    return max(0.0, min(float(AVATAR_MAX_SECONDS), frames / float(fps)))
+
 
 # ---- music workflow and its node ids (fixed) ------------------------------
 MUSIC_WORKFLOW = WORKFLOWS_DIR / "audio_minimax_music_3.json"
@@ -516,6 +684,43 @@ EDITABLE_SETTINGS = {
     "MUSIC_VOLUME": (float, lambda v: 0 <= v <= 1, "Music volume",
                      "Music level under the narration (narration+music mode, 0-1). The bed is ducked further "
                      "while the voice speaks, looped if shorter than the video and faded out at the end"),
+    "DEFAULT_AVATAR_MODEL": (str, lambda v: v in AVATAR_MODELS, "Avatar: default engine",
+                             "Which engine animates a channel's presenter portrait when the channel does not "
+                             "pick one. Wan 2.2 S2V holds the uploaded likeness and is the quality choice; "
+                             "LTX 2.5 is about 33x faster but the face drifts off the photo"),
+    "DEFAULT_AVATAR_COVERAGE": (str, lambda v: v in AVATAR_COVERAGES, "Avatar: default coverage",
+                                "Where the presenter appears in a new video: " +
+                                ", ".join(f"{k} ({v})" for k, v in AVATAR_COVERAGES.items()) +
+                                ". Per-channel and per-video overrides both exist"),
+    "DEFAULT_AVATAR_STYLE": (str, lambda v: v in AVATAR_STYLES, "Avatar: look",
+                             "cutout floats the presenter on the video with the background matted away; "
+                             "bubble puts them in a circle with a ring and shadow"),
+    "AVATAR_INTRO_SECONDS": (float, lambda v: 2 <= v <= 120, "Avatar: intro seconds",
+                             "How long the presenter speaks at the start of a video"),
+    "AVATAR_OUTRO_SECONDS": (float, lambda v: 2 <= v <= 120, "Avatar: outro seconds",
+                             "How long the presenter speaks at the end of a video"),
+    "AVATAR_MAX_SECONDS": (float, lambda v: 0 <= v <= 3600, "Avatar: footage budget (seconds)",
+                           "Hard cap on how much presenter footage a video may contain. 0 disables the "
+                           "avatar everywhere"),
+    "AVATAR_MAX_RENDER_MINUTES": (float, lambda v: 0 <= v <= 1440, "Avatar: render budget (minutes)",
+                                  "Hard cap on GPU wall clock spent on the presenter per video. Lip sync is "
+                                  "the most expensive step in the pipeline - Wan is ~9.2 s of render per "
+                                  "output frame, so 24 s of footage is ~70 min - and coverage is trimmed to "
+                                  "fit this with the reason written to the job log, rather than a job quietly "
+                                  "taking hours on a queue other videos are waiting in"),
+    "AVATAR_SIZE_PCT": (float, lambda v: 0.05 <= v <= 0.6, "Avatar: bubble size",
+                        "Bubble diameter as a fraction of the frame's short side, so it scales with every "
+                        "resolution and aspect ratio"),
+    "AVATAR_CUTOUT_PCT": (float, lambda v: 0.1 <= v <= 1.0, "Avatar: cut-out height",
+                          "Cut-out presenter height as a fraction of the frame height"),
+    "AVATAR_MAX_WIDTH_PCT": (float, lambda v: 0.1 <= v <= 1.0, "Avatar: max width",
+                             "The presenter is never wider than this fraction of the frame. On a "
+                             "9:16 Short, sizing by height alone would make it as wide as the "
+                             "video, so this is the cap that actually binds there"),
+    "AVATAR_MARGIN_PCT": (float, lambda v: 0 <= v <= 0.3, "Avatar: edge margin",
+                          "Inset from the frame edge, as a fraction of the short side"),
+    "AVATAR_CORNER": (str, lambda v: v in AVATAR_CORNERS, "Avatar: corner",
+                      "Which corner the presenter sits in: " + ", ".join(AVATAR_CORNERS)),
     "STORYBOARD_MAX_IMAGES": (int, lambda v: 0 <= v <= 40, "Story board: max images",
                               "Story board overlay: at most this many related images are rendered per video "
                               "(each is one short ComfyUI render); 0 = text cards only"),

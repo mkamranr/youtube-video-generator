@@ -123,6 +123,25 @@
           <input type="file" id="chLogoFile" accept="image/*" style="max-width:280px">
           <span class="hint">Logo: overlaid on the top-right of every thumbnail (PNG with transparency recommended)</span>
         </div>
+        <div id="chAvatarSection" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+          <label style="font-weight:600">Presenter avatars <span class="hint" style="font-weight:400">— a portrait that is animated to lip-sync the voiceover and overlaid on the video</span></label>
+          <div class="hint" style="margin:4px 0 10px">Upload a head-and-shoulders photo on a plain background: it is animated to speak the narration and composited over the video. Keep several and mark one default; each video can pick a different one. Rendering lip sync is the most expensive step in the pipeline, so coverage and the engine both matter — see the budget in Settings.</div>
+          <div class="row" style="align-items:flex-end">
+            <div class="grow" style="min-width:200px;max-width:260px">
+              <label for="chAvatarCoverage">Default coverage</label>
+              <select id="chAvatarCoverage"></select>
+            </div>
+            <div class="grow" style="min-width:200px;max-width:260px">
+              <label for="chAvatarModel">Default engine</label>
+              <select id="chAvatarModel"></select>
+            </div>
+            <div class="hint grow" id="chAvatarCostHint" style="min-width:220px"></div>
+          </div>
+          <div id="chAvatarList" style="margin-top:10px"></div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn secondary sm" id="chAvatarAdd" type="button">Add avatar</button>
+          </div>
+        </div>
         <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Cast <span class="hint" style="font-weight:400">— recurring characters that appear across this channel's videos</span></label>
           <label class="switch" style="margin-top:8px"><input type="checkbox" id="chCharacters"><span class="track"></span>
@@ -863,6 +882,19 @@ async function chOpen(c) {
   $("#chSecretRemove").hidden = !hasSecret;
   $("#chSecretFile").value = "";
   chCast = (c && c.cast ? c.cast : []).map(x => ({ ...x, v: Date.now() }));
+  chAvatars = (c && c.avatars ? c.avatars : []).map(x => ({ ...x, v: Date.now() }));
+  const covs = chData.avatar_coverages || {};
+  $("#chAvatarCoverage").innerHTML = Object.keys(covs)
+    .map(k => `<option value="${esc(k)}">${esc(covs[k])}</option>`).join("");
+  $("#chAvatarCoverage").value = d.avatar_coverage || chData.avatar_coverage_default || "both";
+  const ams = chData.avatar_models || [];
+  $("#chAvatarModel").innerHTML =
+    `<option value="">Default — ${esc(chData.avatar_model_default || "")}</option>` +
+    ams.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  $("#chAvatarModel").value = d.avatar_model || "";
+  $("#chAvatarCoverage").onchange = chAvatarCost;
+  $("#chAvatarModel").onchange = chAvatarCost;
+  chAvatarRender();
   $("#chCastOpening").checked = c ? c.cast_opening !== false : true;
   // the server always sends the key (services/channels.py back-fills it), so trust it exactly
   $("#chCharacters").checked = c ? !!c.characters_enabled : $("#chVideoType").value !== "tech";
@@ -881,6 +913,118 @@ async function chOpen(c) {
 function chCloseModal() { $("#chModal").classList.remove("open"); }
 
 function chEdit(id) { const c = chData.channels.find(x => x.id === id); if (c) chOpen(c); }
+
+// ---- presenter avatars ----
+// Working copy while the modal is open: [{id, name, default, has_image, v}]. An avatar needs
+// a server-assigned id before its PNG can be uploaded, so chAvatarUpload persists first -
+// the same order chCastUpload uses for portraits.
+let chAvatars = [];
+
+function chAvatarSync() {
+  document.querySelectorAll("#chAvatarList .avatar-row").forEach(row => {
+    const a = chAvatars[+row.dataset.i];
+    if (a) a.name = row.querySelector(".avatar-name").value.trim();
+  });
+}
+
+function chAvatarRender() {
+  const box = $("#chAvatarList");
+  if (!chAvatars.length) {
+    box.innerHTML = `<div class="hint">No avatars yet — add one to put a presenter on this channel's videos.</div>`;
+    chAvatarCost();
+    return;
+  }
+  box.innerHTML = chAvatars.map((a, i) => `
+    <div class="cast-row avatar-row" data-i="${i}">
+      <div class="cast-thumb${a.id && a.has_image ? "" : " ph"}">${a.id && a.has_image
+        ? `<img src="/api/channels/${esc(chEditing)}/avatars/${esc(a.id)}/image?v=${a.v || 0}" alt="">`
+        : `<span>no<br>image</span>`}</div>
+      <div class="grow">
+        <div class="row" style="align-items:center">
+          <input type="text" class="avatar-name" placeholder="Name, e.g. Host" value="${esc(a.name || "")}" style="max-width:220px">
+          <label class="switch"><input type="radio" name="chAvatarDefault" ${a.default ? "checked" : ""} onchange="chAvatarSetDefault(${i})"><span class="track"></span> Default</label>
+        </div>
+        <div class="row cast-actions">
+          <label class="btn secondary sm" style="cursor:pointer">${a.has_image ? "Replace image" : "Upload image"}<input type="file" accept="image/*" hidden onchange="chAvatarUpload(${i}, this)"></label>
+          ${a.id && a.has_image ? `<button class="btn secondary sm" type="button" onclick="chAvatarRemoveImage(${i})">Remove image</button>` : ""}
+          <span class="hint" id="avatarStatus${i}"></span>
+          <div class="spacer"></div>
+          <button class="btn danger sm" type="button" onclick="chAvatarRemove(${i})">Remove avatar</button>
+        </div>
+      </div>
+    </div>`).join("");
+  chAvatarCost();
+}
+
+function chAvatarSetDefault(i) {
+  chAvatarSync();
+  chAvatars.forEach((a, k) => { a.default = k === i; });
+  chAvatarRender();
+}
+
+$("#chAvatarAdd").onclick = () => {
+  chAvatarSync();
+  const max = chData.max_avatars || 12;
+  if (chAvatars.length >= max) { toast(`At most ${max} avatars per channel`, true); return; }
+  chAvatars.push({ id: "", name: "", default: !chAvatars.length, has_image: false });
+  chAvatarRender();
+  const rows = document.querySelectorAll("#chAvatarList .avatar-row");
+  rows[rows.length - 1].querySelector(".avatar-name").focus();
+};
+
+function chAvatarRemove(i) {
+  chAvatarSync();
+  const a = chAvatars[i];
+  if (a.id && a.has_image && !confirm(`Remove ${a.name || "this avatar"} and its image?`)) return;
+  const wasDefault = a.default;
+  chAvatars.splice(i, 1);
+  if (wasDefault && chAvatars.length) chAvatars[0].default = true;
+  chAvatarRender();
+}
+
+async function chAvatarUpload(i, input) {
+  const f = input.files[0];
+  if (!f) return;
+  chAvatarSync();
+  if (!chAvatars[i].name) { toast("Name the avatar first", true); input.value = ""; return; }
+  try {
+    await chPersist();
+    const a = chAvatars[i];
+    const fd = new FormData();
+    fd.append("file", f);
+    const r = await fetch(`/api/channels/${chEditing}/avatars/${a.id}/image`, { method: "POST", body: fd });
+    if (!r.ok) throw new Error((await r.json()).detail || "avatar upload failed");
+    a.has_image = true; a.v = Date.now();
+    chAvatarRender();
+    toast(`Image uploaded for ${a.name}`);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function chAvatarRemoveImage(i) {
+  const a = chAvatars[i];
+  if (!a.id || !confirm(`Remove the image for ${a.name || "this avatar"}?`)) return;
+  try {
+    await api(`/api/channels/${chEditing}/avatars/${a.id}/image`, { method: "DELETE" });
+    a.has_image = false;
+    chAvatarRender();
+  } catch (e) { toast(e.message, true); }
+}
+
+// Lip sync is the pipeline's most expensive step and the two engines differ by ~33x, so the
+// cost of the current choice is shown here rather than discovered when a job runs long.
+function chAvatarCost() {
+  const el = $("#chAvatarCostHint");
+  if (!el) return;
+  const cov = $("#chAvatarCoverage").value, est = chData.avatar_estimates || {};
+  const model = $("#chAvatarModel").value || chData.avatar_model_default || "";
+  const per = est[model];
+  if (!chAvatars.length) { el.textContent = "Add an avatar to enable this."; return; }
+  if (!per || cov === "none") { el.textContent = cov === "none" ? "Presenter off for new videos." : ""; return; }
+  const secs = per.seconds[cov] || 0, mins = (per.render_minutes[cov] || 0);
+  el.textContent = secs
+    ? `About ${secs.toFixed(0)}s of presenter per video — roughly ${mins < 1 ? "<1" : mins.toFixed(0)} min of GPU.`
+    : "";
+}
 
 // ---- cast (recurring characters) ----
 let chCast = [];   // working copy while the modal is open: [{id, name, kind, role, look, personality, has_portrait, v}]
@@ -1017,6 +1161,7 @@ function chCastRemove(i) {
 
 function chBody() {
   chCastSync();
+  chAvatarSync();
   return {
     name: $("#chName").value.trim(),
     purpose: $("#chPurpose").value.trim(),
@@ -1028,7 +1173,10 @@ function chBody() {
     characters_enabled: $("#chCharacters").checked,
     cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role, look: c.look,
                              personality: c.personality, voice_id: c.voice_id || "" })),
+    avatars: chAvatars.map(a => ({ id: a.id || "", name: a.name, default: !!a.default })),
     defaults: {
+      avatar_coverage: $("#chAvatarCoverage").value,
+      avatar_model: $("#chAvatarModel").value,
       art_style: CH_REAL_TYPES.includes($("#chVideoType").value) ? "" : $("#chStyle").value,
       storyboard: $("#chStoryboard").checked,
       video_mode: $("#chVmodeField").hidden ? "song" : $("#chVmode").value,
@@ -1049,6 +1197,8 @@ async function chPersist() {
   chEditing = c.id;
   $("#chModalTitle").textContent = "Edit channel";
   chCast = (c.cast || []).map((x, i) => ({ ...x, v: (chCast[i] && chCast[i].v) || Date.now() }));
+  // keep the local cache-buster so a just-uploaded image is not re-fetched from cache
+  chAvatars = (c.avatars || []).map((x, i) => ({ ...x, v: (chAvatars[i] && chAvatars[i].v) || Date.now() }));
   return c;
 }
 

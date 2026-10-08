@@ -12,9 +12,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (browser, cast, chapters, channels, comfy, llm, lyrics, music_upload, repo,
-                      resource, schedule, sfx, story, storyboard, thumbtext, transcript, tts,
-                      video, voices)
+from services import (avatar, browser, cast, chapters, channels, comfy, llm, lyrics,
+                      music_upload, repo, resource, schedule, sfx, story, storyboard, thumbtext,
+                      transcript, tts, video, voices)
 from services import cardtemplates
 
 
@@ -26,7 +26,7 @@ DRAFT_SOURCES = PROMPT_SOURCES + (REPO_SOURCE,)   # every source that drafts a s
 # statuses that are real pipeline work; `planned`, `queued`, `awaiting_approval`, `done`, `failed`
 # only close the open one
 STAGE_STATUSES = frozenset({"drafting", "transcript", "planning", "tts", "music", "scenes",
-                            "thumbnail", "storyboard", "clips", "assembling"})
+                            "thumbnail", "storyboard", "avatar", "clips", "assembling"})
 
 
 @dataclass
@@ -68,6 +68,13 @@ class Job:
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
     owner: str = ""                 # user id of the job's owner (the channel's owner); "" only before the ownership migration
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, characters_enabled, ...}
+    # Presenter avatar: which of the channel's uploaded portraits speaks this video, which
+    # engine animates it (config.AVATAR_MODELS; "" = the Settings default) and where it
+    # appears (config.AVATAR_COVERAGES; "none" is the off switch). Frozen at submit time like
+    # every other choice, so editing the channel later cannot change a queued video.
+    avatar_id: str = ""
+    avatar_model: str = ""
+    avatar_coverage: str = "none"
     storyboard: bool = False        # story board overlay: styled fact cards + related images on the video
     page_scroll: bool = False       # repo jobs: scroll the page screenshot as a panel over the video
     captions: bool = False          # burned-in word-synced subtitles over the video
@@ -1076,6 +1083,118 @@ def _caption_assets(job: Job, plan: dict):
         job.add_log(f"caption timing failed ({e}); assembling without captions")
 
 
+def _avatar_assets(job: Job, plan: dict):
+    """Render the presenter segments: one lip-synced clip (and its matte) per window.
+
+    Resumable like every other artifact - a clip already on disk is never re-rendered, which
+    matters more here than anywhere else because this is the most expensive stage in the
+    pipeline. Non-fatal throughout: a video with no presenter is still a video, so every
+    failure degrades with a log line instead of killing the job."""
+    if (job.avatar_coverage or "none") == "none" or not job.avatar_id:
+        return
+    d = job.dir
+    nar = d / "narration.wav"
+    if not (nar.exists() and nar.stat().st_size > 1000):
+        job.add_log("presenter avatar: no narration to lip-sync; skipped")
+        return
+    src = channels.avatar_path(job.channel_id, job.avatar_id)
+    if not src.exists():
+        job.add_log("presenter avatar: the channel's image is gone; assembling without it")
+        return
+    engine = job.avatar_model or config.DEFAULT_AVATAR_MODEL
+    style = config.DEFAULT_AVATAR_STYLE
+    done = plan.get("avatar") or {}
+    if (done.get("engine") == engine and done.get("segments")
+            and all((d / s["file"]).exists() for s in done["segments"])):
+        job.add_log(f"resume: reusing {len(done['segments'])} presenter segment(s)")
+        return
+    try:
+        total = tts.audio_duration(nar)
+        words = ((plan.get("caption_words") or {}).get("words")) or []
+        wins = avatar.segment_windows(job.avatar_coverage, total, engine, words)
+        if not wins:
+            job.add_log(f"presenter avatar: no room for a segment in {total:.0f}s; skipped")
+            return
+        asked = config.avatar_coverage_seconds(job.avatar_coverage, engine, total)
+        got = sum(e - s for s, e in wins)
+        est = config.avatar_estimate_seconds(got, engine) / 60.0
+        if got + 0.25 < asked:
+            # the budget bit: say so here rather than leaving it to be noticed in the timings
+            job.add_log(f"presenter avatar: trimmed to {got:.1f}s (budget); "
+                        f"{job.avatar_coverage} on {engine} wanted {asked:.1f}s")
+        job.set("avatar", f"rendering {len(wins)} presenter segment(s), about {est:.0f} min")
+        client = comfy.ComfyClient()
+        # Fit to the engine's square HERE: ComfyUI's own fit is a centred cover-crop, which
+        # takes the top off a tall headshot and animates the clipped hair for the whole clip.
+        # Framing is an improvement, not a requirement, so a failure falls back to the
+        # original rather than costing the presenter.
+        try:
+            ref = avatar.portrait_square(src, d / "avatar_ref.png", engine)
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"presenter avatar: could not re-frame the portrait ({e}); using it as is")
+            ref = src
+        img_name = client.upload_image(ref, name=f"videogen_avatar_{job.id}.png")
+        segments = []
+        for i, (start, end) in enumerate(wins, 1):
+            clip = d / f"avatar_{i:02d}.mp4"
+            matte = d / f"avatar_{i:02d}_matte.mp4"
+            if not clip.exists():
+                wav = d / f"avatar_{i:02d}.wav"
+                secs = avatar.slice_audio(nar, start, end, wav, engine)
+                _gpu_gate(job)
+                job.set("avatar", f"presenter segment {i}/{len(wins)} ({secs:.1f}s)")
+                audio_name = client.upload_file(wav, name=f"videogen_avatar_{job.id}_{i}.wav")
+                raw = d / f"avatar_{i:02d}_raw.mp4"
+                avatar.render_segment(
+                    client, engine, img_name, audio_name, secs, raw,
+                    prefix=f"video/videogen_{job.id}_avatar{i}",
+                    on_progress=_progress(job, "avatar"), should_stop=lambda: job.cancel_requested)
+                avatar.trim_lead_frame(raw, clip, engine)
+                raw.unlink(missing_ok=True)
+            if style == "cutout" and not matte.exists():
+                job.set("avatar", f"cutting out presenter segment {i}/{len(wins)}")
+                avatar.matte_segment(clip, matte, on_progress=_progress(job, "avatar"))
+            segments.append({"start": start, "end": end, "file": clip.name,
+                             "matte": matte.name if style == "cutout" else ""})
+        plan["avatar"] = {"engine": engine, "style": style, "coverage": job.avatar_coverage,
+                          "seconds": round(got, 2), "segments": segments}
+        _save_plan(job, plan)
+        job.add_log(f"presenter avatar: {len(segments)} segment(s), {got:.1f}s on {engine}")
+    except (JobCancelled, JobPaused, JobWaitingWindow):
+        raise
+    except Exception as e:  # noqa: BLE001 - a video with no presenter is still a video
+        job.add_log(f"presenter avatar failed ({e}); assembling without it")
+
+
+def _avatar_overlay(job: Job, plan: dict, size: tuple, total: float) -> list:
+    """composite() layers for the presenter, or []. Rebuilt on every assembly so a resolution
+    or style change applies on reassembly without re-rendering the expensive part."""
+    info = plan.get("avatar") or {}
+    segs = info.get("segments") or []
+    if not segs:
+        return []
+    d = job.dir
+    ready = []
+    for s in segs:
+        clip = d / s["file"]
+        if not clip.exists():
+            continue
+        matte = d / s["matte"] if s.get("matte") else None
+        ready.append({"start": float(s["start"]), "end": min(float(s["end"]), total),
+                      "video": clip, "matte": matte if matte and matte.exists() else None})
+    if not ready:
+        return []
+    try:
+        # captions own the bottom of the frame; the bubble sits above them, and for the cut-out
+        # the captions move instead (see video.avatar_box)
+        clear = config.CAPTION_BOTTOM_MARGIN if job.captions else 0.0
+        return video.avatar_layers(size, ready, d, style=info.get("style") or "",
+                                   accent=config.STORYBOARD_ACCENT, clear_bottom=clear)
+    except Exception as e:  # noqa: BLE001
+        job.add_log(f"presenter overlay failed ({e}); assembling without it")
+        return []
+
+
 def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float):
     """Write captions.ass for this frame size, or None. Redone on every assembly, so a settings
     change applies on reassembly and the track always matches the final resolution."""
@@ -1168,6 +1287,10 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     # they cover is simply not visible, and unlike a fact card they cannot be moved
     hook_win = [(0.0, hook_end)] if hook_end else []
     end_win = [(end_start, total)] if end_start < total else []
+    # the presenter owns its corner for these windows; fact cards and the page panel are kept
+    # out of them by the same trim/reserve machinery the hook and end cards use
+    av_win = [(float(x["start"]), min(float(x["end"]), total))
+              for x in ((plan.get("avatar") or {}).get("segments") or [])]
     if job.storyboard and isinstance(plan.get("storyboard"), list):
         job.set("assembling", "drawing the story board cards")
         try:
@@ -1176,6 +1299,8 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
             # a fact card must never share the screen with the hook or the end card
             cards = storyboard.trim_schedule(cards, hook_win, size=size)
             cards = storyboard.trim_schedule(cards, end_win, size=size)
+            if av_win:
+                cards = storyboard.trim_schedule(cards, av_win, size=size)
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"story board overlay failed ({e}); assembling without it")
             cards = []
@@ -1187,12 +1312,12 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
         try:
             # the fact cards can be moved for the panel, the hook and end card cannot
             soft = [(c["start"], c["end"]) for c in cards]
-            win = video.scroll_window(total, busy=soft + hook_win + end_win)
+            win = video.scroll_window(total, busy=soft + hook_win + end_win + av_win)
             if not win:
                 # The cards left no gap - about 29% of three-card schedules on a 40s video, and
                 # the evenly spread ones at that. Reserve the panel a window and move the cards
                 # out of it, rather than dropping the overlay that was explicitly asked for.
-                win = video.scroll_reserve(total, soft=soft, hard=hook_win + end_win)
+                win = video.scroll_reserve(total, soft=soft, hard=hook_win + end_win + av_win)
                 if win:
                     kept = storyboard.trim_schedule(cards, [win], size=size)
                     job.add_log(f"page panel reserved {win[0]:.1f}s-{win[1]:.1f}s; "
@@ -1219,6 +1344,7 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     # last in the list = composited last = on top of the cards and the page panel
     polish, hits = _polish_layers(job, plan, size, total, hook_end, end_start)
     layers += polish
+    layers += _avatar_overlay(job, plan, size, total)
     hits += [c["start"] for c in cards]
     ass = _caption_track(job, plan, size, cards, total)
     source = joined
@@ -1270,6 +1396,9 @@ def _do_assemble(job: Job):
         job.set("assembling", "re-merging clips and mixing audio")
     if job.captions and not plan.get("caption_words"):
         _caption_assets(job, plan)
+        job.set("assembling", "re-merging clips and mixing audio")
+    if (job.avatar_coverage or "none") != "none" and not (plan.get("avatar") or {}).get("segments"):
+        _avatar_assets(job, plan)
         job.set("assembling", "re-merging clips and mixing audio")
     music_file = d / "music.mp3" if (d / "music.mp3").exists() else None
     narration_file = d / "narration.wav" if (d / "narration.wav").exists() else None
@@ -1739,6 +1868,10 @@ def _run(job: Job):
     if job.captions:
         _caption_assets(job, plan)
 
+    # 6d. the presenter avatar. After the word timings on purpose: the segment windows are
+    # snapped to gaps between spoken words, and those timings are already on the plan.
+    _avatar_assets(job, plan)
+
     # 7. clips
     mp = job.megapixels if job.megapixels is not None else config.DEFAULT_MEGAPIXELS
     model = job.video_model or config.DEFAULT_VIDEO_MODEL
@@ -1948,13 +2081,49 @@ class JobManager:
         return (aspect_ratio, art_style, video_length, audio_mode, voice_id, song_voice, ch.get("id", ""), snap,
                 storyboard_flag, captions_flag, polish_flag, video_model, mp, resolution)
 
+    @staticmethod
+    def _resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel: dict | None):
+        """Presenter choices: request value -> channel default -> global default.
+
+        Deliberately NOT folded into _resolve_choices: that function returns a positional
+        tuple several callers unpack and index ([-1] is the output resolution), so appending
+        to it is a trap. Returns (avatar_id, avatar_model, avatar_coverage).
+
+        A coverage that names an avatar the channel does not have is demoted to "none" rather
+        than raising: the channel can be edited (or its avatar deleted) between planning a
+        video and setting it up, and losing the whole job over a missing portrait would be
+        the wrong trade."""
+        ch = channel or {}
+        defaults = ch.get("defaults") or {}
+        avatars = [a for a in (ch.get("avatars") or []) if isinstance(a, dict) and a.get("id")]
+
+        coverage = (avatar_coverage or defaults.get("avatar_coverage")
+                    or config.DEFAULT_AVATAR_COVERAGE)
+        if coverage not in config.AVATAR_COVERAGES:
+            raise ValueError(f"unsupported avatar coverage: {coverage}")
+        model = avatar_model if avatar_model is not None else defaults.get("avatar_model") or ""
+        model = str(model or "")
+        if model and model not in config.AVATAR_MODELS:
+            raise ValueError(f"unsupported avatar model: {model}")
+        chosen = str(avatar_id or defaults.get("avatar_id") or "")
+        if chosen and not any(a["id"] == chosen for a in avatars):
+            chosen = ""
+        if not chosen:
+            fallback = channels.default_avatar(ch)
+            chosen = fallback["id"] if fallback else ""
+        # no avatar to animate, or the budget is switched off entirely -> no presenter
+        if not chosen or config.avatar_budget_seconds(model) <= 0:
+            return "", model, "none"
+        return chosen, model, coverage
+
     def submit(self, url: str, aspect_ratio: str = "",
                art_style: str = "", video_length: str = "",
                audio_mode: str = "", voice_id: str = "",
                channel: dict | None = None, storyboard_flag=None, megapixels=None,
                owner: str = "", resolution: str = "", song_voice: str = "",
                lyrics: str = "", music_upload_id: str = "", video_mode: str = "",
-               captions_flag=None, polish_flag=None, video_model: str = "") -> Job:
+               captions_flag=None, polish_flag=None, video_model: str = "",
+               avatar_id: str = "", avatar_model=None, avatar_coverage: str = "") -> Job:
         video_mode = resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
         if video_mode == "story":
             # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
@@ -1964,6 +2133,7 @@ class JobManager:
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
                                   polish_flag, video_model)
+        av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -1973,6 +2143,7 @@ class JobManager:
                   resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
                   storyboard=sb, captions=cap, polish=pol, lyrics=lyrics,
+                  avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                   owner=owner or (channel or {}).get("owner", ""),
                   video_mode=video_mode,
                   status="drafting" if video_mode == "story" else "queued",
@@ -2085,7 +2256,8 @@ class JobManager:
                       start: bool = True, title: str = "", plan: dict | None = None,
                       page_scroll=None, lyrics: str = "", music_upload_id: str = "",
                       video_mode: str = "", captions_flag=None, polish_flag=None,
-                      video_model: str = "") -> Job:
+                      video_model: str = "", avatar_id: str = "", avatar_model=None,
+                      avatar_coverage: str = "") -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -2108,6 +2280,7 @@ class JobManager:
             self._resolve_choices(aspect_ratio, art_style, video_length, audio_mode, voice_id, channel,
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
                                   polish_flag, video_model)
+        av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -2125,6 +2298,7 @@ class JobManager:
                   resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
+                  avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                   lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
                   music_upload=(up or {}).get("name", ""),
                   music_seconds=float((up or {}).get("seconds", 0.0)),
@@ -2147,7 +2321,8 @@ class JobManager:
                       storyboard_flag=None, megapixels=None, resolution: str = "",
                       song_voice: str = "", lyrics: str = "",
                       music_upload_id: str = "", video_mode: str = "", captions_flag=None,
-                      polish_flag=None, video_model: str = "") -> Job:
+                      polish_flag=None, video_model: str = "", avatar_id: str = "",
+                      avatar_model=None, avatar_coverage: str = "") -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -2166,7 +2341,9 @@ class JobManager:
                                "video_length": job.video_length, "audio_mode": job.audio_mode,
                                "song_voice": job.song_voice, "storyboard": job.storyboard,
                                "captions": job.captions, "polish": job.polish,
-                               "voice_id": job.voice_id, "video_mode": job.video_mode}}
+                               "voice_id": job.voice_id, "video_mode": job.video_mode,
+                               "avatar_id": job.avatar_id, "avatar_model": job.avatar_model,
+                               "avatar_coverage": job.avatar_coverage}}
             # resolved against the snapshot frozen at plan time, exactly as the lyrics are below
             vmode = resolve_video_mode(video_mode or job.video_mode, ch, job.source,
                                         lyrics, music_upload_id)
@@ -2177,6 +2354,8 @@ class JobManager:
                 megapixels if megapixels not in (None, "", 0) else job.megapixels,
                 resolution or job.resolution, song_voice, captions_flag, polish_flag,
                 video_model or job.video_model)
+            av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model,
+                                                           avatar_coverage, ch)
             # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
             # lyrics are the one field a blank does NOT inherit from the job: an empty box means
             # the user cleared it (and switching to a voiceover clears it in the form too)
@@ -2193,6 +2372,7 @@ class JobManager:
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
                     storyboard=sb, captions=cap, polish=pol, megapixels=mp, resolution=res,
                     video_model=vm, lyrics=words,
+                    avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                     setup_done=True,
                     video_mode=vmode,
                     music_upload=(up or {}).get("name", ""),

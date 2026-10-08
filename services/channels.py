@@ -6,8 +6,10 @@ animated / realistic / tech look via video_type, prompt framing via the purpose 
 fixed style & rules text, whether its videos have characters at all via characters_enabled -
 off means informative explainers with no cast - the recurring cast, the story-board overlay default) and which
 YouTube account the finished video is uploaded to. Index: channels/channels.json;
-per-channel files: channels/<id>_logo.png, channels/<id>_yt_token.json and the cast
-portraits channels/<id>_cast_<char>.png (see services/cast.py).
+per-channel files: channels/<id>_logo.png, channels/<id>_yt_token.json, the cast
+portraits channels/<id>_cast_<char>.png (see services/cast.py) and the presenter
+avatars channels/<id>_avatar_<aid>.png, which are lip-synced to the voiceover and
+overlaid on the video rather than prompted into a scene.
 """
 import json
 import shutil
@@ -29,8 +31,10 @@ MAX_CAST_KIND_CHARS = 60
 CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: detail helps consistency
 
 MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
+MAX_AVATARS = 12              # presenter portraits per channel; one is the default
+MAX_AVATAR_NAME_CHARS = 40
 DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice",
-                "video_mode", "character_voice")
+                "video_mode", "character_voice", "avatar_id", "avatar_model", "avatar_coverage")
 BOOL_DEFAULT_KEYS = ("storyboard", "captions", "polish")   # on by default for a tech channel
 
 
@@ -51,6 +55,10 @@ def _read_index() -> dict:
                     for m in c["cast"]:         # characters created before they could have a voice
                         if isinstance(m, dict):
                             m.setdefault("voice_id", "")
+                    c["defaults"].setdefault("avatar_id", "")
+                    c["defaults"].setdefault("avatar_model", "")
+                    c["defaults"].setdefault("avatar_coverage", config.DEFAULT_AVATAR_COVERAGE)
+                    c.setdefault("avatars", [])
                     c.setdefault("cast_opening", True)
                     c.setdefault("characters_enabled", bool(c.get("cast")))
                     c.setdefault("rules", "")
@@ -108,12 +116,37 @@ def candidate_path(cid: str, char_id: str, k: int) -> Path:
     return config.CHANNELS_DIR / f"{cid}_cast_{char_id}_cand_{k}.jpg"
 
 
+def avatar_path(cid: str, avatar_id: str) -> Path:
+    """A presenter portrait the videos lip-sync. Same shape as a cast portrait, but these
+    are never prompted into a scene - they are animated and overlaid."""
+    return config.CHANNELS_DIR / f"{cid}_avatar_{avatar_id}.png"
+
+
 def _remove_character_files(cid: str, char_id: str):
     for p in config.CHANNELS_DIR.glob(f"{cid}_cast_{char_id}*"):
         try:
             p.unlink()
         except OSError:
             pass
+
+
+def _remove_avatar_files(cid: str, avatar_id: str):
+    for p in config.CHANNELS_DIR.glob(f"{cid}_avatar_{avatar_id}*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def default_avatar(rec: dict) -> dict | None:
+    """The avatar a new video starts with: the one flagged default, else the first."""
+    items = [a for a in (rec.get("avatars") or []) if isinstance(a, dict)]
+    return next((a for a in items if a.get("default")), items[0] if items else None)
+
+
+def find_avatar(rec: dict, avatar_id: str) -> dict | None:
+    return next((a for a in (rec.get("avatars") or [])
+                 if isinstance(a, dict) and a.get("id") == avatar_id), None)
 
 
 def snapshot(rec: dict) -> dict:
@@ -128,7 +161,10 @@ def snapshot(rec: dict) -> dict:
             # at synthesis time, long after the channel record is out of reach
             "character_voice": str((rec.get("defaults") or {}).get("character_voice") or ""),
             "cast_opening": bool(rec.get("cast_opening", True)),
-            "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast"))))}
+            "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast")))),
+            # the avatar roster travels with the job so a planned video can still resolve the
+            # presenter it was set up with, even if the channel is edited before it runs
+            "avatars": [dict(a) for a in rec.get("avatars") or []]}
 
 
 def _validate_cast(items, base_cast: list) -> list:
@@ -176,17 +212,57 @@ def _validate_cast(items, base_cast: list) -> list:
     return out
 
 
+def _validate_avatars(items, base_avatars: list) -> list:
+    """Normalize the avatar list; ids of existing avatars are kept so their PNG still resolves.
+
+    Exactly one avatar carries `default` whenever the list is non-empty - the editor can send
+    none or several, and silently settling it here is better than rejecting a save over a radio
+    button. Deleting the default promotes the next one the same way."""
+    if not isinstance(items, list):
+        raise ValueError("avatars must be a list")
+    if len(items) > MAX_AVATARS:
+        raise ValueError(f"at most {MAX_AVATARS} avatars per channel")
+    known = {a.get("id") for a in base_avatars if isinstance(a, dict)}
+    out, seen = [], set()
+    for it in items:
+        if not isinstance(it, dict):
+            raise ValueError("each avatar must be an object")
+        a = {"id": str(it.get("id") or "").strip(),
+             "name": str(it.get("name") or "").strip(),
+             "default": bool(it.get("default"))}
+        if not a["id"] or a["id"] not in known or a["id"] in seen:
+            a["id"] = uuid.uuid4().hex[:8]
+        seen.add(a["id"])
+        if not a["name"] or len(a["name"]) > MAX_AVATAR_NAME_CHARS:
+            raise ValueError(f"avatars: each one needs a name of 1-{MAX_AVATAR_NAME_CHARS} characters")
+        out.append(a)
+    names = [a["name"].lower() for a in out]
+    if len(set(names)) != len(names):
+        raise ValueError("avatars: names must be unique")
+    if out and not any(a["default"] for a in out):
+        out[0]["default"] = True
+    seen_default = False
+    for a in out:                      # keep only the first default
+        if a["default"] and seen_default:
+            a["default"] = False
+        seen_default = seen_default or a["default"]
+    return out
+
+
 def _validate(data: dict, base: dict | None = None) -> dict:
     """Merge data over base (or built-in defaults) and validate every field."""
     rec = {"name": "", "purpose": "", "rules": "", "audience": "general", "video_type": "animated",
-           "made_for_kids": False, "cast": [], "cast_opening": True, "characters_enabled": False,
+           "made_for_kids": False, "cast": [], "avatars": [], "cast_opening": True,
+           "characters_enabled": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None, "captions": None, "polish": None,
-                        "song_voice": "", "video_mode": "", "character_voice": ""}}
+                        "song_voice": "", "video_mode": "", "character_voice": "",
+                        "avatar_id": "", "avatar_model": "",
+                        "avatar_coverage": config.DEFAULT_AVATAR_COVERAGE}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
-                  "cast_opening", "characters_enabled"):
+                  "avatars", "cast_opening", "characters_enabled"):
             if k in base:
                 rec[k] = base[k]
         rec["defaults"].update(base.get("defaults") or {})
@@ -201,6 +277,8 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         rec["cast_opening"] = bool(data["cast_opening"])
     if "cast" in data:
         rec["cast"] = _validate_cast(data["cast"], (base or {}).get("cast") or [])
+    if "avatars" in data:
+        rec["avatars"] = _validate_avatars(data["avatars"], (base or {}).get("avatars") or [])
     if "characters_enabled" in data:
         rec["characters_enabled"] = bool(data["characters_enabled"])
     elif base is None:   # a new channel follows the migration rule: characters only if a cast was given
@@ -257,6 +335,19 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     df["song_voice"] = df.get("song_voice") or default_song_voice(rec["audience"])
     if df["song_voice"] not in config.SONG_VOICES:
         raise ValueError(f"song_voice must be one of {config.SONG_VOICES}")
+    # Avatar: "" engine means follow the global Settings default, so it is not an error.
+    if df["avatar_model"] and df["avatar_model"] not in config.AVATAR_MODELS:
+        raise ValueError(f"avatar_model must be one of {list(config.AVATAR_MODELS)}")
+    df["avatar_coverage"] = df.get("avatar_coverage") or config.DEFAULT_AVATAR_COVERAGE
+    if df["avatar_coverage"] not in config.AVATAR_COVERAGES:
+        raise ValueError(f"avatar_coverage must be one of {list(config.AVATAR_COVERAGES)}")
+    # A default pointing at a deleted avatar is cleared rather than rejected, then re-seeded
+    # from the list, so the channel always names an avatar that actually has a PNG.
+    if df["avatar_id"] and not any(a["id"] == df["avatar_id"] for a in rec["avatars"]):
+        df["avatar_id"] = ""
+    if not df["avatar_id"]:
+        chosen = default_avatar(rec)
+        df["avatar_id"] = chosen["id"] if chosen else ""
     return rec
 
 
@@ -313,11 +404,16 @@ def update_channel(cid: str, data: dict) -> dict:
                 _write_index(idx)
                 kept = {x["id"] for x in rec["cast"]}
                 dropped = [x["id"] for x in (c.get("cast") or []) if x.get("id") not in kept]
+                kept_av = {x["id"] for x in rec["avatars"]}
+                dropped_av = [x["id"] for x in (c.get("avatars") or [])
+                              if x.get("id") not in kept_av]
                 break
         else:
             raise KeyError(cid)
     for char_id in dropped:   # portraits of removed characters
         _remove_character_files(cid, char_id)
+    for avatar_id in dropped_av:   # images of removed avatars
+        _remove_avatar_files(cid, avatar_id)
     return rec
 
 
@@ -334,6 +430,7 @@ def delete_channel(cid: str):
     token_path(cid).unlink(missing_ok=True)
     secret_path(cid).unlink(missing_ok=True)
     _remove_character_files(cid, "")   # every <cid>_cast_* portrait and candidate
+    _remove_avatar_files(cid, "")      # every <cid>_avatar_* presenter portrait
 
 
 def ensure_default_channel():

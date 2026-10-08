@@ -61,7 +61,7 @@ function navbar(active) {
 }
 
 /* ---- status helpers ---- */
-const STEP_LABELS = { planned: "Setup", queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", clips: "Clips", assembling: "Assemble", done: "Done" };
+const STEP_LABELS = { planned: "Setup", queued: "Queued", drafting: "Script", awaiting_approval: "Approval", transcript: "Transcript", planning: "LLM plan", tts: "Narration", scenes: "Scenes", thumbnail: "Thumbnail", music: "Music", storyboard: "Story board", avatar: "Presenter", clips: "Clips", assembling: "Assemble", done: "Done" };
 
 // A story video runs exactly the same stages as a voiceover video; only the words change, so no
 // new status is invented (that would need pipeline, pill and progress changes, and old jobs would
@@ -86,6 +86,7 @@ function orderFor(j) {
             ? [...(j.plan_id ? ["planned"] : []), "drafting", "awaiting_approval", "queued", "planning"]
             : ["queued", "transcript", "planning"];
   if (j.storyboard) mid.push("storyboard");
+  if (j.avatar_coverage && j.avatar_coverage !== "none") mid.push("avatar");
   return [...head, ...mid, "clips", "assembling", "done"];
 }
 
