@@ -176,10 +176,23 @@ class Variants(unittest.TestCase):
         self.assertEqual(thumbtext.variants(self.base, self.dir, []), [])
 
     def test_stale_variants_from_a_previous_pass_are_removed(self):
+        """Clearing moved out of variants() when a second base (the presenter thumbnail) began
+        numbering its files after the first: a pass that cleaned up after itself would have
+        deleted the batch before it."""
         thumbtext.variants(self.base, self.dir, ["One", "Two", "Three"])
         recs = thumbtext.variants(self.base, self.dir, ["Only one"])
         self.assertEqual(len(recs), 1)
+        thumbtext.drop_stale(self.dir, len(recs))
         self.assertFalse(thumbtext.variant_path(self.dir, 2).exists())
+
+    def test_an_offset_numbers_a_second_base_after_the_first(self):
+        first = thumbtext.variants(self.base, self.dir, ["One", "Two"])
+        second = thumbtext.variants(self.base, self.dir, ["Three"], offset=len(first))
+        self.assertEqual([r["file"] for r in first],
+                         [thumbtext.variant_path(self.dir, k).name for k in (1, 2)])
+        self.assertEqual(second[0]["file"], thumbtext.variant_path(self.dir, 3).name)
+        for k in (1, 2, 3):
+            self.assertTrue(thumbtext.variant_path(self.dir, k).exists())
 
 
 class Activate(unittest.TestCase):

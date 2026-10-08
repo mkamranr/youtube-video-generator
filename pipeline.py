@@ -813,21 +813,58 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
             shutil.copyfile(d / "thumbnail.jpg", base)
         else:
             return 0
+    # A video with a presenter gets a SECOND base as well: the same thumbnail with the
+    # presenter cut out of its own clip and composited in the corner it occupies in the video.
+    # Both are then offered, because which one earns the click is a judgement call - the face
+    # draws the eye, the clean render shows more of the picture - and neither costs a render.
+    pres = _presenter_base(job, plan, base)
+    bases = [(base, False)] + ([(pres, True)] if pres else [])
     recs = []
-    # Same master-switch rule as the captions: THUMB_TEXT_ENABLED is read here, not frozen into
-    # the job, so turning it off in Settings strips the text from an existing video's thumbnail
-    # the next time its variants are built. job.thumb_text is this video's own choice.
-    if config.THUMB_TEXT_ENABLED and job.thumb_text and config.THUMB_TEXT_VARIANTS > 0:
-        try:
-            recs = thumbtext.variants(base, d, (plan.get("thumbnail_texts") or [])
-                                      [:config.THUMB_TEXT_VARIANTS])
-        except Exception as e:  # noqa: BLE001
-            job.add_log(f"thumbnail text failed ({e}); the plain thumbnail is kept")
-            recs = []
+    texts = (plan.get("thumbnail_texts") or [])[:config.THUMB_TEXT_VARIANTS]
+    for src, is_pres in bases:
+        if is_pres:        # the presenter base is itself a choice, with no text on it at all
+            recs.append({"file": src.name, "text": "", "layout": "presenter", "presenter": True})
+        # Same master-switch rule as the captions: THUMB_TEXT_ENABLED is read here, not frozen
+        # into the job, so turning it off in Settings strips the text from an existing video's
+        # thumbnail the next time its variants are built. job.thumb_text is this video's choice.
+        if config.THUMB_TEXT_ENABLED and job.thumb_text and config.THUMB_TEXT_VARIANTS > 0:
+            try:
+                for r in thumbtext.variants(src, d, texts, offset=len(recs)):
+                    recs.append({**r, "presenter": is_pres})
+            except Exception as e:  # noqa: BLE001
+                job.add_log(f"thumbnail text failed ({e}); the plain thumbnail is kept")
+    thumbtext.drop_stale(d, len(recs))
     plan["thumbnail_variants"] = recs
     k = thumbtext.activate(d, recs, job.thumb_variant if select is None else select)
     job.set(thumb_variant=k)
     return k
+
+
+def _presenter_base(job: Job, plan: dict, base: Path) -> Path | None:
+    """thumb_base_presenter.jpg - the thumbnail with this video's presenter composited in - or
+    None when the video has no presenter, or building it fails.
+
+    Rebuilt whenever the segment clip is newer, so a re-rendered presenter reaches the
+    thumbnail too. Non-fatal like everything else about the thumbnail: the worst case is that
+    the clean render is the only one offered."""
+    segs = ((plan.get("avatar") or {}).get("segments")) or []
+    if not segs:
+        return None
+    d = job.dir
+    clip = d / segs[0]["file"]
+    if not clip.exists():
+        return None
+    dst = d / "thumb_base_presenter.jpg"
+    if dst.exists() and dst.stat().st_mtime >= max(clip.stat().st_mtime, base.stat().st_mtime):
+        return dst
+    try:
+        matte = d / (segs[0].get("matte") or "")
+        cut = avatar.thumbnail_cutout(clip, d / "thumb_presenter.png",
+                                      matte if matte.name and matte.exists() else None)
+        return thumbtext.with_presenter(base, cut, dst)
+    except Exception as e:  # noqa: BLE001 - a thumbnail without the presenter is still fine
+        job.add_log(f"presenter thumbnail skipped ({e})")
+        return None
 
 
 def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None) -> tuple:
@@ -1152,14 +1189,22 @@ def _avatar_assets(job: Job, plan: dict):
                 avatar.render_segment(
                     client, engine, img_name, audio_name, secs, raw,
                     prefix=f"video/videogen_{job.id}_avatar{i}",
-                    on_progress=_progress(job, "avatar"), should_stop=lambda: job.cancel_requested)
+                    on_progress=_progress(job, "avatar"), should_stop=lambda: job.cancel_requested,
+                    on_cleanup_failed=_cleanup_warn(job))
                 avatar.trim_lead_frame(raw, clip, engine)
                 raw.unlink(missing_ok=True)
+                # the narration slice has served its purpose the moment the clip is down
+                if config.COMFY_CLEANUP:
+                    client.scrub_file("input", "", audio_name)
             if style == "cutout" and not matte.exists():
                 job.set("avatar", f"cutting out presenter segment {i}/{len(wins)}")
                 avatar.matte_segment(clip, matte, on_progress=_progress(job, "avatar"))
             segments.append({"start": start, "end": end, "file": clip.name,
                              "matte": matte.name if style == "cutout" else ""})
+        # the portrait is the reference image for EVERY segment, so it goes only once they are
+        # all rendered - not inside the loop with the audio
+        if config.COMFY_CLEANUP:
+            client.scrub_file("input", "", img_name)
         plan["avatar"] = {"engine": engine, "style": style, "coverage": job.avatar_coverage,
                           "seconds": round(got, 2), "segments": segments}
         _save_plan(job, plan)

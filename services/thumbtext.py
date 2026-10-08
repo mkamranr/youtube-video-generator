@@ -165,23 +165,64 @@ def render(base_jpg, out_jpg, text: str, layout: str = "band", accent: str | Non
     return out_jpg
 
 
-def variants(base_jpg, job_dir, texts, accent: str | None = None) -> list:
+def with_presenter(base_jpg, cutout_png, out_jpg, style: str = "", corner: str = "") -> Path:
+    """Composite the presenter cut-out onto a copy of the thumbnail base.
+
+    Placed with video.avatar_box at the thumbnail's own size, which is the same function the
+    video overlay uses, so the presenter lands in the same corner at the same fraction of the
+    frame - a viewer who clicks the thumbnail sees the picture it promised. The caption
+    reserve is zero here: a thumbnail has no subtitles to clear.
+
+    The logo corner is left alone by construction, because the presenter is anchored to the
+    bottom of the frame and the logo sits top-right."""
+    from PIL import Image
+    from services import video
+
+    base_jpg, out_jpg = Path(base_jpg), Path(out_jpg)
+    base = Image.open(base_jpg).convert("RGB")
+    cut = Image.open(cutout_png).convert("RGBA")
+    x, y, w, h = video.avatar_box(base.size, style or config.DEFAULT_AVATAR_STYLE, corner=corner)
+    if w < 2 or h < 2:
+        raise ValueError("no room for the presenter on this thumbnail")
+    sc = max(w / cut.width, h / cut.height)      # cover the box, then centre-crop to it
+    cut = cut.resize((max(1, round(cut.width * sc)), max(1, round(cut.height * sc))),
+                     Image.LANCZOS)
+    left, top = (cut.width - w) // 2, (cut.height - h) // 2
+    cut = cut.crop((left, top, left + w, top + h))
+    out = base.convert("RGBA")
+    out.alpha_composite(cut, (x, y))
+    out.convert("RGB").save(out_jpg, "JPEG", quality=92)
+    return out_jpg
+
+
+def variants(base_jpg, job_dir, texts, accent: str | None = None, offset: int = 0) -> list:
     """Render one variant per text and return [{file, text, layout}].
 
     A layout that raises is skipped rather than fatal, so one bad treatment never costs the
-    others."""
+    others.
+
+    `offset` is how many variants already exist in the caller's list, so a second pass over a
+    different base (the presenter thumbnail) numbers its files after the first rather than
+    overwriting them. Clearing leftovers is therefore the caller's job - see drop_stale."""
     out = []
     for i, text in enumerate(list(texts or [])):
         layout = LAYOUTS[i % len(LAYOUTS)]
-        k = len(out) + 1
+        k = offset + len(out) + 1
         try:
             path = render(base_jpg, variant_path(job_dir, k), text, layout=layout, accent=accent)
             out.append({"file": path.name, "text": normalize(text), "layout": layout})
         except Exception as e:  # noqa: BLE001 - the clean thumbnail is still perfectly usable
             print(f"thumbnail variant {layout} skipped: {e}")
-    for stale in range(len(out) + 1, len(LAYOUTS) + 2):   # drop leftovers from a previous pass
-        variant_path(job_dir, stale).unlink(missing_ok=True)
     return out
+
+
+def drop_stale(job_dir, keep: int):
+    """Delete variant files past `keep`, left by a pass that produced more of them.
+
+    Generous upper bound rather than a glob: every layout, for both the clean and the presenter
+    base, plus room for the presenter's own text-free entry."""
+    for stale in range(keep + 1, 2 * len(LAYOUTS) + 4):
+        variant_path(job_dir, stale).unlink(missing_ok=True)
 
 
 AUTO = -1    # "nobody has chosen yet" - distinct from 0, which is a deliberate "no text please"

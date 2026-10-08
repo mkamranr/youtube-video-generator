@@ -451,5 +451,68 @@ class PortraitFraming(unittest.TestCase):
             avatar.portrait_square(bad, self.dir / "out2.png", "Wan 2.2 S2V")
 
 
+class ServerCleanup(unittest.TestCase):
+    """Nothing the presenter stage puts on the shared box outlives its local copy."""
+
+    def setUp(self):
+        self.jdir = Path(tempfile.mkdtemp(prefix="job-", dir=TMP))
+        (self.jdir / "narration.wav").write_bytes(b"x" * 2000)
+        config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+        self.job = mock.MagicMock()
+        self.job.dir = self.jdir
+        self.job.id = "job9"
+        self.job.channel_id, self.job.avatar_id = "c9", "a9"
+        self.job.avatar_model, self.job.avatar_coverage = "LTX 2.5", "both"
+        self.job.cancel_requested = False
+        self.logs = []
+        self.job.add_log.side_effect = self.logs.append
+        channels.avatar_path("c9", "a9").write_bytes(b"png")
+        mock.patch.object(pipeline.tts, "audio_duration", return_value=90.0).start()
+        mock.patch.object(pipeline, "_gpu_gate").start()
+        mock.patch.object(pipeline, "_save_plan").start()
+        mock.patch.object(pipeline.avatar, "slice_audio", return_value=12.0).start()
+        mock.patch.object(pipeline.avatar, "matte_segment").start()
+        mock.patch.object(pipeline.avatar, "trim_lead_frame",
+                          side_effect=lambda src, dst, eng: (Path(dst).write_bytes(b"c"), dst)[1]).start()
+        r = mock.patch.object(pipeline.avatar, "render_segment").start()
+        r.side_effect = lambda _c, _e, _i, _a, _s, dest, **kw: (Path(dest).write_bytes(b"clip"), dest)[1]
+        self.client = mock.patch.object(pipeline.comfy, "ComfyClient").start().return_value
+        self.client.upload_image.return_value = "videogen_avatar_job9.png"
+        self.client.upload_file.side_effect = lambda w, name="": name
+        self.addCleanup(mock.patch.stopall)
+
+    def _scrubbed(self):
+        return [c.args[2] for c in self.client.scrub_file.call_args_list]
+
+    def test_each_narration_slice_is_scrubbed_once_its_clip_is_down(self):
+        with mock.patch.object(config, "COMFY_CLEANUP", True):
+            pipeline._avatar_assets(self.job, {})
+        self.assertIn("videogen_avatar_job9_1.wav", self._scrubbed())
+
+    def test_the_portrait_is_scrubbed_after_the_last_segment_not_before(self):
+        with mock.patch.object(config, "COMFY_CLEANUP", True):
+            pipeline._avatar_assets(self.job, {})
+        scrubbed = self._scrubbed()
+        self.assertIn("videogen_avatar_job9.png", scrubbed)
+        # it is the reference image for every segment, so it must go last
+        self.assertEqual(scrubbed[-1], "videogen_avatar_job9.png")
+
+    def test_nothing_is_scrubbed_when_cleanup_is_off(self):
+        with mock.patch.object(config, "COMFY_CLEANUP", False):
+            pipeline._avatar_assets(self.job, {})
+        self.client.scrub_file.assert_not_called()
+
+    def test_the_rendered_clip_is_scrubbed_by_the_run_itself(self):
+        """The output is cleaned up by ComfyClient.run, so render_segment has to ask for it -
+        otherwise a 640x640 video sits on the shared box until the next orphan sweep."""
+        from services import comfy as _comfy    # render_segment imports it lazily
+        mock.patch.stopall()                      # this one needs the real render_segment
+        client = mock.MagicMock()
+        with mock.patch.object(_comfy.ComfyClient, "load_workflow", return_value={}),              mock.patch.object(_comfy.ComfyClient, "build_avatar", return_value={}),              mock.patch.object(config, "COMFY_CLEANUP", True):
+            avatar.render_segment(client, "LTX 2.5", "i.png", "a.wav", 5.0,
+                                  self.jdir / "raw.mp4", prefix="p")
+        self.assertTrue(client.run.call_args.kwargs["cleanup"])
+
+
 if __name__ == "__main__":
     unittest.main()

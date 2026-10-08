@@ -447,13 +447,17 @@ function renderThumbVariants(variants, j) {
   if ($("#thumbVars").hidden) return;
   const active = j.thumb_variant;
   // 0 is a real choice ("no text"), not just the absence of one
-  const opts = [{ k: 0, text: "No text", file: "thumb_base.jpg" }]
-    .concat(live.map(r => ({ k: recs.indexOf(r) + 1, text: r.text, file: r.file })));
+  const opts = [{ k: 0, text: "No text", file: "thumb_base.jpg", presenter: false }]
+    .concat(live.map(r => ({ k: recs.indexOf(r) + 1, text: r.text, file: r.file,
+                             presenter: !!r.presenter })));
+  // a video with a presenter offers every thumbnail twice, so the label has to say which is
+  // which - the pictures differ by a corner of the frame and are easy to mix up at this size
+  const label = o => (o.presenter ? "● " : "") + (o.text || (o.presenter ? "Presenter, no text" : "No text"));
   $("#thumbVarRow").innerHTML = opts.map(o => `
     <button class="btn ${o.k === active ? "" : "secondary"} sm" data-variant="${o.k}"
-            title="${esc(o.text)}" style="display:flex;flex-direction:column;gap:4px;padding:6px">
+            title="${esc(label(o))}" style="display:flex;flex-direction:column;gap:4px;padding:6px">
       <img src="${F(o.file)}?v=${j.updated}" alt="" style="width:132px;border-radius:4px;display:block">
-      <span style="font-size:11px;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.text)}</span>
+      <span style="font-size:11px;max-width:132px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(label(o))}</span>
     </button>`).join("");
   for (const b of $("#thumbVarRow").querySelectorAll("button[data-variant]")) {
     b.onclick = async () => {

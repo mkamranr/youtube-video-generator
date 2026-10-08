@@ -117,14 +117,19 @@ def slice_audio(narration: Path, start: float, end: float, dst: Path, engine: st
 
 def render_segment(client, engine: str, image_name: str, audio_name: str, seconds: float,
                    dest: Path, prefix: str, prompt: str = "", seed=None,
-                   on_progress=None, should_stop=None) -> Path:
-    """Animate the portrait against one narration slice. Returns the raw clip."""
+                   on_progress=None, should_stop=None, on_cleanup_failed=None) -> Path:
+    """Animate the portrait against one narration slice. Returns the raw clip.
+
+    cleanup=COMFY_CLEANUP like every other render: the clip is scrubbed from the server the
+    moment it has been downloaded, rather than waiting for the orphan sweep. A presenter
+    segment is a 640x640 video and the box is shared, so leaving it there is not free."""
     from services import comfy
     tpl = comfy.ComfyClient.load_workflow(config.avatar_workflow(engine))
     wf = comfy.ComfyClient.build_avatar(tpl, engine, image=image_name, audio=audio_name,
                                         seconds=seconds, filename_prefix=prefix,
                                         prompt=prompt or config.AVATAR_PROMPT, seed=seed)
-    client.run(wf, dest, on_progress=on_progress, should_stop=should_stop)
+    client.run(wf, dest, on_progress=on_progress, should_stop=should_stop,
+               cleanup=config.COMFY_CLEANUP, on_cleanup_failed=on_cleanup_failed)
     return dest
 
 
@@ -250,6 +255,44 @@ def portrait_square(src: Path, dst: Path, engine: str = "", headroom: float = 0.
         if want and want != out.size[0]:
             out = out.resize((want, want), Image.LANCZOS)
         out.save(dst, "PNG")
+    return dst
+
+
+def thumbnail_cutout(clip: Path, dst: Path, matte: Path | None = None, at: float = 0.4) -> Path:
+    """One frame of the presenter as an RGBA cut-out PNG, for compositing onto a thumbnail.
+
+    `at` is a fraction of the clip rather than a timestamp: a little past the start, where the
+    face has settled and the mouth is mid-sentence. Frame 0 is the worst choice available - on
+    Wan it is the reference-image slot, and even trimmed the opening frame has a closed mouth.
+
+    The alpha comes from the segment's own matte video when one was made (the cut-out look
+    already paid for it), and otherwise from a single u2net pass on this one frame - which is
+    well under a second, and is what lets the bubble look have a cut-out thumbnail."""
+    from PIL import Image
+    import numpy as np
+
+    clip, dst = Path(clip), Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    t = max(0.0, _duration(clip) * min(max(at, 0.0), 0.99))
+    rgb = dst.with_suffix(".rgb.png")
+    subprocess.run([ffmpeg(), "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(clip),
+                    "-frames:v", "1", str(rgb)], check=True)
+    img = Image.open(rgb).convert("RGB")
+    if matte is not None and Path(matte).exists():
+        a = dst.with_suffix(".a.png")
+        subprocess.run([ffmpeg(), "-y", "-v", "error", "-ss", f"{t:.3f}", "-i", str(matte),
+                        "-frames:v", "1", str(a)], check=True)
+        with Image.open(a) as am:
+            alpha = am.convert("L").resize(img.size, Image.LANCZOS)
+        a.unlink(missing_ok=True)
+    else:
+        sess, inp, out0 = _u2net()
+        m = _alpha(sess, inp, out0, np.asarray(img))
+        alpha = Image.fromarray((np.clip(m, 0, 1) * 255).astype(np.uint8), "L")
+    out = img.convert("RGBA")
+    out.putalpha(alpha)
+    out.save(dst, "PNG")
+    rgb.unlink(missing_ok=True)
     return dst
 
 
