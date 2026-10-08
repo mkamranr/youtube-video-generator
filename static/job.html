@@ -147,6 +147,7 @@
     <label class="switch" id="suSbLabel" style="margin-top:12px"><input type="checkbox" id="suSb"><span class="track"></span> Add story board cards</label>
     <label class="switch" id="suCapLabel" style="margin-top:12px"><input type="checkbox" id="suCap"><span class="track"></span> Burn in captions</label>
     <label class="switch" id="suPolLabel" style="margin-top:12px"><input type="checkbox" id="suPol"><span class="track"></span> Hook card, end card &amp; progress bar</label>
+    <label class="switch" id="suThumbLabel" style="margin-top:12px"><input type="checkbox" id="suThumb"><span class="track"></span> Text on the thumbnail</label>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="startBtn">Start video generation</button>
     </div>
@@ -950,6 +951,7 @@ async function fillSetup(j) {
   $("#suSb").checked = !!j.storyboard;
   $("#suCap").checked = !!j.captions;
   $("#suPol").checked = !!j.polish;
+  $("#suThumb").checked = j.thumb_text !== false;
   // the channel may have been deleted since the plan was made: use the job's frozen snapshot
   const vt = (j.channel && j.channel.video_type) || "";
   $("#suStyleBlock").hidden = (o.realistic_video_types || ["real", "tech"]).includes(vt);
@@ -1109,6 +1111,7 @@ $("#startBtn").onclick = async () => {
         storyboard: $("#suSb").checked,
         captions: $("#suCap").checked,
         polish: $("#suPol").checked,
+        thumb_text: $("#suThumb").checked,
         ...($("#suAvatarBlock").hidden ? {} : {
           avatar_coverage: $("#suAvCoverage").value,
           avatar_id: $("#suAvWho").value,

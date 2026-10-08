@@ -107,6 +107,7 @@ class Submit(BaseModel):
     storyboard: bool | None = None   # story board overlay; None -> channel default (on for tech channels)
     captions: bool | None = None     # burned-in captions; None -> channel default (on for tech channels)
     polish: bool | None = None       # hook/end card, progress bar, whoosh; None -> channel default
+    thumb_text: bool | None = None   # draw the headline on the thumbnail; None -> channel default (on)
     video_mode: str = ""       # "" -> channel default; "story" = a kids story video (re-validated here)
     repo_url: str = ""         # one GitHub repo or Hugging Face model/dataset/space URL (tech channels)
     page_scroll: bool | None = None   # scroll the page screenshot over the video; None -> on for repo jobs
@@ -221,6 +222,7 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                                     storyboard_flag=body.storyboard,
                                                     captions_flag=body.captions,
                                                     polish_flag=body.polish,
+                                                    thumb_text_flag=body.thumb_text,
                                                     megapixels=body.megapixels, owner=owner,
                                                     video_model=body.video_model,
                                                     resolution=body.resolution,
@@ -237,6 +239,7 @@ def create_jobs(body: Submit, user: dict = Depends(auth.require_user)):
                                          storyboard_flag=body.storyboard,
                                          captions_flag=body.captions,
                                          polish_flag=body.polish,
+                                         thumb_text_flag=body.thumb_text,
                                          megapixels=body.megapixels, owner=owner,
                                          video_model=body.video_model,
                                          resolution=body.resolution,
@@ -300,6 +303,7 @@ class JobSetup(BaseModel):
     storyboard: bool | None = None
     captions: bool | None = None
     polish: bool | None = None
+    thumb_text: bool | None = None
     avatar_id: str = ""
     avatar_model: str | None = None
     avatar_coverage: str = ""
@@ -320,6 +324,7 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
                                                storyboard_flag=body.storyboard,
                                                captions_flag=body.captions,
                                                polish_flag=body.polish,
+                                               thumb_text_flag=body.thumb_text,
                                                megapixels=body.megapixels,
                                                video_model=body.video_model,
                                                resolution=body.resolution,

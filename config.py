@@ -463,14 +463,16 @@ STORYBOARD_MOTION = True        # cards ease into place instead of only fading i
 # Thumbnail overlay text. The generated picture never contains letters (image models spell badly,
 # and the prompt forbids typography), so the line is drawn with Pillow afterwards - which is what
 # makes the variants free: one GPU render, several text treatments over copies of it.
-THUMB_TEXT_ENABLED = True
+THUMB_TEXT_ENABLED = True       # master switch, like CAPTIONS_ENABLED; per channel and per video
 THUMB_TEXT_VARIANTS = 3         # text versions offered on the job page (0 = the clean render only)
 THUMB_TEXT_ACCENT = ""          # "" = use STORYBOARD_ACCENT
 # Burned-in captions. The words come from the script itself: the narration is timed with whisper
 # and snapped back onto the written text, so captions show what was written, not what whisper
 # thought it heard. Story and music videos are already timed and pay nothing.
 CAPTION_HIGHLIGHTS = ["off", "word"]
-CAPTIONS_ENABLED = True         # default for a new channel's videos (per channel, per video)
+# MASTER switch: read at assembly time, not frozen into a job, so turning it off and reassembling
+# strips the captions from a video that already chose them. Per channel and per video below it.
+CAPTIONS_ENABLED = True
 CAPTION_MAX_WORDS = 3
 CAPTION_MAX_CHARS = 26
 CAPTION_HIGHLIGHT = "word"
@@ -763,10 +765,12 @@ EDITABLE_SETTINGS = {
                       "EBU R128 normalisation of the final mix (0 = off). YouTube normalises "
                       "everything to about -14, so a quieter master is simply played quiet"),
     "CAPTIONS_ENABLED": (bool, lambda v: True, "Burned-in captions",
-                         "Default for new videos: word-synced subtitles burned into the picture. Can be "
-                         "changed per channel and per video. The words come from the script itself - the "
-                         "narration is timed with whisper and snapped back onto the written text, so "
-                         "captions show your words, not what whisper thought it heard"),
+                         "MASTER switch for word-synced subtitles burned into the picture. Off means no "
+                         "video is captioned, whatever a channel or a video asks for, and reassembling an "
+                         "existing video strips them. On, the per-channel and per-video switches decide. "
+                         "The words come from the script itself - the narration is timed with whisper and "
+                         "snapped back onto the written text, so captions show your words, not what "
+                         "whisper thought it heard"),
     "CAPTION_MAX_WORDS": (int, lambda v: 1 <= v <= 6, "Captions: words per group",
                           "How many words appear on screen at once (1-6). Two or three reads fastest "
                           "on a phone"),
@@ -787,7 +791,9 @@ EDITABLE_SETTINGS = {
                               "(0.03-0.35). Portrait videos never go below 0.14, which is what keeps "
                               "the text clear of the Shorts UI"),
     "THUMB_TEXT_ENABLED": (bool, lambda v: True, "Thumbnail text",
-                           "Draw a short punchy line over the generated thumbnail. The picture itself is "
+                           "MASTER switch for the short punchy line drawn over the generated thumbnail. "
+                           "Off means no thumbnail carries text, whatever a channel or a video asks for. "
+                           "On, the per-channel and per-video switches decide. The picture itself is "
                            "always generated without letters (image models spell badly), so the text is "
                            "drawn afterwards with the same font the story board cards use"),
     "THUMB_TEXT_VARIANTS": (int, lambda v: 0 <= v <= 3, "Thumbnail: text variants",

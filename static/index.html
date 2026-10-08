@@ -147,6 +147,8 @@
           <div class="hint">Word-synced subtitles over the video, with the spoken word highlighted. The words come from the script itself, so they are never a mis-hearing. On by default for Tech channels.</div>
           <label class="switch" style="margin-top:10px"><input type="checkbox" id="polish"><span class="track"></span> Hook card, end card &amp; progress bar</label>
           <div class="hint">The opening line shown full-screen over the first seconds, a subscribe card at the end, a thin progress bar and a short whoosh as each card appears. On by default for Tech channels.</div>
+          <label class="switch" style="margin-top:10px"><input type="checkbox" id="thumbText"><span class="track"></span> Text on the thumbnail</label>
+          <div class="hint">A short punchy line drawn over the generated thumbnail (the picture itself is always rendered without letters). Separate from the captions above: this is on the thumbnail image, not in the video. On for every channel by default; you can still switch between the text versions, or none, on the job page afterwards.</div>
         </div>
         <div class="msec" id="pageScrollBlock" hidden>
           <div class="msec-title">Page scroll overlay</div>
@@ -393,6 +395,8 @@ function applyChannel() {
   $("#storyboard").checked = d.storyboard != null ? !!d.storyboard : ch.video_type === "tech";
   $("#captions").checked = d.captions != null ? !!d.captions : ch.video_type === "tech";
   $("#polish").checked = d.polish != null ? !!d.polish : ch.video_type === "tech";
+  // thumbnail text is not a tech-channel thing - it has always been drawn on every channel
+  $("#thumbText").checked = d.thumb_text != null ? !!d.thumb_text : true;
   avatarFill(ch, d);
   $("#avCoverage").onchange = avatarCost;
   $("#avModel").onchange = avatarCost;
@@ -474,7 +478,8 @@ async function submit() {
                voice_id: (!storyOn() && $("#audio").value === "music") ? "" : $("#voice").value,
                storyboard: $("#storyboard").checked,
                captions: $("#captions").checked,
-               polish: $("#polish").checked };
+               polish: $("#polish").checked,
+               thumb_text: $("#thumbText").checked };
   if (!$("#avatarBlock").hidden) {
     body.avatar_coverage = $("#avCoverage").value;
     body.avatar_id = $("#avWho").value;

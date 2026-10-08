@@ -35,7 +35,14 @@ MAX_AVATARS = 12              # presenter portraits per channel; one is the defa
 MAX_AVATAR_NAME_CHARS = 40
 DEFAULT_KEYS = ("art_style", "audio_mode", "voice_id", "aspect_ratio", "video_length", "song_voice",
                 "video_mode", "character_voice", "avatar_id", "avatar_model", "avatar_coverage")
-BOOL_DEFAULT_KEYS = ("storyboard", "captions", "polish")   # on by default for a tech channel
+BOOL_DEFAULT_KEYS = ("storyboard", "captions", "polish", "thumb_text")
+
+
+def bool_default(key: str, video_type: str) -> bool:
+    """What an unset per-channel flag means. The three on-video overlays are a tech-channel
+    thing; thumbnail text is not - it has always been drawn on every channel's thumbnail, so
+    deriving it from video_type would silently switch it off for animated and real channels."""
+    return True if key == "thumb_text" else video_type == "tech"
 
 
 def _read_index() -> dict:
@@ -45,9 +52,9 @@ def _read_index() -> dict:
             for c in data["channels"]:  # records created before the flags existed
                 if isinstance(c, dict):
                     c.setdefault("made_for_kids", c.get("audience") == "kids")
-                    c.setdefault("defaults", {}).setdefault("storyboard", c.get("video_type") == "tech")
-                    c["defaults"].setdefault("captions", c.get("video_type") == "tech")
-                    c["defaults"].setdefault("polish", c.get("video_type") == "tech")
+                    c.setdefault("defaults", {})
+                    for _k in BOOL_DEFAULT_KEYS:
+                        c["defaults"].setdefault(_k, bool_default(_k, c.get("video_type")))
                     c["defaults"].setdefault("song_voice", default_song_voice(c.get("audience")))
                     c["defaults"].setdefault("video_mode", config.DEFAULT_VIDEO_MODE)
                     c["defaults"].setdefault("character_voice", "")
@@ -256,7 +263,8 @@ def _validate(data: dict, base: dict | None = None) -> dict:
            "characters_enabled": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
-                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None, "captions": None, "polish": None,
+                        "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
+                        "captions": None, "polish": None, "thumb_text": None,
                         "song_voice": "", "video_mode": "", "character_voice": "",
                         "avatar_id": "", "avatar_model": "",
                         "avatar_coverage": config.DEFAULT_AVATAR_COVERAGE}}
@@ -301,9 +309,9 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     if rec["video_type"] not in config.VIDEO_TYPES:
         raise ValueError(f"video_type must be one of {config.VIDEO_TYPES}")
     df = rec["defaults"]
-    for key in BOOL_DEFAULT_KEYS:      # unset -> on for tech channels, off otherwise
+    for key in BOOL_DEFAULT_KEYS:      # unset -> the flag's own default, see bool_default()
         if df.get(key) is None:
-            df[key] = rec["video_type"] == "tech"
+            df[key] = bool_default(key, rec["video_type"])
     if rec["video_type"] in config.REALISTIC_VIDEO_TYPES:
         df["art_style"] = ""  # realistic channels use the built-in live-action direction
     elif df["art_style"] and df["art_style"] not in config.ART_STYLES:

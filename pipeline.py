@@ -79,6 +79,7 @@ class Job:
     page_scroll: bool = False       # repo jobs: scroll the page screenshot as a panel over the video
     captions: bool = False          # burned-in word-synced subtitles over the video
     polish: bool = False            # hook card, end card, progress bar and the card whoosh
+    thumb_text: bool = True         # draw the headline over this video's thumbnail
     thumb_variant: int = -1         # active thumbnail text variant (0 = plain render,
                                     # -1 = nobody has chosen, so the model's best line wins)
     script_approved: bool = False
@@ -813,7 +814,10 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
         else:
             return 0
     recs = []
-    if config.THUMB_TEXT_ENABLED and config.THUMB_TEXT_VARIANTS > 0:
+    # Same master-switch rule as the captions: THUMB_TEXT_ENABLED is read here, not frozen into
+    # the job, so turning it off in Settings strips the text from an existing video's thumbnail
+    # the next time its variants are built. job.thumb_text is this video's own choice.
+    if config.THUMB_TEXT_ENABLED and job.thumb_text and config.THUMB_TEXT_VARIANTS > 0:
         try:
             recs = thumbtext.variants(base, d, (plan.get("thumbnail_texts") or [])
                                       [:config.THUMB_TEXT_VARIANTS])
@@ -1198,7 +1202,11 @@ def _avatar_overlay(job: Job, plan: dict, size: tuple, total: float) -> list:
 def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float):
     """Write captions.ass for this frame size, or None. Redone on every assembly, so a settings
     change applies on reassembly and the track always matches the final resolution."""
-    if not (job.captions and (plan.get("caption_words") or {}).get("words")):
+    # config.CAPTIONS_ENABLED is a MASTER switch, checked here rather than when the job was
+    # created: turning it off in Settings and reassembling must strip the captions from a video
+    # that already chose them, which is the whole point of a master switch.
+    if not (config.CAPTIONS_ENABLED and job.captions
+            and (plan.get("caption_words") or {}).get("words")):
         return None
     try:
         job.set("assembling", "writing the captions")
@@ -2033,7 +2041,7 @@ class JobManager:
             if given is None:
                 given = defaults.get(key)
                 if given is None:
-                    given = ch.get("video_type") == "tech"
+                    given = channels.bool_default(key, ch.get("video_type"))
             return bool(given)
 
         storyboard_flag = _flag(storyboard_flag, "storyboard")
@@ -2082,6 +2090,20 @@ class JobManager:
                 storyboard_flag, captions_flag, polish_flag, video_model, mp, resolution)
 
     @staticmethod
+    def _resolve_thumb_text(thumb_text_flag, channel: dict | None) -> bool:
+        """Thumbnail text: request value -> channel default -> on.
+
+        A separate resolver for the same reason as _resolve_avatar: _resolve_choices returns a
+        positional tuple that callers unpack and index, so appending to it is a trap."""
+        defaults = (channel or {}).get("defaults") or {}
+        given = thumb_text_flag
+        if given is None:
+            given = defaults.get("thumb_text")
+            if given is None:
+                given = channels.bool_default("thumb_text", (channel or {}).get("video_type"))
+        return bool(given)
+
+    @staticmethod
     def _resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel: dict | None):
         """Presenter choices: request value -> channel default -> global default.
 
@@ -2123,7 +2145,8 @@ class JobManager:
                owner: str = "", resolution: str = "", song_voice: str = "",
                lyrics: str = "", music_upload_id: str = "", video_mode: str = "",
                captions_flag=None, polish_flag=None, video_model: str = "",
-               avatar_id: str = "", avatar_model=None, avatar_coverage: str = "") -> Job:
+               avatar_id: str = "", avatar_model=None, avatar_coverage: str = "",
+               thumb_text_flag=None) -> Job:
         video_mode = resolve_video_mode(video_mode, channel, "youtube", lyrics, music_upload_id)
         if video_mode == "story":
             # forced BEFORE the resolve: that blanks voice_id whenever the mode lands on "music",
@@ -2134,6 +2157,7 @@ class JobManager:
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
                                   polish_flag, video_model)
         av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel)
+        thumb_text = self._resolve_thumb_text(thumb_text_flag, channel)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -2142,7 +2166,7 @@ class JobManager:
                   aspect_ratio=aspect_ratio, megapixels=mp, video_model=vm,
                   resolution=res, audio_mode=audio_mode, voice_id=voice_id,
                   song_voice=sv, art_style=art_style, video_length=video_length, channel_id=cid, channel=snap,
-                  storyboard=sb, captions=cap, polish=pol, lyrics=lyrics,
+                  storyboard=sb, captions=cap, polish=pol, thumb_text=thumb_text, lyrics=lyrics,
                   avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                   owner=owner or (channel or {}).get("owner", ""),
                   video_mode=video_mode,
@@ -2257,7 +2281,7 @@ class JobManager:
                       page_scroll=None, lyrics: str = "", music_upload_id: str = "",
                       video_mode: str = "", captions_flag=None, polish_flag=None,
                       video_model: str = "", avatar_id: str = "", avatar_model=None,
-                      avatar_coverage: str = "") -> Job:
+                      avatar_coverage: str = "", thumb_text_flag=None) -> Job:
         """Create a prompt job. start=False parks it at "planned" instead: the job exists and is
         listed, but nothing runs and no LLM is called until `setup_planned` hands it the user's
         parameters. plan: {plan_id, day, date, hook, thumb_idea} when it came from a weekly plan."""
@@ -2281,6 +2305,7 @@ class JobManager:
                                   storyboard_flag, megapixels, resolution, song_voice, captions_flag,
                                   polish_flag, video_model)
         av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model, avatar_coverage, channel)
+        thumb_text = self._resolve_thumb_text(thumb_text_flag, channel)
         lyrics = _resolve_lyrics(lyrics, channel, audio_mode)   # audio_mode is defaulted by the resolve above
         up = _resolve_music_upload(music_upload_id, audio_mode, lyrics)
         if lyrics or up:
@@ -2298,6 +2323,10 @@ class JobManager:
                   resolution=res, song_voice=sv,
                   audio_mode=audio_mode, voice_id=voice_id, art_style=art_style,
                   video_length=video_length, channel_id=cid, channel=snap, storyboard=sb,
+                  # captions and polish were resolved above and then dropped on the floor here,
+                  # so every topic/description/transcript/repo video was assembled with both
+                  # off whatever the New Video dialog said. Only storyboard was carried.
+                  captions=cap, polish=pol, thumb_text=thumb_text,
                   avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                   lyrics=lyrics, owner=owner or (channel or {}).get("owner", ""),
                   music_upload=(up or {}).get("name", ""),
@@ -2322,7 +2351,8 @@ class JobManager:
                       song_voice: str = "", lyrics: str = "",
                       music_upload_id: str = "", video_mode: str = "", captions_flag=None,
                       polish_flag=None, video_model: str = "", avatar_id: str = "",
-                      avatar_model=None, avatar_coverage: str = "") -> Job:
+                      avatar_model=None, avatar_coverage: str = "",
+                      thumb_text_flag=None) -> Job:
         """The Start button of a planned job: apply the parameters the user chose and hand the job
         to the normal drafting flow.
 
@@ -2341,6 +2371,7 @@ class JobManager:
                                "video_length": job.video_length, "audio_mode": job.audio_mode,
                                "song_voice": job.song_voice, "storyboard": job.storyboard,
                                "captions": job.captions, "polish": job.polish,
+                               "thumb_text": job.thumb_text,
                                "voice_id": job.voice_id, "video_mode": job.video_mode,
                                "avatar_id": job.avatar_id, "avatar_model": job.avatar_model,
                                "avatar_coverage": job.avatar_coverage}}
@@ -2356,6 +2387,7 @@ class JobManager:
                 video_model or job.video_model)
             av_id, av_model, av_cov = self._resolve_avatar(avatar_id, avatar_model,
                                                            avatar_coverage, ch)
+            thumb_text = self._resolve_thumb_text(thumb_text_flag, ch)
             # _cid/_snap are dropped on purpose: the channel id and snapshot stay as taken at plan time
             # lyrics are the one field a blank does NOT inherit from the job: an empty box means
             # the user cleared it (and switching to a voiceover clears it in the form too)
@@ -2370,7 +2402,8 @@ class JobManager:
                     "writing the story with the LLM" if vmode == "story" else "writing script with the LLM",
                     aspect_ratio=ar, art_style=style,
                     video_length=vlen, audio_mode=mode, voice_id=voice, song_voice=sv,
-                    storyboard=sb, captions=cap, polish=pol, megapixels=mp, resolution=res,
+                    storyboard=sb, captions=cap, polish=pol, thumb_text=thumb_text,
+                    megapixels=mp, resolution=res,
                     video_model=vm, lyrics=words,
                     avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                     setup_done=True,

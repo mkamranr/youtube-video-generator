@@ -83,6 +83,15 @@
         <label class="switch" style="margin-top:12px"><input type="checkbox" id="chStoryboard"><span class="track"></span>
           Story board overlay by default</label>
         <div class="hint">New videos of this channel get styled fact cards and related images drawn over the footage, timed to the narration (can be switched per video). Preselected for Tech channels.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chCaptions"><span class="track"></span>
+          Burned-in captions by default</label>
+        <div class="hint">New videos of this channel get word-synced subtitles burned into the picture (can be switched per video). Preselected for Tech channels. The Settings switch above is a master: with it off, no video is captioned whatever a channel says.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chPolish"><span class="track"></span>
+          Hook card, end card &amp; progress bar by default</label>
+        <div class="hint">New videos of this channel open on a full-screen hook card, close on a subscribe card and carry a progress bar (can be switched per video). Preselected for Tech channels.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chThumbText"><span class="track"></span>
+          Text on the thumbnail by default</label>
+        <div class="hint">New videos of this channel get a short line drawn over the generated thumbnail (can be switched per video, and the version is pickable on the job page). On for every channel, not just Tech - it is the thumbnail image, not the video.</div>
         <div class="row" style="margin-top:12px">
           <div class="grow" id="chStyleField" style="min-width:200px">
             <label for="chStyle">Default art style</label>
@@ -796,6 +805,9 @@ function chApplyCharacters() { $("#chCastBody").hidden = !$("#chCharacters").che
 function chTypeChanged() {
   chApplyType();
   $("#chStoryboard").checked = $("#chVideoType").value === "tech";
+  $("#chCaptions").checked = $("#chVideoType").value === "tech";
+  $("#chPolish").checked = $("#chVideoType").value === "tech";
+  $("#chThumbText").checked = true;
   // a new channel follows its type (tech = informative explainers); an edited one keeps its choice
   if (!chEditing) { $("#chCharacters").checked = $("#chVideoType").value !== "tech"; chApplyCharacters(); }
 }
@@ -865,6 +877,9 @@ async function chOpen(c) {
   $("#chVideoType").value = c ? c.video_type : "animated";
   $("#chKids").checked = c ? !!c.made_for_kids : $("#chAudience").value === "kids";
   $("#chStoryboard").checked = c ? !!(d.storyboard != null ? d.storyboard : c.video_type === "tech") : false;
+  $("#chCaptions").checked = c ? !!(d.captions != null ? d.captions : c.video_type === "tech") : false;
+  $("#chPolish").checked = c ? !!(d.polish != null ? d.polish : c.video_type === "tech") : false;
+  $("#chThumbText").checked = c ? (d.thumb_text != null ? !!d.thumb_text : true) : true;
   if (d.art_style) $("#chStyle").value = d.art_style;
   $("#chAudio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
   const svs = chData.song_voices || ["auto"], svl = chData.song_voice_labels || {};
@@ -1179,6 +1194,9 @@ function chBody() {
       avatar_model: $("#chAvatarModel").value,
       art_style: CH_REAL_TYPES.includes($("#chVideoType").value) ? "" : $("#chStyle").value,
       storyboard: $("#chStoryboard").checked,
+      captions: $("#chCaptions").checked,
+      polish: $("#chPolish").checked,
+      thumb_text: $("#chThumbText").checked,
       video_mode: $("#chVmodeField").hidden ? "song" : $("#chVmode").value,
       character_voice: $("#chCharacterVoice").value,
       audio_mode: $("#chAudio").value,
