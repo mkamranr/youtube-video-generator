@@ -683,7 +683,9 @@ function update(j) {
   $("#staleCount").textContent = marked.length
     ? `clip${marked.length > 1 ? "s" : ""} ${marked.join(", ")} marked for regeneration`
     : "";
-  $("#assembleBtn").hidden = !(done && j.needs_assemble);
+  // every finished job, not only one with stale clips: this is also how a changed setting
+  // or a presenter that failed to render is applied to a video that is already done
+  $("#assembleBtn").hidden = !done;
   $("#assembleHint").hidden = !(done && j.needs_assemble);
   $("#sbRow").hidden = !done;
   $("#sbToggle").checked = !!j.storyboard;
@@ -1231,6 +1233,17 @@ $("#resRegen").onclick = regenResource;
 $("#resMake").onclick = regenResource;
 
 $("#assembleBtn").onclick = async () => {
+  // the job JSON cannot say whether the presenter actually made it in, so the presenter
+  // sentence is conditional and shown only for a job that asked for one at all
+  const wanted = lastJob && (lastJob.avatar_coverage || "none") !== "none" && lastJob.avatar_id;
+  let msg = `The clips themselves are kept. Overlays, captions and the story board are redrawn \
+with the current settings and the audio is remixed into a new final video; upscaled copies of the \
+old one are discarded.`;
+  if (wanted) msg += `
+
+If the presenter never made it into this video, its segments are rendered first - that takes GPU \
+time, so the job waits in the render queue instead of finishing in seconds.`;
+  if (!(await askConfirm(msg, "Reassemble final video?"))) return;
   try {
     await api(`/jobs/${jobId}/assemble`, { method: "POST" });
     toast("Reassembly queued");

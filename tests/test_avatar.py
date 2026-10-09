@@ -387,6 +387,77 @@ class AvatarStage(unittest.TestCase):
         self.assertTrue(any("presenter avatar" in m for m in self.logs))
 
 
+    def test_a_presenter_is_pending_only_while_the_plan_has_no_segments(self):
+        """request_assemble and _do_assemble both ask this, and have to agree: it decides
+        whether a reassembly is pure ffmpeg or has to wait for the GPU."""
+        self.assertTrue(pipeline._avatar_pending(self.job, {}))
+        self.assertTrue(pipeline._avatar_pending(self.job, {"avatar": {"segments": []}}))
+        self.assertFalse(pipeline._avatar_pending(
+            self.job, {"avatar": {"segments": [{"file": "avatar_01.mp4"}]}}))
+        self.job.avatar_coverage = "none"
+        self.assertFalse(pipeline._avatar_pending(self.job, {}))
+        self.job.avatar_coverage = "intro"
+        self.job.avatar_id = ""
+        self.assertFalse(pipeline._avatar_pending(self.job, {}))
+
+    def test_a_clip_already_on_disk_is_reused_rather_than_re_rendered(self):
+        """How a video that lost its presenter gets one back: the render survived in the job
+        directory even though the failure meant the plan never recorded it."""
+        (self.jdir / "avatar_01.mp4").write_bytes(b"clip")
+        plan = {}
+        pipeline._avatar_assets(self.job, plan)
+        self.render.assert_not_called()
+        self.assertEqual(plan["avatar"]["segments"][0]["file"], "avatar_01.mp4")
+
+
+class ReassembleRouting(unittest.TestCase):
+    """request_assemble: immediately in its own thread for pure ffmpeg work, but through the
+    GPU queue when the video is still missing something that has to be rendered."""
+
+    def setUp(self):
+        for name in ("_loop", "_sweep_comfy", "_start_draft", "_assemble_now"):
+            mock.patch.object(pipeline.JobManager, name).start()
+        self.addCleanup(mock.patch.stopall)
+        self.mgr = pipeline.JobManager()
+
+    def _job(self, jid, plan=None, **kw):
+        opts = {"status": "done", "avatar_id": "a1", "avatar_coverage": "intro"}
+        opts.update(kw)
+        job = pipeline.Job(id=jid, url="", clips=["clip_01.mp4"], **opts)
+        job.save()
+        if plan is not None:
+            pipeline._save_plan(job, plan)
+        self.mgr.jobs[jid] = job
+        return job
+
+    def test_a_pending_presenter_goes_to_the_front_of_the_gpu_queue(self):
+        """The reason this matters: rendering a segment is ~12 min on the shared, serial box,
+        so it cannot run from an unqueued side thread alongside whatever else is rendering."""
+        job = self._job("asm-pending")
+        self.mgr.request_assemble("asm-pending")
+        self.assertEqual(self.mgr.queue[0], "asm-pending")
+        self.assertEqual(job.status, "queued")
+        self.assertTrue(job.assemble_requested)
+
+    def test_a_presenter_already_on_the_plan_is_not_waited_for(self):
+        job = self._job("asm-ready",
+                        plan={"avatar": {"segments": [{"file": "avatar_01.mp4"}]}})
+        self.mgr.request_assemble("asm-ready")
+        self.assertNotIn("asm-ready", self.mgr.queue)
+        self.assertEqual(job.status, "assembling")
+
+    def test_a_video_that_never_wanted_a_presenter_is_not_waited_for(self):
+        job = self._job("asm-nopresenter", avatar_coverage="none")
+        self.mgr.request_assemble("asm-nopresenter")
+        self.assertNotIn("asm-nopresenter", self.mgr.queue)
+        self.assertEqual(job.status, "assembling")
+
+    def test_only_a_finished_job_can_be_reassembled(self):
+        self._job("asm-running", status="clips")
+        with self.assertRaises(ValueError):
+            self.mgr.request_assemble("asm-running")
+
+
 class PortraitFraming(unittest.TestCase):
     """The reference image is fitted to the engine's square HERE, because ComfyUI's own fit is
     a centred cover-crop that takes the top off a tall headshot."""

@@ -858,9 +858,13 @@ def _presenter_base(job: Job, plan: dict, base: Path) -> Path | None:
     if dst.exists() and dst.stat().st_mtime >= max(clip.stat().st_mtime, base.stat().st_mtime):
         return dst
     try:
-        matte = d / (segs[0].get("matte") or "")
+        # `d / ""` is d itself and a directory passes .exists(), so an empty matte name has
+        # to be caught before the join - otherwise the bubble look hands ffmpeg the job
+        # DIRECTORY as its alpha video, and thumbnail_cutout never reaches the single-frame
+        # u2net fallback that is the whole reason it accepts None. Same shape as _avatar_overlay.
+        matte = d / segs[0]["matte"] if segs[0].get("matte") else None
         cut = avatar.thumbnail_cutout(clip, d / "thumb_presenter.png",
-                                      matte if matte.name and matte.exists() else None)
+                                      matte if matte and matte.exists() else None)
         return thumbtext.with_presenter(base, cut, dst)
     except Exception as e:  # noqa: BLE001 - a thumbnail without the presenter is still fine
         job.add_log(f"presenter thumbnail skipped ({e})")
@@ -1122,6 +1126,13 @@ def _caption_assets(job: Job, plan: dict):
         raise
     except Exception as e:  # noqa: BLE001 - a video with no captions is still a video
         job.add_log(f"caption timing failed ({e}); assembling without captions")
+
+
+def _avatar_pending(job: Job, plan: dict) -> bool:
+    """True when the job wants a presenter and the plan has none - the one thing that makes a
+    reassembly expensive, because the segments have to be rendered on the GPU first."""
+    return bool((job.avatar_coverage or "none") != "none" and job.avatar_id
+                and not (plan.get("avatar") or {}).get("segments"))
 
 
 def _avatar_assets(job: Job, plan: dict):
@@ -1450,7 +1461,7 @@ def _do_assemble(job: Job):
     if job.captions and not plan.get("caption_words"):
         _caption_assets(job, plan)
         job.set("assembling", "re-merging clips and mixing audio")
-    if (job.avatar_coverage or "none") != "none" and not (plan.get("avatar") or {}).get("segments"):
+    if _avatar_pending(job, plan):
         _avatar_assets(job, plan)
         job.set("assembling", "re-merging clips and mixing audio")
     music_file = d / "music.mp3" if (d / "music.mp3").exists() else None
@@ -2843,16 +2854,25 @@ class JobManager:
 
     def request_assemble(self, job_id: str):
         """Reassembly is local ffmpeg work (no GPU): run it immediately in its own
-        thread instead of waiting behind rendering jobs in the queue - unless the story
-        board still needs its LLM cards / ComfyUI images, which goes through the GPU queue
-        (front of the queue, like a clip regeneration)."""
+        thread instead of waiting behind rendering jobs in the queue - unless something it
+        needs has still to be generated, which goes through the GPU queue (front of the
+        queue, like a clip regeneration).
+
+        Two things can be owed: the story board's LLM cards / ComfyUI images, and a
+        presenter whose segments never rendered - which is the state a video is left in
+        when the matting model is missing, and the reason this is offered on every
+        finished job rather than only on one with regenerated clips."""
         with self.lock:
             job = self._maintenance_target(job_id)
             if not job.clips:
                 raise ValueError("job has no clips to assemble")
             job.assemble_requested = True
-            if job.storyboard and not storyboard.assets_ready(job.dir, _load_plan(job)):
-                job.set("queued", "story board assets + reassembly requested")
+            plan = _load_plan(job)
+            pending = ("story board assets"
+                       if job.storyboard and not storyboard.assets_ready(job.dir, plan)
+                       else "presenter" if _avatar_pending(job, plan) else "")
+            if pending:
+                job.set("queued", f"{pending} + reassembly requested")
                 self.queue.insert(0, job_id)
                 return job
             job.set("assembling", "re-merging clips and mixing audio")

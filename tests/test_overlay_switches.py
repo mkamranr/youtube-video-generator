@@ -207,6 +207,23 @@ class PresenterThumbnail(unittest.TestCase):
         self.assertTrue(any("presenter thumbnail skipped" in m for m in self.logs))
         self.assertFalse(any(r.get("presenter") for r in self.plan["thumbnail_variants"]))
 
+    def test_a_segment_with_no_matte_passes_none_rather_than_the_job_directory(self):
+        """The bubble look records `matte: ""`, and `d / ""` is the job directory - which
+        passes .exists(), so it used to be handed to ffmpeg as the alpha video. None is what
+        lets thumbnail_cutout fall back to a single u2net pass on the frame."""
+        c, w = self._patched()
+        with c as cut, w, mock.patch.object(pipeline.thumbtext, "activate", return_value=0):
+            pipeline._thumb_variants(self.job, self.plan)
+        self.assertIsNone(cut.call_args.args[2])
+
+    def test_a_matte_on_disk_is_passed_through(self):
+        (self.d / "avatar_01_matte.mp4").write_bytes(b"matte")
+        self.plan["avatar"]["segments"][0]["matte"] = "avatar_01_matte.mp4"
+        c, w = self._patched()
+        with c as cut, w, mock.patch.object(pipeline.thumbtext, "activate", return_value=0):
+            pipeline._thumb_variants(self.job, self.plan)
+        self.assertEqual(cut.call_args.args[2], self.d / "avatar_01_matte.mp4")
+
 
 if __name__ == "__main__":
     unittest.main()
