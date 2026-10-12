@@ -217,8 +217,12 @@ AVATAR_MAX_SECONDS = 30.0       # footage cap per video
 AVATAR_MAX_RENDER_MINUTES = 45.0  # wall-clock cap; coverage trims to fit, with the reason logged
 AVATAR_SIZE_PCT = 0.22          # bubble diameter as a fraction of the frame's SHORT side
 AVATAR_CUTOUT_PCT = 0.58        # cut-out height as a fraction of the frame HEIGHT
-AVATAR_MAX_WIDTH_PCT = 0.45     # ...but never wider than this much of the frame WIDTH, which is
-                                # what keeps a 9:16 Short from being filled by the presenter
+AVATAR_MAX_WIDTH_PCT = 0.60     # ...but never wider than this much of the frame WIDTH, which is
+                                # what keeps a 9:16 Short from being filled by the presenter.
+                                # On a portrait frame this is the setting that actually sizes
+                                # the cut-out: the engines render a square, so bw == bh and the
+                                # height above is always the wider of the two - AVATAR_CUTOUT_PCT
+                                # only bites on 16:9.
 AVATAR_MARGIN_PCT = 0.035       # inset from the frame edge, fraction of the short side
 AVATAR_CORNER = "bottom-right"
 AVATAR_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")

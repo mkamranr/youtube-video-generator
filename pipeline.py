@@ -1210,8 +1210,12 @@ def _avatar_assets(job: Job, plan: dict):
             if style == "cutout" and not matte.exists():
                 job.set("avatar", f"cutting out presenter segment {i}/{len(wins)}")
                 avatar.matte_segment(clip, matte, on_progress=_progress(job, "avatar"))
+            # where the figure sits inside the square frame, so the overlay can draw the
+            # FIGURE at the size that was asked for rather than the frame around it
+            bbox = avatar.matte_bounds(matte) if style == "cutout" and matte.exists() else None
             segments.append({"start": start, "end": end, "file": clip.name,
-                             "matte": matte.name if style == "cutout" else ""})
+                             "matte": matte.name if style == "cutout" else "",
+                             "bbox": list(bbox) if bbox else []})
         # the portrait is the reference image for EVERY segment, so it goes only once they are
         # all rendered - not inside the loop with the audio
         if config.COMFY_CLEANUP:
@@ -1219,7 +1223,10 @@ def _avatar_assets(job: Job, plan: dict):
         plan["avatar"] = {"engine": engine, "style": style, "coverage": job.avatar_coverage,
                           "seconds": round(got, 2), "segments": segments}
         _save_plan(job, plan)
-        job.add_log(f"presenter avatar: {len(segments)} segment(s), {got:.1f}s on {engine}")
+        chain = len(segments) > 1 and all(b["start"] - a["end"] < 0.05
+                                          for a, b in zip(segments, segments[1:]))
+        job.add_log(f"presenter avatar: {len(segments)} segment(s)"
+                    f"{' end to end' if chain else ''}, {got:.1f}s on {engine}")
     except (JobCancelled, JobPaused, JobWaitingWindow):
         raise
     except Exception as e:  # noqa: BLE001 - a video with no presenter is still a video
@@ -1240,8 +1247,12 @@ def _avatar_overlay(job: Job, plan: dict, size: tuple, total: float) -> list:
         if not clip.exists():
             continue
         matte = d / s["matte"] if s.get("matte") else None
+        matte = matte if matte and matte.exists() else None
+        # a plan written before the subject was measured is measured now, which is what lets
+        # a finished video grow its presenter on a reassembly instead of a re-render
+        bbox = s.get("bbox") or (avatar.matte_bounds(matte) if matte else None)
         ready.append({"start": float(s["start"]), "end": min(float(s["end"]), total),
-                      "video": clip, "matte": matte if matte and matte.exists() else None})
+                      "video": clip, "matte": matte, "bbox": list(bbox) if bbox else []})
     if not ready:
         return []
     try:

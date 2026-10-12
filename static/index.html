@@ -375,9 +375,17 @@ function avatarCost() {
   const secs = per.seconds[cov] || 0, mins = per.render_minutes[cov] || 0;
   const asked = { intro: "at the start", outro: "at the end", both: "at the start and the end",
                   full: "for the whole video" }[cov] || "";
+  // "Whole video" is quoted at the footage budget, because the length of the video is only
+  // known once the narration exists - so say that outright rather than let the number read as
+  // a promise the planner cannot keep.
   el.textContent = `About ${secs.toFixed(0)}s of presenter ${asked}, roughly `
     + `${mins < 1 ? "under a minute" : mins.toFixed(0) + " min"} of GPU time. `
-    + `Trimmed automatically if it would exceed the render budget.`;
+    + (cov === "full"
+      ? `Those ${secs.toFixed(0)}s are the footage budget: a video longer than that keeps the `
+        + `presenter at the start and the end instead. To cover a whole one, raise "Avatar: `
+        + `footage budget" and "Avatar: render budget" in Settings, and pick the fastest engine `
+        + `you have - they differ by about 33x per frame.`
+      : `Trimmed automatically if it would exceed the render budget.`);
 }
 
 function applyChannel() {

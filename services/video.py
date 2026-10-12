@@ -382,6 +382,36 @@ def avatar_box(size: tuple, style: str = "", size_pct=None, cutout_pct=None,
     return int(x), int(max(0, y)), int(bw), int(bh)
 
 
+AVATAR_FILL_MAX = 2.5     # how far measuring the subject may enlarge the frame, so one bad
+                          # matte cannot blow the presenter up to fill the video
+
+
+def _fill_box(x: int, y: int, bw: int, bh: int, bbox, bottom: bool = True) -> tuple:
+    """Draw rect that puts the FIGURE in the box, rather than the engine's whole square frame.
+
+    `bbox` is (x0, y0, x1, y1) in 0..1 - where avatar.matte_bounds found the subject. The
+    engines render a head-and-shoulders portrait centred in a square, so without this a
+    quarter of the box is transparent and the presenter reads as smaller than the settings
+    ask for. The frame is enlarged until the subject spans the box and then shifted so it
+    lands on it; the transparent remainder hangs off the frame, which overlay clips for
+    free. The vertical anchor follows the corner for the reason avatar_box anchors a cut-out
+    to the edge - a figure floating above the bottom with a cut torso is what looks wrong.
+
+    No bbox is the identity, so the bubble and every plan written before the subject was
+    measured draw exactly as they did."""
+    if not bbox or len(bbox) != 4:
+        return x, y, bw, bh
+    x0, y0, x1, y1 = (float(v) for v in bbox)
+    # the smaller of the two enlargements, so the subject fits the box on BOTH axes
+    f = min(1.0 / max(1e-6, x1 - x0), 1.0 / max(1e-6, y1 - y0), AVATAR_FILL_MAX)
+    if f <= 1.0:
+        return x, y, bw, bh
+    dw, dh = _even(bw * f), _even(bh * f)
+    nx = x + bw / 2.0 - (x0 + x1) / 2.0 * dw                  # centred across the box
+    ny = (y + bh - y1 * dh) if bottom else (y - y0 * dh)      # ...anchored to its own edge
+    return int(round(nx)), int(round(ny)), dw, dh
+
+
 def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner: str = "",
                   size_pct=None, cutout_pct=None, margin_pct=None, accent: str = "",
                   clear_bottom: float = 0.0, fade: float = 0.4) -> list:
@@ -426,9 +456,11 @@ def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner:
             out.append({"png": ring_png, "x": 0, "y": 0,
                         "start": float(s["start"]), "end": float(s["end"]), "fade": fade})
     else:
+        bottom = "bottom" in (corner or config.AVATAR_CORNER)
         for s in segs:
-            out.append({"video": s["video"], "matte": s.get("matte"), "w": bw, "h": bh,
-                        "x": x, "y": y, "start": float(s["start"]), "end": float(s["end"]),
+            dx, dy, dw, dh = _fill_box(x, y, bw, bh, s.get("bbox"), bottom)
+            out.append({"video": s["video"], "matte": s.get("matte"), "w": dw, "h": dh,
+                        "x": dx, "y": dy, "start": float(s["start"]), "end": float(s["end"]),
                         "fade": fade,
                         # scaled with the figure so the shadow reads the same at every resolution
                         "shadow": max(4.0, bw / 45.0),

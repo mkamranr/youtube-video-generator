@@ -159,6 +159,66 @@ class SegmentWindows(unittest.TestCase):
         self.assertTrue(avatar.segment_windows("intro", 60.0, "LTX 2.5", []))
 
 
+    def test_full_tiles_a_chunked_engine_end_to_end(self):
+        """A Wan segment is one 77-frame chunk, so "whole video" there is a chain of them. The
+        chain has to be contiguous: a gap is the presenter blinking out mid-sentence."""
+        cap = config.AVATAR_MODELS["Wan 2.2 S2V"]["max_segment"]
+        total = cap * 3
+        with mock.patch.multiple(config, AVATAR_MAX_SECONDS=120.0,
+                                 AVATAR_MAX_RENDER_MINUTES=6000.0):
+            wins = avatar.segment_windows("full", total, "Wan 2.2 S2V")
+        self.assertEqual(len(wins), 3)
+        self.assertEqual(wins[0][0], 0.0)
+        self.assertAlmostEqual(wins[-1][1], total, delta=0.001)   # windows are rounded to ms
+        for (_s0, e0), (s1, _e1) in zip(wins, wins[1:]):
+            self.assertAlmostEqual(e0, s1, places=3)
+        for s, e in wins:
+            self.assertLessEqual(e - s, cap + 0.001)   # edges are quantised to the millisecond
+
+    def test_a_chain_keeps_its_interior_edges_off_the_word_snap(self):
+        """Snapping every edge to the nearest word boundary would pull a contiguous chain
+        apart - the one place the snap must not apply."""
+        cap = config.AVATAR_MODELS["Wan 2.2 S2V"]["max_segment"]
+        words = [{"word": "a", "start": 0.0, "end": 3.2}, {"word": "b", "start": 3.4, "end": 9.0}]
+        with mock.patch.multiple(config, AVATAR_MAX_SECONDS=120.0,
+                                 AVATAR_MAX_RENDER_MINUTES=6000.0):
+            wins = avatar.segment_windows("full", cap * 2, "Wan 2.2 S2V", words)
+        self.assertEqual(len(wins), 2)
+        self.assertAlmostEqual(wins[0][1], wins[1][0], places=3)
+
+    def test_a_two_chunk_chain_is_not_collapsed_into_one(self):
+        """The collapse rule is for an intro and an outro that overlap on a short video; a
+        chain is contiguous by construction, so it would have halved every short full video."""
+        cap = config.AVATAR_MODELS["Wan 2.2 S2V"]["max_segment"]
+        with mock.patch.multiple(config, AVATAR_MAX_SECONDS=120.0,
+                                 AVATAR_MAX_RENDER_MINUTES=6000.0):
+            wins = avatar.segment_windows("full", cap * 2, "Wan 2.2 S2V")
+        self.assertEqual(len(wins), 2)
+
+    def test_a_tile_too_short_to_be_worth_a_pass_is_dropped(self):
+        """A 0.7 s remainder still costs a whole 77-frame render and reads as a glitch."""
+        cap = config.AVATAR_MODELS["Wan 2.2 S2V"]["max_segment"]
+        with mock.patch.multiple(config, AVATAR_MAX_SECONDS=120.0,
+                                 AVATAR_MAX_RENDER_MINUTES=6000.0):
+            wins = avatar.segment_windows("full", cap * 2 + 0.7, "Wan 2.2 S2V")
+        self.assertEqual(len(wins), 2)
+        for s, e in wins:
+            self.assertGreaterEqual(e - s, avatar.MIN_SEGMENT)
+
+    def test_full_stays_one_window_where_the_engine_needs_no_chain(self):
+        """LTX renders a whole segment in one pass, so chaining would buy nothing and add a
+        pose reset at every seam."""
+        with mock.patch.object(config, "AVATAR_MAX_SECONDS", 120.0):
+            wins = avatar.segment_windows("full", 90.0, "LTX 2.5")
+        self.assertEqual(wins, [(0.0, 90.0)])
+
+    def test_full_over_budget_still_falls_back_to_the_two_bookends(self):
+        """The no-regression case: a video the budget cannot cover behaves as it always did."""
+        wins = avatar.segment_windows("full", 600.0, "Wan 2.2 S2V")
+        self.assertEqual(len(wins), 2)
+        self.assertEqual(wins, avatar.segment_windows("both", 600.0, "Wan 2.2 S2V"))
+
+
 class Placement(unittest.TestCase):
     """One set of fractions has to work for every resolution and aspect ratio."""
 
@@ -201,6 +261,42 @@ class Placement(unittest.TestCase):
         self.assertLess(left[0], right[0])
         top = video.avatar_box(size, "bubble", corner="top-right")
         self.assertLess(top[1], right[1])
+
+
+    def test_a_measured_subject_fills_the_box_instead_of_the_frame(self):
+        """The engines centre a head-and-shoulders portrait in a square, so drawing the whole
+        frame spends a quarter of the box on transparency and the presenter reads as small."""
+        size = (1440, 2580)
+        x, y, bw, bh = video.avatar_box(size, "cutout")
+        segs = [{"video": Path("a.mp4"), "matte": None, "start": 0.0, "end": 4.0,
+                 "bbox": [0.2, 0.15, 0.8, 1.0]}]
+        lyr = video.avatar_layers(size, segs, TMP, style="cutout")[0]
+        self.assertGreater(lyr["w"], bw)                      # the frame is enlarged...
+        sub_w, sub_h = 0.6 * lyr["w"], 0.85 * lyr["h"]        # ...until the FIGURE spans the box
+        self.assertAlmostEqual(max(sub_w, sub_h), max(bw, bh), delta=3)
+        self.assertLessEqual(sub_w, bw + 2)
+        self.assertLessEqual(sub_h, bh + 2)
+        # and lands where the box was: bottom edge held, centred across it
+        self.assertAlmostEqual(lyr["y"] + 1.0 * lyr["h"], y + bh, delta=2)
+        self.assertAlmostEqual(lyr["x"] + 0.5 * lyr["w"], x + bw / 2, delta=2)
+
+    def test_an_unmeasured_segment_draws_exactly_as_it_used_to(self):
+        size = (1440, 2580)
+        segs = [{"video": Path("a.mp4"), "matte": None, "start": 0.0, "end": 4.0}]
+        lyr = video.avatar_layers(size, segs, TMP, style="cutout")[0]
+        self.assertEqual((lyr["x"], lyr["y"], lyr["w"], lyr["h"]), video.avatar_box(size, "cutout"))
+
+    def test_a_subject_measurement_never_blows_the_presenter_up(self):
+        """A matte that found only a sliver must not scale the frame to fill the video."""
+        size = (1440, 2580)
+        _x, _y, bw, _bh = video.avatar_box(size, "cutout")
+        segs = [{"video": Path("a.mp4"), "matte": None, "start": 0.0, "end": 4.0,
+                 "bbox": [0.49, 0.49, 0.51, 0.51]}]
+        lyr = video.avatar_layers(size, segs, TMP, style="cutout")[0]
+        self.assertLessEqual(lyr["w"], bw * video.AVATAR_FILL_MAX + 2)
+
+    def test_an_unreadable_matte_measures_nothing_rather_than_failing(self):
+        self.assertIsNone(avatar.matte_bounds(TMP / "no-such-matte.mp4"))
 
 
 class CompositeVideoLayer(unittest.TestCase):

@@ -52,17 +52,25 @@ def segment_windows(coverage: str, total: float, engine: str = "", words=None) -
 
     intro = _clip(float(config.AVATAR_INTRO_SECONDS))
     outro = _clip(float(config.AVATAR_OUTRO_SECONDS))
-    if coverage == "full" and total <= budget and (not cap or total <= cap):
-        wins = [(0.0, total)]
+    chained = False
+    if coverage == "full" and total <= budget:
+        # One window where the engine renders the whole thing in a pass (LTX), a chain of
+        # cap-sized ones where it cannot (Wan renders a single 77-frame chunk). Laid end to
+        # end rather than stitched: the overlay composites every segment at its own start,
+        # so a chain costs no extra encode - only a pose reset at each seam, which is what a
+        # presenter who never leaves costs on a chunked engine.
+        wins = [(0.0, total)] if not cap else _tile(total, cap)
+        chained = len(wins) > 1
     elif coverage == "intro":
         wins = [(0.0, intro)]
     elif coverage == "outro":
         wins = [(max(0.0, total - outro), total)]
     else:
-        # "both", and "full" on a video too long to cover: the start and the end
+        # "both", and "full" on a video the budget cannot cover: the start and the end
         wins = [(0.0, intro), (max(0.0, total - outro), total)]
-    # overlapping windows on a very short video collapse to one
-    if len(wins) == 2 and wins[1][0] <= wins[0][1] + MIN_SEGMENT:
+    # overlapping windows on a very short video collapse to one - but a chain is contiguous
+    # by construction, so the same test would collapse a two-chunk full video into one chunk
+    if not chained and len(wins) == 2 and wins[1][0] <= wins[0][1] + MIN_SEGMENT:
         wins = [(0.0, min(total, intro))]
     wins = [(s, e) for s, e in wins if e - s >= MIN_SEGMENT]
     # spend the budget front to back, so an intro survives when only one of the two fits
@@ -74,8 +82,25 @@ def segment_windows(coverage: str, total: float, engine: str = "", words=None) -
         e = min(e, s + room)
         if e - s < MIN_SEGMENT:
             continue
-        out.append(_snap(s, e, words, total))
+        # a chain's interior edges stay exact: snapping each to its nearest word boundary
+        # would pull them apart and leave the presenter blinking out in the gaps
+        out.append((round(s, 3), round(e, 3)) if chained else _snap(s, e, words, total))
         spent += e - s
+    return out
+
+
+def _tile(total: float, cap: float) -> list:
+    """[0, total] cut into consecutive cap-length windows, the last one short.
+
+    What "the whole video" means on an engine that renders a fixed chunk: the segments are
+    contiguous, so the presenter is on screen from the first frame to the last."""
+    out, t = [], 0.0
+    while t < total - 0.01:
+        e = min(total, t + cap)
+        # rounded here, once, so two neighbours share the very same boundary: rounding each
+        # window separately later would leave a sub-millisecond seam between them
+        out.append((round(t, 3), round(e, 3)))
+        t = e
     return out
 
 
@@ -294,6 +319,37 @@ def thumbnail_cutout(clip: Path, dst: Path, matte: Path | None = None, at: float
     out.save(dst, "PNG")
     rgb.unlink(missing_ok=True)
     return dst
+
+
+def matte_bounds(matte: Path, thresh: float = 0.5) -> tuple | None:
+    """Where the figure sits inside the engine's square frame, as (x0, y0, x1, y1) in 0..1.
+
+    The union over every frame, so the box holds the presenter for the whole segment rather
+    than breathing with the gesture. It is worth measuring because the engines centre a
+    head-and-shoulders portrait in a square and how much of that square the figure fills is
+    up to the render: where it leaves air around the head, drawing the whole frame spends the
+    box on transparency and the presenter reads as smaller than the size settings asked for.
+    services/video.avatar_layers uses this to put the figure in the box rather than the frame;
+    a figure that already fills its frame measures (0, 0, 1, 1) and nothing changes.
+
+    Read back from the finished matte rather than measured during matte_segment, so a video
+    rendered before this existed picks it up on a reassembly. None when the matte cannot be
+    read or found nothing - the caller then draws the whole frame, exactly as it used to."""
+    try:
+        import numpy as np
+        from services import video
+
+        W, H = video.frame_size(matte)
+        raw = subprocess.run([ffmpeg(), "-v", "error", "-i", str(matte), "-f", "rawvideo",
+                              "-pix_fmt", "gray", "-"], capture_output=True, check=True).stdout
+        peak = np.frombuffer(raw, np.uint8).reshape(-1, H, W).max(axis=0)
+        ys, xs = np.where(peak >= int(thresh * 255))
+        if not len(ys):
+            return None
+        return (float(xs.min()) / W, float(ys.min()) / H,
+                float(xs.max() + 1) / W, float(ys.max() + 1) / H)
+    except Exception:          # noqa: BLE001 - framing must never fail a render
+        return None
 
 
 def matte_segment(src: Path, dst: Path, on_progress=None) -> Path:
