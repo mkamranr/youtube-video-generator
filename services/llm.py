@@ -26,15 +26,16 @@ AUDIENCE_RULES = {
 
 
 def _channel(ch: dict | None) -> dict:
-    """Normalize a job's channel snapshot. The defaults reproduce the legacy behavior
-    (single kids channel, animated) for jobs created before channels existed."""
+    """Normalize a job's channel snapshot, filling in whatever a job created before
+    channels existed is missing. An unknown audience falls back to `general`, the same
+    default a newly created channel gets."""
     ch = dict(ch or {})
     ch.setdefault("name", config.CHANNEL_NAME)
     ch.setdefault("purpose", "")
     ch.setdefault("rules", "")
     ch.setdefault("cast", [])
     if ch.get("audience") not in AUDIENCE_RULES:
-        ch["audience"] = "kids"
+        ch["audience"] = "general"
     if ch.get("video_type") not in config.VIDEO_TYPES:
         ch["video_type"] = "animated"
     return ch

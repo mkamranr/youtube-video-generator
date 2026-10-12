@@ -59,7 +59,7 @@
             <select id="chAudience">
               <option value="kids">Kids</option>
               <option value="family">Family</option>
-              <option value="general">General</option>
+              <option value="general" selected>General</option>
             </select>
           </div>
           <div class="grow" style="min-width:160px">
@@ -941,7 +941,7 @@ async function chOpen(c) {
   $("#chRules").value = c ? (c.rules || "") : "";
   $("#chRulesMax").textContent = chData.max_rules_chars || 6000;
   chBibleReset();
-  $("#chAudience").value = c ? c.audience : "kids";
+  $("#chAudience").value = c ? c.audience : "general";
   $("#chVideoType").value = c ? c.video_type : "animated";
   $("#chKids").checked = c ? !!c.made_for_kids : $("#chAudience").value === "kids";
   $("#chStoryboard").checked = c ? !!(d.storyboard != null ? d.storyboard : c.video_type === "tech") : false;

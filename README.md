@@ -1,8 +1,8 @@
 # VideoGen — AI Video Generator for Your YouTube Channel
 
-VideoGen turns any YouTube video into a brand-new AI video tailored to one of your channels — animated, realistic or tech-explainer, with content rules matching the channel's audience — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
+VideoGen turns a YouTube video, a topic, your own script or a GitHub / Hugging Face page into a brand-new AI video tailored to one of your channels — animated, realistic or tech-explainer, with content rules matching the channel's audience — complete with an original soundtrack **or a voiceover narration in a voice you choose (Fish Speech voice cloning)**, scene-synced visuals, a YouTube-ready thumbnail, and SEO metadata — then publishes it to YouTube with one click, using locally hosted AI services end to end.
 
-Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
+Pick a channel, give it a URL, a topic or your own script, choose an art style and aspect ratio, and the pipeline produces a finished `final.mp4` plus everything needed to publish it.
 
 ## Features
 
@@ -64,14 +64,14 @@ Paste a YouTube URL, pick an art style and aspect ratio, and the pipeline produc
 ## Architecture
 
 ```
-YouTube URL
+YouTube URL · topic · description / script · GitHub or Hugging Face page
     │
     ▼
-┌─────────────┐   captions    ┌──────────────┐  title/style/story  ┌──────────────┐
-│ Transcript   │──────────────▶│  Story plan  │────────────────────▶│  Soundtrack  │
-│ (yt captions │  quality gate │  (vLLM LLM)  │   + SEO metadata    │              │
-│  + yt-dlp)   │               └──────────────┘                     │ music mode:  │
-└─────────────┘                                                     │  MiniMax     │
+┌──────────────┐  source text  ┌──────────────┐  title/style/story  ┌──────────────┐
+│    Source    │──────────────▶│  Story plan  │────────────────────▶│  Soundtrack  │
+│ (captions or │  quality gate │  (vLLM LLM)  │   + SEO metadata    │              │
+│  LLM draft)  │               └──────────────┘                     │ music mode:  │
+└──────────────┘                                                    │  MiniMax     │
                                                                     │  Music3 song │
                                                                     │ narration:   │
                                                                     │  Fish Speech │
