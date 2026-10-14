@@ -263,6 +263,13 @@
     </div>
   </section>
 
+  <section class="card" id="partsSec" hidden>
+    <h2>Videos in this compilation <span class="count" id="partCount"></span></h2>
+    <div class="hint" style="margin:-6px 0 12px">In the order they play, each one a chapter of the compilation. They are
+      joined exactly as they were finished — nothing was re-rendered — and they stay published in their own right.</div>
+    <div id="partList"></div>
+  </section>
+
   <section class="card" id="clipsSec" hidden>
     <div class="clips-head">
       <h2>Clips <span class="count" id="clipCount"></span></h2>
@@ -370,6 +377,33 @@ function renderStepper(j) {
   $("#stepper").innerHTML = items.join("");
 }
 
+function fmtClock(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  const m = Math.floor(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+                 : `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// The compilation's parts, with the timestamp each one starts at - the same offsets that became
+// its chapter list, so the card doubles as a check that the chapters landed on the real cuts.
+function renderParts(plan) {
+  const parts = (plan || {}).parts || [];
+  $("#partsSec").hidden = !parts.length;
+  if (!parts.length) return;
+  $("#partCount").textContent = `(${parts.length})`;
+  let at = 0;
+  $("#partList").innerHTML = parts.map((p, i) => {
+    const start = at;
+    at += Number(p.seconds || 0);
+    return `<a class="jobcard" href="/job/${esc(p.job_id)}">
+      <div class="jc-main">
+        <div class="jc-title"><span class="count">${i + 1}</span> ${esc(p.title || p.job_id)}</div>
+        <div class="jc-meta"><span class="jid">${esc(p.job_id)}</span>
+          <span>starts at ${fmtClock(start)}</span><span>${fmtClock(p.seconds)} long</span></div>
+      </div></a>`;
+  }).join("");
+}
+
 async function loadDetails(j) {
   if (detailsStamp === j.updated) return;
   const d = await api(`/jobs/${jobId}/details`);
@@ -410,6 +444,7 @@ async function loadDetails(j) {
       $("#seoTitle").textContent = d.plan.seo_title || "";
       $("#seoDesc").textContent = d.plan.seo_description || "";
     }
+    renderParts(d.plan);
     renderResource(d.plan.resource, j);
     if (d.plan.narration) {
       $("#narrSec").hidden = false;
@@ -658,6 +693,11 @@ function update(j) {
     detailsStamp = null;
   }
 
+  // A compilation is a video made of other videos: it has no clips, scenes, audio tracks,
+  // transcript or art style, and nothing about it can be regenerated or reassembled. Showing
+  // those cards empty, or a Reassemble button the server would refuse, is worse than hiding them.
+  const compiled = isCompiled(j);
+
   const clips = j.clips || [];
   if (clips.length) {
     $("#clipsSec").hidden = false;
@@ -685,11 +725,11 @@ function update(j) {
     : "";
   // every finished job, not only one with stale clips: this is also how a changed setting
   // or a presenter that failed to render is applied to a video that is already done
-  $("#assembleBtn").hidden = !done;
-  $("#assembleHint").hidden = !(done && j.needs_assemble);
-  $("#sbRow").hidden = !done;
+  $("#assembleBtn").hidden = !done || compiled;
+  $("#assembleHint").hidden = !(done && j.needs_assemble) || compiled;
+  $("#sbRow").hidden = !done || compiled;
   $("#sbToggle").checked = !!j.storyboard;
-  $("#sbRegen").hidden = !(done && j.storyboard);
+  $("#sbRegen").hidden = !(done && j.storyboard) || compiled;
 
   const yt = j.yt_status || "";
   $("#ytBtn").hidden = !(done && yt !== "uploading");

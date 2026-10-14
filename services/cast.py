@@ -44,12 +44,44 @@ def enabled(channel: dict | None) -> bool:
 def active(channel: dict | None) -> list:
     """The cast the PROMPTS see: empty while characters are off, so a channel keeps its roster and
     its portraits (the editor reads those through all_characters / channel["cast"]) while its
-    videos have no actors. Everything that writes a prompt comes through here."""
+    videos have no actors. Everything that writes a prompt comes through here.
+
+    A resting character is deliberately still in here. This function also gates render_prefix and
+    voice_id_for, so filtering them out would strip the canonical look off a video that already
+    used one the next time one of its clips was regenerated - the ranking is about what to cast
+    NEXT, not a retraction of what is already made."""
     return all_characters(channel) if enabled(channel) else []
 
 
+# A character's share of the channel's output (services.channels.CAST_PRIORITIES). Lower sorts
+# first; the values are only ever compared, never shown.
+_PRIORITY_ORDER = {"lead": 0, "normal": 1, "resting": 2}
+
+
+def priority(c: dict) -> str:
+    return str((c or {}).get("priority") or "normal").strip().lower()
+
+
+def by_priority(chars: list) -> list:
+    """Leads first, resting last, otherwise the roster's own order.
+
+    A stable sort, so the editor's ordering still decides between two characters of equal standing
+    and nothing reshuffles when a priority is left alone."""
+    return sorted(chars or [], key=lambda c: _PRIORITY_ORDER.get(priority(c), 1))
+
+
+def leads(channel: dict | None) -> list:
+    return [c for c in active(channel) if priority(c) == "lead"]
+
+
+def resting(channel: dict | None) -> list:
+    return [c for c in active(channel) if priority(c) == "resting"]
+
+
 def main_characters(channel: dict | None) -> list:
-    return [c for c in active(channel) if c.get("role", "main") == "main"]
+    """The usual protagonists, best performers first - so whatever takes "the first one" (the
+    portrait that opens a video, the faces a thumbnail features) reaches for a lead."""
+    return by_priority([c for c in active(channel) if c.get("role", "main") == "main"])
 
 
 def names(chars: list) -> list:
@@ -83,11 +115,16 @@ def select_characters(channel: dict | None, used) -> list:
 
 
 # ---- prompt text -----------------------------------------------------------
-def _sheet_line(c: dict, spoken: bool = False) -> str:
-    """One roster line; spoken=True leaves the look out (see sheet_text)."""
+def _sheet_line(c: dict, spoken: bool = False, rank: bool = False) -> str:
+    """One roster line; spoken=True leaves the look out (see sheet_text).
+
+    rank=True adds the character's standing, which only the roster (script-writing) mode wants: by
+    the time a later call gets the sheet the cast is already chosen and the ranking would just be
+    an invitation to second-guess it."""
     role = "MAIN" if c.get("role", "main") == "main" else "supporting"
     kind = (c.get("kind") or "").strip()
-    line = f"- {c['name']} ({role}{', ' + kind if kind else ''})"
+    standing = f", {priority(c).upper()}" if rank and priority(c) != "normal" else ""
+    line = f"- {c['name']} ({role}{standing}{', ' + kind if kind else ''})"
     line += "." if spoken else f": {c.get('look', '').strip()}"
     if (c.get("personality") or "").strip():
         line += f" Personality: {c['personality'].strip()}"
@@ -101,6 +138,21 @@ SPOKEN_RULE = ("This text is SPOKEN ALOUD: refer to the characters by name only.
 _LOOK_RULE = ("Never invent other recurring named characters, never rename these ones and never change "
               "their looks. Whenever a scene shows a cast character, name them and repeat their full look "
               "from this sheet. ")
+
+
+def _RANK_RULE(cast: list) -> str:  # noqa: N802 - reads as a constant at the call site
+    """What the roster's LEAD / RESTING marks mean to the writer.
+
+    Only emitted when the channel actually ranked somebody, so a channel that never touched the
+    field sends not one extra token and keeps the exact prompt it had before."""
+    parts = []
+    if any(priority(c) == "lead" for c in cast):
+        parts.append("The characters marked LEAD are the ones this channel's audience comes back for: "
+                     "cast one of them in the lead unless the request asks for someone else.")
+    if any(priority(c) == "resting" for c in cast):
+        parts.append("A character marked RESTING is not to be cast at all unless the request names "
+                     "them explicitly.")
+    return (" ".join(parts) + " ") if parts else ""
 
 
 def sheet_text(channel: dict | None, used: list | None = None, spoken: bool = False) -> str:
@@ -119,11 +171,12 @@ def sheet_text(channel: dict | None, used: list | None = None, spoken: bool = Fa
     written = "names" if spoken else "names and looks"
     if used is None:
         return (f"RECURRING CAST of this channel (the roster - keep {written} EXACTLY as written):\n"
-                + "\n".join(_sheet_line(c, spoken) for c in cast) + "\n"
+                + "\n".join(_sheet_line(c, spoken, rank=True) for c in by_priority(cast)) + "\n"
                 "Pick only the characters this story needs (usually 1-3). MAIN characters are the usual "
                 "protagonists; supporting characters appear when the story calls for them. Characters you "
                 "do not pick stay out entirely - never name them. If the request names cast characters, use "
                 "exactly those, in the roles the request gives them. "
+                + _RANK_RULE(cast)
                 + (SPOKEN_RULE if spoken else _LOOK_RULE))
     chosen = select_characters(channel, used)
     others = [c["name"] for c in cast if c not in chosen]

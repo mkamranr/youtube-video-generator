@@ -996,9 +996,18 @@ Never mention real people's names or brands."""
     return cards
 
 
+PLAN_TITLE_KEY = '- "title": the video title a viewer would click, max 12 words.\n'
+
+# The planner's titles are the first draft of what write_seo later polishes, so a kids week that
+# starts with clever titles spends the SEO call fixing them instead of sharpening them.
+PLAN_TITLE_KEY_KIDS = ('- "title": the video title a parent would click, max 10 words, OPENING with the '
+                       'character name and the plain subject a parent would type ("Train", "Clean Up '
+                       'Song", "Learn Colors", "ABCs", "Bedtime", "Counting"). No clever framing '
+                       'before the subject, no brackets, no number first.\n')
+
 PLAN_ROW_KEYS = ('- "actors": the cast characters of this video, by name, as a list (usually 1-3; '
                  'empty when the story needs none).\n'
-                 '- "title": the video title a viewer would click, max 12 words.\n'
+                 '{title}'
                  '- "description": 2-4 sentences telling the whole story from beginning to end - what '
                  'happens, to whom, and how it ends. This becomes the brief the script is written from, '
                  'so name the characters and never describe how they look.\n'
@@ -1009,7 +1018,7 @@ PLAN_ROW_KEYS = ('- "actors": the cast characters of this video, by name, as a l
 
 
 PLAN_ROW_KEYS_NO_CHARACTERS = (
-    '- "title": the video title a viewer would click, max 12 words.\n'
+    '{title}'
     '- "description": 2-4 sentences describing the whole video from beginning to end - what the '
     'viewer learns, the concrete steps, settings or demo it walks through, in order, and what they '
     'can do at the end. This becomes the brief the script is written from: it is an informative '
@@ -1022,7 +1031,9 @@ PLAN_ROW_KEYS_NO_CHARACTERS = (
 
 
 def _plan_row_keys(channel: dict | None) -> str:
-    return PLAN_ROW_KEYS if cast.enabled(channel) else PLAN_ROW_KEYS_NO_CHARACTERS
+    shape = PLAN_ROW_KEYS if cast.enabled(channel) else PLAN_ROW_KEYS_NO_CHARACTERS
+    kids = _channel(channel)["audience"] == "kids"
+    return shape.format(title=PLAN_TITLE_KEY_KIDS if kids else PLAN_TITLE_KEY)
 
 
 def _plan_shape(channel: dict | None, day_value: str) -> str:
@@ -1032,6 +1043,8 @@ def _plan_shape(channel: dict | None, day_value: str) -> str:
     return ('{"day": ' + day_value + ', ' + actors + '"title": "...", "description": "...", '
             '"thumbnail_idea": "...", "hook": "..."}')
 
+
+DAYS_PER_WEEK = 7          # a full week; fewer videos than this are spread across it
 
 STORY_WEEK_RULE = (
     "These are STORY videos. Each one is told as a short series of scenes with NO CUTS between them: "
@@ -1048,8 +1061,17 @@ def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, av
     a story is rendered as clips that each continue from the previous one's last frame, so a
     week of ideas that hop between unconnected places fights the continuity contract."""
     avoid = [str(a).strip() for a in (avoid or []) if str(a).strip()]
-    parts = [f"Plan {days} videos for this channel, one per day"
+    cadence = "one per day" if days >= DAYS_PER_WEEK else "spread across the week"
+    parts = [f"Plan {days} videos for this channel, {cadence}"
              + (f", starting {week_start}." if week_start else ".")]
+    if days < DAYS_PER_WEEK:
+        # A short week is a deliberate choice, not a shortage of ideas: uploading less and better
+        # is what the channel's own numbers asked for, so the brief has to raise the bar per video
+        # rather than hand back three of the seven it would have written.
+        parts.append(f"This channel publishes {days} videos a week, not one a day - so these are the "
+                     "week's BEST ideas, not a thin spread. Each one has to be worth a viewer's full "
+                     "attention: a complete little story or lesson with a real beginning and end, not "
+                     "a fragment that would have been one day of seven.")
     if cast.enabled(channel):
         parts.append("Every video stands on its own (a viewer may watch only one) but the week as a "
                      "whole has variety: different settings, different problems to solve, different "
@@ -1057,6 +1079,10 @@ def _plan_rules(channel: dict | None, days: int, week_start: str, notes: str, av
         if cast.active(channel):
             parts.append("Cast the videos from the channel roster above - usually 1-3 characters each, "
                          "and not the same lead every day. Use their names exactly as written.")
+            if cast.leads(channel):
+                parts.append("Most of the week belongs to the roster's LEAD characters: give each video "
+                             "a lead in it, and a character marked resting none at all unless this "
+                             "request names them.")
             if video_mode == "story":
                 parts.append(STORY_WEEK_RULE)
     else:
@@ -1121,6 +1147,27 @@ Never mention real people's names or brands."""
     return row
 
 
+_SEO_TITLE_RULE = ('- "seo_title": one compelling, keyword-rich title, max 70 characters, no clickbait '
+                   'lies, no quotes, no emojis at the start (one emoji at the end is allowed if it fits '
+                   'the topic).')
+
+# A kids title is not read, it is scanned - by a parent typing two or three words into the search
+# box and by a sidebar that truncates at about 60 characters on a phone. So the words that get the
+# video found have to come FIRST, before any framing, and the clever part has to go or go last.
+_SEO_TITLE_RULE_KIDS = (
+    '- "seo_title": max 60 characters, and the first 40 must already carry the words a parent would '
+    'type - the character\'s name and the plain subject ("Train", "Clean Up Song", "Learn Colors", '
+    '"ABCs", "Bedtime", "Counting"). Start with those words: never open with the channel name, a '
+    'number, a bracket or a clause before the subject. Plain, concrete, no clickbait, no quotes, no '
+    'emoji at the start. A short "| Nursery Rhymes & Kids Songs"-style tail after the subject is '
+    'fine if it fits the 60 characters.')
+
+
+def _title_rule(channel: dict | None) -> str:
+    """The seo_title clause: audience-specific, because what earns a click differs by who clicks."""
+    return _SEO_TITLE_RULE_KIDS if _channel(channel)["audience"] == "kids" else _SEO_TITLE_RULE
+
+
 def write_seo(title: str, narration: str, transcript: str, channel: dict | None = None,
               used: list | None = None) -> dict:
     """YouTube-ready SEO title and description for the generated video."""
@@ -1133,7 +1180,7 @@ Original source transcript excerpt (for topic keywords):
 \"\"\"{transcript[:4000]}\"\"\"
 
 Write YouTube upload metadata optimized for SEO and reach. Return JSON with keys:
-- "seo_title": one compelling, keyword-rich title, max 70 characters, no clickbait lies, no quotes, no emojis at the start (one emoji at the end is allowed if it fits the topic).
+{_title_rule(channel)}
 - "seo_keywords": 5-8 search phrases people would type to find this video (the main topic first, then related and long-tail phrases).
 - "seo_description": a description of 2-3 short paragraphs (120-200 words total). The first sentence hooks and contains the main keyword. Work every keyword from "seo_keywords" into the text naturally, in the words a viewer would search for - repeat the main keyword 2-3 times, and never list keywords bare. End with a call-to-action inviting viewers to subscribe to "{name}", then a final line of 4-6 hashtags made from those keywords. Hashtags are all lowercase with no spaces, e.g. #spacefacts #kidslearning.
 Never mention that the video is AI-generated unless the content is about AI. Never mention real people's names or brands."""
@@ -1145,6 +1192,62 @@ Never mention that the video is AI-generated unless the content is about AI. Nev
     return {"seo_title": str(out.get("seo_title", "")).strip()[:100],
             "seo_keywords": [str(k).strip() for k in (kws or []) if str(k).strip()][:12],
             "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
+
+
+def write_compilation_seo(part_titles: list, length: str, channel: dict | None = None,
+                          used: list | None = None) -> dict:
+    """Title, description, keywords and thumbnail lines for a compilation of finished videos.
+
+    A compilation is sold on two things a single video is not: how LONG it is (a parent putting it
+    on wants to know it will not end in forty seconds) and WHAT IS IN IT (the list is the reason to
+    click). So the length goes in the title and the parts go in the description. Nothing about the
+    pictures is written here - the thumbnail is lifted from one of the parts, which already have
+    one - only the lines drawn over it.
+
+    `length` is services.compilation.fmt_length(total) - the model is given the length rather than
+    asked to work it out, because an overstated one is the worst thing a compilation title can do."""
+    from services import thumbtext   # lazy: thumbtext pulls storyboard, which imports this module
+
+    ch = _channel(channel)
+    max_words, max_chars = thumbtext.caps(ch)
+    listing = "\n".join(f"- {t}" for t in (part_titles or []) if str(t or "").strip())
+    user = f"""We joined {len(part_titles or [])} of this channel's finished videos into ONE
+compilation that runs {length}. In order, the videos inside it are:
+{listing}
+
+Write YouTube upload metadata for the compilation. Return JSON with keys:
+- "seo_title": max 70 characters, and it must OPEN with the length exactly as "{length}" followed by
+  the subject the videos share - the recurring character, or what they teach. Then, if it fits, a
+  short searchable tail after a "|". It is a compilation, so say so in the words a viewer searches
+  for (compilation, non-stop, back to back, full episodes) rather than the word "playlist".
+  Never promise more time than "{length}". No clickbait, no quotes, no emoji at the start.
+- "seo_keywords": 5-8 search phrases someone would type to find a long compilation like this (the
+  shared subject first, then the compilation and long-play phrasings, then the individual topics).
+- "seo_description": 2-3 short paragraphs (120-200 words). The first sentence says what the
+  compilation is, how long it runs and who it is for. Work the keywords in naturally. End with a
+  call-to-action inviting viewers to subscribe to "{ch['name']}", then a final line of 4-6
+  hashtags, all lowercase with no spaces. Do NOT list the videos or their timestamps - a chapter
+  list is appended to this description automatically afterwards.
+- "thumbnail_texts": 2-3 alternative overlay lines for the compilation's thumbnail, each at most
+  {max_words} words and under {max_chars} characters, no full stops, no quotation marks. The length is
+  the strongest thing one can say, so at least one of them should carry it (e.g. "{length}").
+Never mention that the videos are AI-generated. Never mention real people's names or brands."""
+    out = _chat([{"role": "system", "content": _system(channel, used=used, rules=False)},
+                 {"role": "user", "content": user}])
+    kws = out.get("seo_keywords")
+    raw = out.get("thumbnail_texts") or out.get("thumbnail_text") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    texts, seen = [], set()
+    for t in list(raw)[:4]:
+        t = thumbtext.normalize(t, max_words, max_chars)
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            texts.append(t)
+    return {"seo_title": str(out.get("seo_title", "")).strip()[:100],
+            "seo_keywords": [str(k).strip() for k in (kws or []) if str(k).strip()][:12],
+            "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip()),
+            "thumbnail_texts": texts}
 
 
 _ALNUM = re.compile(r"[^a-z0-9]+")
@@ -1326,14 +1429,28 @@ def _lowercase_hashtags(text: str) -> str:
     return _HASHTAG.sub(lambda m: "#" + m.group(1).lower(), text)
 
 
+# Extra composition rules for a kids thumbnail. A toddler channel is browsed on a phone by an
+# adult scrolling fast, and the thumbnails that win there are not the ones with the most in them:
+# one huge face, one object, one flat loud colour. Anything else reads as noise at 168x94 px.
+_THUMB_KIDS_RULE = (
+    "  Compose it for a TODDLER audience scrolling on a phone: ONE character's face and upper body\n"
+    "  filling most of the frame, eyes wide and mouth open in delight, plus at most ONE other\n"
+    "  object, large and unmistakable. A flat, bright, high-contrast background (one strong colour\n"
+    "  or a simple sky) - no scenery, no crowd, no small details, nothing in the distance.\n")
+
+
 def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None,
                     used: list | None = None, idea: str = "") -> dict:
     """A single-image prompt for an eye-catching YouTube thumbnail.
 
     idea: the thumbnail the weekly plan asked for (services/planner.py); the prompt then realises
     that composition instead of inventing one. Empty for every other job."""
-    emotion = ("big expressive joyful emotion" if _channel(channel)["audience"] == "kids"
-               else "strong expressive emotion")
+    from services import thumbtext   # lazy: thumbtext pulls storyboard, which imports this module
+
+    ch = _channel(channel)
+    kids = ch["audience"] == "kids"
+    max_words, max_chars = thumbtext.caps(ch)
+    emotion = "big expressive joyful emotion" if kids else "strong expressive emotion"
     wish = (f'\nThe thumbnail must show this, as planned for the video: "{idea.strip()}"'
             if idea.strip() else "")
     featured = cast.names(cast.main_characters(channel)) if used is None else list(used)
@@ -1356,21 +1473,19 @@ must INSTANTLY understand what the video is about. Return JSON with key:
   SHOWS THE VIDEO'S SUBJECT: {subject}, front and
   center, caught mid-action with {emotion}. Bold composition, exaggerated
   scale, vivid saturated colors, strong contrast and lighting, simple readable background.
-  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
+{_THUMB_KIDS_RULE if kids else ""}  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
   Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
-- "thumbnail_texts": 2-3 alternative overlay lines for this same picture, each 3-5 words and under
-  22 characters, no full stops, no quotation marks. Each must be readable at thumbnail size on a
-  phone and must say something the picture alone cannot - the stake, the number, the surprise.
-  Best first. They are drawn over the picture afterwards, so the picture itself still contains no
-  letters of any kind.
+- "thumbnail_texts": 2-3 alternative overlay lines for this same picture, each at most
+  {max_words} words and under {max_chars} characters, no full stops, no quotation marks. Each must be
+  readable at thumbnail size on a phone and must say something the picture alone cannot - the
+  stake, the number, the surprise. Best first. They are drawn over the picture afterwards, so the
+  picture itself still contains no letters of any kind.
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     tp = str(out.get("thumbnail_prompt", "")).strip()
     if not tp:
         raise RuntimeError("vLLM returned no thumbnail prompt")
-    from services import thumbtext   # lazy: thumbtext pulls storyboard, which imports this module
-
     # Missing overlay lines is not an error: the video simply ships the clean render, which is
     # exactly what every video did before this existed.
     raw = out.get("thumbnail_texts") or out.get("thumbnail_text") or []
@@ -1378,7 +1493,7 @@ Never mention real people's names or brands."""
         raw = [raw]
     texts, seen = [], set()
     for t in list(raw)[:4]:
-        t = thumbtext.normalize(t)
+        t = thumbtext.normalize(t, max_words, max_chars)
         if t and t.lower() not in seen:
             seen.add(t.lower())
             texts.append(t)

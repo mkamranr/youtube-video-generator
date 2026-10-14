@@ -20,7 +20,10 @@ from services import cast
 
 _lock = threading.Lock()
 
-DAYS = 7                       # videos per plan (one week)
+DAYS = 7                       # the week a plan covers, in days
+MAX_VIDEOS = DAYS              # at most one video a day
+MIN_VIDEOS = 2
+DEFAULT_VIDEOS = DAYS          # what a plan with no stored count means: the daily week it was
 MAX_TITLE_CHARS = 120
 MAX_TEXT_CHARS = 1200          # description
 MAX_LINE_CHARS = 400           # thumbnail idea / hook
@@ -36,6 +39,8 @@ def _read_index() -> dict:
             for p in data["plans"]:     # plans written before a week had a format
                 if isinstance(p, dict):
                     p.setdefault("video_mode", config.DEFAULT_VIDEO_MODE)
+                    # written before a week could hold fewer than seven: it held seven
+                    p["videos"] = clamp_videos(p.get("videos", len(p.get("days") or []) or DAYS))
             return data
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
@@ -56,8 +61,28 @@ def parse_week_start(value) -> str:
         return date.today().isoformat()
 
 
-def day_date(week_start: str, day: int) -> str:
-    return (date.fromisoformat(week_start) + timedelta(days=max(1, day) - 1)).isoformat()
+def clamp_videos(value) -> int:
+    """How many videos one week's plan holds (MIN_VIDEOS..MAX_VIDEOS).
+
+    Anything unreadable - including a plan stored before the count existed - becomes the full
+    daily week, so no existing plan changes shape when it is read back."""
+    try:
+        return max(MIN_VIDEOS, min(MAX_VIDEOS, int(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_VIDEOS
+
+
+def day_date(week_start: str, day: int, videos: int = DAYS) -> str:
+    """The date of row `day` when the week holds `videos` of them.
+
+    Fewer than seven are SPREAD over the week rather than stacked on its first days: three videos
+    go out Monday, Wednesday, Friday, not Monday to Wednesday followed by four silent days. The
+    stride is integer division, so day 1 is always the week start and the last row always lands
+    inside the week."""
+    videos = clamp_videos(videos)
+    stride = max(1, DAYS // videos)
+    offset = (max(1, day) - 1) * stride
+    return (date.fromisoformat(week_start) + timedelta(days=min(offset, DAYS - 1))).isoformat()
 
 
 # ---- validation ------------------------------------------------------------
@@ -67,13 +92,13 @@ def _clip(value, limit: int) -> str:
 
 
 def validate_day(row, day: int, week_start: str, channel: dict | None = None,
-                 base: dict | None = None) -> dict:
+                 base: dict | None = None, videos: int = DAYS) -> dict:
     """One plan row, clamped. `actors` keeps only names the channel's cast really has, so a
     hallucinated character never reaches the job - and stays empty altogether for a channel whose
     videos have no characters. Unknown keys are dropped."""
     row = row if isinstance(row, dict) else {}
     base = base or {}
-    out = {"day": day, "date": day_date(week_start, day)}
+    out = {"day": day, "date": day_date(week_start, day, videos)}
     limits = {"title": MAX_TITLE_CHARS, "description": MAX_TEXT_CHARS,
               "thumbnail_idea": MAX_LINE_CHARS, "hook": MAX_LINE_CHARS}
     for k in DAY_KEYS:
@@ -95,12 +120,14 @@ def validate_day(row, day: int, week_start: str, channel: dict | None = None,
 
 
 def normalize_days(rows, week_start: str, channel: dict | None = None, days: int = DAYS) -> list:
-    """Exactly `days` rows, numbered and dated from week_start. A short reply from the LLM is
-    padded with empty rows (the user regenerates them); a long one is cut."""
+    """Exactly `days` rows, numbered and dated across the week from week_start. A short reply from
+    the LLM is padded with empty rows (the user regenerates them); a long one is cut."""
     rows = rows if isinstance(rows, list) else []
+    days = clamp_videos(days)
     out = []
     for i in range(days):
-        out.append(validate_day(rows[i] if i < len(rows) else {}, i + 1, week_start, channel))
+        out.append(validate_day(rows[i] if i < len(rows) else {}, i + 1, week_start, channel,
+                                videos=days))
     return out
 
 
@@ -123,11 +150,12 @@ def get_plan(pid: str):
 
 
 def create_plan(channel_id: str, owner: str, week_start: str, days: list, notes: str = "",
-                video_mode: str = "") -> dict:
+                video_mode: str = "", videos: int = DEFAULT_VIDEOS) -> dict:
     rec = {"id": uuid.uuid4().hex[:8], "channel_id": str(channel_id), "owner": str(owner or ""),
            "created": time.time(), "updated": time.time(),
            "week_start": week_start, "notes": _clip(notes, MAX_NOTES_CHARS),
-           "video_mode": str(video_mode or config.DEFAULT_VIDEO_MODE), "days": days}
+           "video_mode": str(video_mode or config.DEFAULT_VIDEO_MODE),
+           "videos": clamp_videos(videos), "days": days}
     with _lock:
         idx = _read_index()
         idx["plans"].append(rec)

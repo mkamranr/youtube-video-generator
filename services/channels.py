@@ -30,6 +30,13 @@ MAX_CAST_NAME_CHARS = 40
 MAX_CAST_KIND_CHARS = 60
 CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: detail helps consistency
 
+# How much of the channel's output a character should carry. ORTHOGONAL to `role`, which is the
+# narrative job (protagonist vs. side character) - a flagship character and one nobody watches can
+# both be `main`, and on this channel they were. The ranking is entered by hand, because the app's
+# YouTube scope is upload-only and cannot read the analytics that would tell it.
+CAST_PRIORITIES = ("lead", "normal", "resting")
+DEFAULT_CAST_PRIORITY = "normal"
+
 MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
 MAX_AVATARS = 12              # presenter portraits per channel; one is the default
 MAX_AVATAR_NAME_CHARS = 40
@@ -62,6 +69,7 @@ def _read_index() -> dict:
                     for m in c["cast"]:         # characters created before they could have a voice
                         if isinstance(m, dict):
                             m.setdefault("voice_id", "")
+                            m.setdefault("priority", DEFAULT_CAST_PRIORITY)
                     c["defaults"].setdefault("avatar_id", "")
                     c["defaults"].setdefault("avatar_model", "")
                     c["defaults"].setdefault("avatar_coverage", config.DEFAULT_AVATAR_COVERAGE)
@@ -162,7 +170,11 @@ def snapshot(rec: dict) -> dict:
     return {"name": rec["name"], "purpose": rec["purpose"], "rules": str(rec.get("rules") or ""),
             "audience": rec["audience"], "video_type": rec["video_type"],
             "made_for_kids": rec.get("made_for_kids", rec["audience"] == "kids"),
-            "cast": [{**c, "voice_id": str(c.get("voice_id") or "")}
+            # priority is normalized here as well as voice_id: it steers which characters the
+            # script writer casts, so a job queued before the channel is edited has to carry the
+            # ranking it was submitted under, exactly like the looks it was submitted with
+            "cast": [{**c, "voice_id": str(c.get("voice_id") or ""),
+                      "priority": str(c.get("priority") or DEFAULT_CAST_PRIORITY)}
                      for c in rec.get("cast") or []],
             # the voice every character without one of their own speaks with: a story video needs it
             # at synthesis time, long after the channel record is out of reach
@@ -195,7 +207,9 @@ def _validate_cast(items, base_cast: list) -> list:
              # their first line and kept for that video). Deliberately NOT checked against the voice
              # library here: deleting a voice would otherwise make every channel using it unsavable,
              # and the job logs a fallback instead (pipeline resolves it at synthesis time).
-             "voice_id": str(it.get("voice_id") or "").strip()}
+             "voice_id": str(it.get("voice_id") or "").strip(),
+             # how much of the channel's output this character should carry (CAST_PRIORITIES)
+             "priority": str(it.get("priority") or DEFAULT_CAST_PRIORITY).strip().lower()}
         if not c["id"] or c["id"] not in known or c["id"] in seen:
             c["id"] = uuid.uuid4().hex[:8]
         seen.add(c["id"])
@@ -205,6 +219,8 @@ def _validate_cast(items, base_cast: list) -> list:
             raise ValueError(f"cast: kind must be at most {MAX_CAST_KIND_CHARS} characters")
         if c["role"] not in CAST_ROLES:
             raise ValueError(f"cast: role must be one of {list(CAST_ROLES)}")
+        if c["priority"] not in CAST_PRIORITIES:
+            raise ValueError(f"cast: priority must be one of {list(CAST_PRIORITIES)}")
         if not c["look"]:
             raise ValueError(f"cast: {c['name']} needs a look description")
         if len(c["voice_id"]) > MAX_CAST_VOICE_CHARS:

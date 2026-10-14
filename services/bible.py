@@ -5,8 +5,8 @@ story request: a global visual style, permanent character rules, one `### Name` 
 character with `- **Field:** value` bullets, episode rules, a consistency checklist. Here it
 is parsed into
 
-  * cast entries  {name, kind, role, look, personality}  for services.channels (one per `###`
-    block found in a section that has such blocks), and
+  * cast entries  {name, kind, role, look, personality, priority}  for services.channels (one per
+    `###` block found in a section that has such blocks), and
   * a plain-text `rules` block for the channel's fixed "style & rules" text (every other `##`
     section, except a "scene/prompt format" section - the app has its own scene prompt format
     tuned for the video model).
@@ -40,6 +40,10 @@ _LOOK_ALIASES = {
 }
 _KIND_ALIASES = {"kind", "species", "type", "animal", "creature"}
 _ROLE_ALIASES = {"role"}
+_PRIORITY_ALIASES = {"priority", "standing", "billing"}
+# mirrors services.channels.CAST_PRIORITIES, spelled out here for the same reason "main" /
+# "supporting" is: this module imports nothing from the project so it stays trivially testable
+_PRIORITIES = ("lead", "normal", "resting")
 _PERSONALITY_ALIASES = {"personality", "traits", "character", "temperament", "nature"}
 
 
@@ -112,6 +116,7 @@ def _parse_characters(lines: list, max_kind_chars: int, max_name_chars: int, war
             elif fields:      # continuation line of the previous field
                 fields[-1][1] += " " + raw.strip()
         kind, role, personality = paren_kind, "main", ""
+        priority = "normal"
         look_parts = {}
         extra = []
         for label, value in fields:
@@ -120,6 +125,11 @@ def _parse_characters(lines: list, max_kind_chars: int, max_name_chars: int, war
                 kind = _clean(value)
             elif key in _ROLE_ALIASES:
                 role = "main" if _clean(value).lower().startswith("main") else "supporting"
+            elif key in _PRIORITY_ALIASES:
+                # an unreadable value falls back to normal rather than failing the import: a bible
+                # is a pasted document, and one odd word in it must not cost the whole roster
+                word = _clean(value).lower()
+                priority = next((p for p in _PRIORITIES if word.startswith(p)), "normal")
             elif key in _PERSONALITY_ALIASES:
                 personality = _clean(value)
             elif key in _LOOK_ALIASES:
@@ -138,7 +148,8 @@ def _parse_characters(lines: list, max_kind_chars: int, max_name_chars: int, war
         if len(kind) > max_kind_chars:
             kind = _truncate_words(kind, max_kind_chars)
             warnings.append(f"{name}: kind shortened to {max_kind_chars} characters")
-        out.append({"name": name, "kind": kind, "role": role, "look": look, "personality": personality})
+        out.append({"name": name, "kind": kind, "role": role, "look": look,
+                    "personality": personality, "priority": priority})
     return out
 
 

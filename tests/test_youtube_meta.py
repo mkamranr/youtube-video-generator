@@ -170,6 +170,109 @@ class Category(unittest.TestCase):
         self.assertFalse(ok("999"))
 
 
+class TitleRule(unittest.TestCase):
+    """A kids title is scanned, not read: by a parent typing two or three words, and by a sidebar
+    that truncates around 60 characters. The searched words therefore have to come first."""
+
+    KIDS = {"name": "Bright Minds Town", "purpose": "", "audience": "kids",
+            "video_type": "animated", "cast": []}
+
+    def _seo_prompt(self, channel):
+        seen = {}
+
+        def grab(msgs, **kw):
+            seen["user"] = msgs[-1]["content"]
+            return {"seo_title": "t", "seo_description": "d"}
+
+        with mock.patch.object(llm, "_chat", side_effect=grab):
+            llm.write_seo("T", "narration", "transcript", channel=channel)
+        return seen["user"]
+
+    def test_a_kids_channel_front_loads_the_searched_words(self):
+        user = self._seo_prompt(self.KIDS)
+        self.assertIn("max 60 characters", user)
+        self.assertIn("the first 40 must already carry the words a parent would type", user)
+        self.assertIn("never open with the channel name", user)
+
+    def test_every_other_audience_keeps_the_original_rule(self):
+        for audience in ("general", "family"):
+            user = self._seo_prompt({**self.KIDS, "audience": audience})
+            self.assertIn("max 70 characters", user)
+            self.assertNotIn("a parent would type", user)
+        # a job from before channels existed carries no audience and must not change either
+        self.assertIn("max 70 characters", self._seo_prompt(None))
+
+    def test_the_rule_is_chosen_by_audience_alone(self):
+        self.assertEqual(llm._title_rule(self.KIDS), llm._SEO_TITLE_RULE_KIDS)
+        self.assertEqual(llm._title_rule({**self.KIDS, "audience": "general"}),
+                         llm._SEO_TITLE_RULE)
+        self.assertEqual(llm._title_rule({**self.KIDS, "audience": "nonsense"}),
+                         llm._SEO_TITLE_RULE)   # _channel falls unknown audiences back to general
+
+    def test_the_planner_rows_are_written_in_the_same_shape(self):
+        """The planner's title is the first draft of what write_seo polishes, so a kids week that
+        starts with clever titles spends the SEO call fixing them instead of sharpening them."""
+        kids = llm._plan_row_keys(self.KIDS)
+        self.assertIn("the video title a parent would click", kids)
+        self.assertIn("Clean Up", kids)
+        general = llm._plan_row_keys({**self.KIDS, "audience": "general"})
+        self.assertIn("the video title a viewer would click, max 12 words", general)
+        self.assertNotIn("a parent would click", general)
+        # the shape itself is unchanged: every row key still asked for
+        for key in ('"title"', '"description"', '"thumbnail_idea"', '"hook"'):
+            self.assertIn(key, kids)
+            self.assertIn(key, general)
+
+
+class CompilationSeo(unittest.TestCase):
+    """A compilation is sold on its length and on what is inside it."""
+
+    CH = {"name": "Bright Minds Town", "purpose": "", "audience": "kids",
+          "video_type": "animated", "cast": []}
+
+    def _call(self, out, titles=("Tilly Counts", "Ellie Waits", "Finn's Kite")):
+        seen = {}
+
+        def grab(msgs, **kw):
+            seen["user"] = msgs[-1]["content"]
+            return out
+
+        with mock.patch.object(llm, "_chat", side_effect=grab):
+            got = llm.write_compilation_seo(list(titles), "18 Minutes", channel=self.CH)
+        return seen["user"], got
+
+    def test_the_length_and_the_parts_reach_the_prompt(self):
+        user, _got = self._call({"seo_title": "t", "seo_description": "d"})
+        self.assertIn("18 Minutes", user)
+        self.assertIn("- Tilly Counts", user)
+        self.assertIn("- Finn's Kite", user)
+        self.assertIn("Never promise more time", user)
+
+    def test_the_chapter_list_is_not_asked_for_twice(self):
+        """pipeline.upload_description appends the real chapter block afterwards; a second,
+        invented one in the description body would fight it."""
+        user, _got = self._call({"seo_title": "t", "seo_description": "d"})
+        self.assertIn("Do NOT list the videos or their timestamps", user)
+
+    def test_thumbnail_lines_come_back_capped_for_the_audience(self):
+        _user, got = self._call({"seo_title": "t", "seo_description": "d",
+                                 "thumbnail_texts": ["18 Minutes of Tilly the Train", "18 Minutes"]})
+        self.assertEqual(got["thumbnail_texts"], ["18 Minutes of", "18 Minutes"])
+
+    def test_keywords_and_hashtags_behave_like_the_normal_seo_call(self):
+        _user, got = self._call({"seo_title": "t", "seo_description": "Body #KidsSongs",
+                                 "seo_keywords": [f"kw{i}" for i in range(30)]})
+        self.assertEqual(len(got["seo_keywords"]), 12)
+        self.assertIn("#kidssongs", got["seo_description"])
+
+    def test_an_empty_reply_yields_empty_fields_rather_than_raising(self):
+        """The stitch is the expensive, irreplaceable part: pipeline falls back to a plain title
+        rather than losing a finished compilation to a bad reply, so this must not raise."""
+        _user, got = self._call({})
+        self.assertEqual(got["seo_title"], "")
+        self.assertEqual(got["thumbnail_texts"], [])
+
+
 def tearDownModule():
     shutil.rmtree(TMP, ignore_errors=True)
 

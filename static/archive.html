@@ -63,9 +63,11 @@ function jobCard(j) {
         <span class="jid">${j.id}</span>
         ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
         ${j.owner_name ? `<span>${ownerBadge(j.owner_name)}</span>` : ""}
+        ${isCompiled(j) ? `<span>Compilation</span>
+        <span>${(j.parts || []).length} video${(j.parts || []).length === 1 ? "" : "s"}</span>` : ""}
         <span>${esc(j.aspect_ratio || "")}</span>
-        ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
-        ${videoModelBadge(j)}
+        ${j.megapixels && !isCompiled(j) ? `<span>${j.megapixels} MP</span>` : ""}
+        ${isCompiled(j) ? "" : videoModelBadge(j)}
         ${resolutionBadge(j)}
         ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
         ${clipTimingText(j)}

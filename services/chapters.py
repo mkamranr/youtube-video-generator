@@ -1,8 +1,9 @@
 """YouTube chapters: the timestamp list that splits the player into labelled sections.
 
 Pure arithmetic over the measured clip cut points - no ffmpeg, no LLM, no disk. The titles come
-from the story board cards when the video has them (they are already short, sequenced headlines),
-and fall back to the story beats or the per-clip audio segments.
+from explicit marks when the caller already knows them (a compilation knows each part's own
+title), then from the story board cards when the video has them (they are already short, sequenced
+headlines), and fall back to the story beats or the per-clip audio segments.
 
 YouTube's rules are strict and silent: the first chapter MUST be at 0:00, there must be at least
 three, and every one of them - including the last - must run at least ten seconds. A list that
@@ -45,6 +46,29 @@ def clean_title(text: str, max_chars: int = MAX_TITLE) -> str:
         cut = t[:max_chars].rsplit(" ", 1)[0]
         t = (cut or t[:max_chars]).rstrip(" ,;:.-")
     return t
+
+
+def _from_marks(marks) -> list:
+    """Cut points the caller already knows, as [{"t", "title"}] or (t, title) pairs.
+
+    A compilation is the case this exists for: each part contributes one chapter at its own start,
+    titled with the video it came from, and nothing has to be inferred from the picture."""
+    out = []
+    for m in marks or []:
+        if isinstance(m, dict):
+            t, title = m.get("t"), m.get("title")
+        elif isinstance(m, (tuple, list)) and len(m) >= 2:
+            t, title = m[0], m[1]
+        else:
+            continue
+        try:
+            t = float(t)
+        except (TypeError, ValueError):
+            continue
+        title = clean_title(title)
+        if title:
+            out.append((max(0.0, t), title))
+    return out
 
 
 def _from_cards(cards, bounds) -> list:
@@ -109,17 +133,18 @@ def _thin(cands: list, total: float, min_gap: float) -> list:
 
 def build(bounds, cards=None, segments=None, beats=None, total: float = 0.0,
           min_gap: float = MIN_GAP, min_count: int = MIN_COUNT,
-          max_count: int = MAX_COUNT) -> list:
+          max_count: int = MAX_COUNT, marks=None) -> list:
     """[{"t": seconds, "title": str}] for the description, or [] when the video cannot have them.
 
-    Sources are tried in order of how good a chapter title they make - story board headlines, then
-    story beats, then the per-clip audio segments - and the first that survives the rules wins.
+    Sources are tried in order of how good a chapter title they make - explicit marks the caller
+    passed in, then story board headlines, then story beats, then the per-clip audio segments -
+    and the first that survives the rules wins.
     """
     bounds = [float(b) for b in (bounds or [])]
     total = float(total or (bounds[-1] if bounds else 0.0))
     if total < min_count * min_gap:
         return []
-    for cands in (_from_cards(cards, bounds), _from_beats(beats, bounds),
+    for cands in (_from_marks(marks), _from_cards(cards, bounds), _from_beats(beats, bounds),
                   _from_segments(segments, bounds)):
         kept = _thin(cands, total, min_gap)
         if len(kept) >= min_count:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (avatar, browser, cast, chapters, channels, comfy, llm, lyrics,
+from services import (avatar, browser, cast, chapters, channels, comfy, compilation, llm, lyrics,
                       music_upload, repo, resource, schedule, sfx, story, storyboard, thumbtext,
                       transcript, tts, video, voices)
 from services import cardtemplates
@@ -63,8 +63,13 @@ class Job:
                                     # is forced to Auto). "" = the song is written and generated for you.
     music_seconds: float = 0.0      # measured length of that track, so the clip-length rung and the
                                     # story's word target need no disk access
-    source: str = "youtube"         # youtube | topic | description | transcript
+    source: str = "youtube"         # youtube | topic | description | transcript | compilation
     topic: str = ""                 # the topic, description or pasted transcript text
+    # COMPILATION ONLY (source == "compilation"): the job ids of the finished videos this one is
+    # stitched from, in the order they play. A compilation renders nothing - it is a local ffmpeg
+    # join of their final.mp4 files - but it is a real Job so that the upload, the bundle, the
+    # downloads, the thumbnail variants, the archive and the delete all work on it unchanged.
+    parts: list = field(default_factory=list)
     channel_id: str = ""            # channel this video belongs to ("" = legacy pre-channel job)
     owner: str = ""                 # user id of the job's owner (the channel's owner); "" only before the ownership migration
     channel: dict = field(default_factory=dict)  # snapshot: {name, purpose, rules, audience, video_type, cast, characters_enabled, ...}
@@ -456,6 +461,13 @@ def _progress(job: Job, status: str):
 def run_job(job: Job):
     job.gpu_wait = False
     try:
+        # A compilation has no transcript, plan, audio, scenes or clips - only other finished
+        # videos - so it never enters _run. The branch is here rather than only at submit time
+        # because _load_existing re-queues every non-terminal job after a restart, and one
+        # interrupted mid-stitch has to resume down this path instead of failing in _run.
+        if job.source == compilation.SOURCE:
+            _run_compilation(job)
+            return
         if job.regen_queue or job.assemble_requested:
             _run_maintenance(job)
             return
@@ -1460,6 +1472,138 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
                            clip_boundaries=bounds, **fx)
 
 
+def _compilation_parts(job: Job) -> list:
+    """The part job directories, in play order, or RuntimeError naming the one that is gone.
+
+    Read off disk rather than out of JobManager.jobs so the stitch does not depend on the
+    in-memory index, which is what a resume after a restart rebuilds."""
+    out = []
+    for pid in job.parts or []:
+        d = config.OUTPUT_DIR / str(pid)
+        rec = d / "job.json"
+        if not rec.exists():
+            raise RuntimeError(f"the video {pid} this compilation is made from has been deleted")
+        part = Job.load(rec)
+        final = d / (part.final or "final.mp4")
+        if not final.exists():
+            raise RuntimeError(f"the video {pid} this compilation is made from has no final video")
+        out.append((part, final))
+    return out
+
+
+def _compilation_thumbnail(job: Job, plan: dict, parts: list):
+    """Give the compilation a thumbnail by adopting one of its parts'.
+
+    Every part already has a thumbnail that cost a GPU render; re-rendering one for the
+    compilation would be the only GPU work in an otherwise local job, and it would have nothing
+    new to draw. The part's CLEAN base (thumb_base.jpg - the render with the channel logo already
+    on it but no overlay text) is preferred over its finished thumbnail, so the compilation's own
+    lines are drawn over an unlettered picture rather than on top of the part's.
+
+    Every part has the compilation's aspect ratio, which validate_parts guaranteed, so the base is
+    already the right size. Non-fatal: without a thumbnail it is still an uploadable video."""
+    d = job.dir
+    for part, _final in parts:
+        for name in ("thumb_base.jpg", "thumbnail.jpg"):
+            src = part.dir / name
+            if not src.exists():
+                continue
+            try:
+                shutil.copyfile(src, d / "thumb_base.jpg")
+                _thumb_variants(job, plan)
+                job.add_log(f"thumbnail taken from {part.title or part.id}")
+                return
+            except Exception as e:  # noqa: BLE001 - a compilation without one is still a video
+                job.add_log(f"thumbnail from {part.id} failed ({e})")
+    job.add_log("no part had a thumbnail to adopt; the compilation has none")
+
+
+def _compilation_seo(job: Job, plan: dict, titles: list, total: float):
+    """Title, description, keywords and thumbnail lines for the compilation.
+
+    One vLLM call, and deliberately non-fatal: the stitch is the expensive, irreplaceable part and
+    must not be lost because the LLM is down. A failure falls back to compilation.default_title,
+    which states the length and the lead subject - publishable, just not optimised."""
+    length = compilation.fmt_length(total)
+    try:
+        seo = llm.write_compilation_seo(titles, length, channel=job.channel,
+                                        used=plan.get("cast_used"))
+    except Exception as e:  # noqa: BLE001
+        job.add_log(f"SEO failed ({e}); using a plain title")
+        seo = {}
+    plan["seo_title"] = seo.get("seo_title") or compilation.default_title(
+        titles, total, (job.channel or {}).get("name", ""))
+    plan["seo_keywords"] = seo.get("seo_keywords") or []
+    plan["seo_description"] = seo.get("seo_description") or ""
+    plan["thumbnail_texts"] = seo.get("thumbnail_texts") or []
+    plan["title"] = plan["seo_title"]
+    job.set(title=plan["seo_title"])
+
+
+def _run_compilation(job: Job):
+    """Stitch the job's parts into one long final.mp4. Local ffmpeg only - no GPU, no queue.
+
+    Every step is idempotent in the same way the render pipeline is: a part already normalized on
+    disk is reused, and a finished final.mp4 is not rebuilt, so a restart mid-stitch costs at most
+    the one encode that was running."""
+    d = job.dir
+    d.mkdir(parents=True, exist_ok=True)
+    plan = _load_plan(job)
+    parts = _compilation_parts(job)
+    titles = [p.title or p.id for p, _ in parts]
+
+    final = d / "final.mp4"
+    if not final.exists():
+        job.set("assembling", f"preparing {len(parts)} videos")
+        size = compilation.target_size([video.frame_size(f) for _, f in parts])
+        files = []
+        for k, (part, src) in enumerate(parts, start=1):
+            dest = d / compilation.part_file(k)
+            if not _clip_on_disk(dest):
+                job.set("assembling", f"preparing video {k} of {len(parts)}")
+                _check_cancel(job)
+                video.normalize_for_concat(src, dest, size[0], size[1])
+            files.append(dest)
+        _check_cancel(job)
+        job.set("assembling", "joining the videos")
+        video.concat_clips(files, final)
+        plan["parts"] = [{"job_id": p.id, "title": p.title, "seconds": video.duration(f)}
+                         for (p, _), f in zip(parts, files)]
+
+    # The per-part lengths are measured once and kept on the plan, so a resume that finds
+    # final.mp4 already there can still place the chapters without the normalized copies, which
+    # are deleted at the end of a successful run.
+    durations = [float(p.get("seconds") or 0.0) for p in (plan.get("parts") or [])]
+    if not durations:
+        durations = [video.duration(f) for _, f in parts]
+    bounds = config.boundaries(durations)
+    total = video.duration(final)
+    plan["chapters"] = []
+    if config.YT_CHAPTERS:
+        plan["chapters"] = chapters.build(bounds, total=total,
+                                          marks=compilation.marks(titles, bounds),
+                                          min_gap=config.YT_CHAPTER_MIN_SECONDS)
+    _save_plan(job, plan)
+    if plan["chapters"]:
+        job.add_log(f"{len(plan['chapters'])} chapters, one per video")
+
+    if not plan.get("seo_title"):
+        job.set("assembling", "writing the title and description")
+        _compilation_seo(job, plan, titles, total)
+        _save_plan(job, plan)
+    if not (d / "thumbnail.jpg").exists():
+        _compilation_thumbnail(job, plan, parts)
+        _save_plan(job, plan)
+
+    # The normalized copies are a transcode of videos that still exist: keeping them would double
+    # a twenty-minute compilation's disk for nothing, and a re-stitch can make them again.
+    for k in range(1, len(parts) + 1):
+        (d / compilation.part_file(k)).unlink(missing_ok=True)
+    (d / "final.txt").unlink(missing_ok=True)      # the concat demuxer list
+    job.set("done", "finished", final=final.name)
+    job.add_log(f"compilation of {len(parts)} videos finished ({compilation.fmt_length(total)})")
+
+
 def _do_assemble(job: Job):
     """Re-concat the job's clips, redo the story board overlay and remix its audio into a
     new final.mp4 (story board assets are generated first if they are missing)."""
@@ -2076,6 +2220,14 @@ class JobManager:
                     self.jobs[j.id] = j
                     self._start_draft(j)
                     continue
+                # A compilation is local ffmpeg work: restart its own thread rather than put it in
+                # the GPU queue, where it would wait behind renders it needs nothing from.
+                if j.source == compilation.SOURCE and j.status not in ("done", "failed"):
+                    j.close_running(j.updated)
+                    j.add_log("server restarted - the compilation continues where it stopped")
+                    self.jobs[j.id] = j
+                    self._start_compilation(j)
+                    continue
                 if j.status not in ("done", "failed"):
                     j.pause_requested = False
                     if j.cancel_requested:
@@ -2327,15 +2479,23 @@ class JobManager:
                 job.add_log("restored by user - waiting to be set up")
                 return job
             restart_draft = job.source in DRAFT_SOURCES and not job.script_approved
+            # a compilation needs nothing from the GPU, so it resumes in its own thread rather
+            # than queueing behind renders - the same routing its submit uses
+            restart_stitch = job.source == compilation.SOURCE
             if restart_draft:
                 job.set("drafting", "resumed - writing script with the LLM", error="", archived=False)
                 job.add_log("resumed by user - restarting the script draft")
+            elif restart_stitch:
+                job.set("assembling", "resumed - joining the videos", error="", archived=False)
+                job.add_log("resumed by user - finished steps will be reused")
             else:
                 job.set("queued", "resumed - waiting for the queue", error="", archived=False)
                 job.add_log("resumed by user - finished steps will be reused")
                 self.queue.append(job_id)
         if restart_draft:
             self._start_draft(job)
+        elif restart_stitch:
+            self._start_compilation(job)
         return job
 
     def submit_prompt(self, text: str, source_kind: str,
@@ -2411,6 +2571,50 @@ class JobManager:
         if start:
             self._start_draft(job)
         return job
+
+    def submit_compilation(self, part_ids: list, channel: dict | None = None, owner: str = "",
+                           title: str = "") -> Job:
+        """Create a compilation of finished videos and start stitching it immediately.
+
+        Not queued. The whole job is local ffmpeg over files that already exist, so making it wait
+        behind a render would be an hour of nothing for work that takes a minute - the same
+        reasoning as request_assemble and request_upscale, which both run in their own thread.
+
+        The parts' own parameters decide the output: they all share one aspect ratio (validated),
+        and their largest frame size becomes the compilation's. Nothing here is a per-video choice,
+        so _resolve_choices is not involved."""
+        with self.lock:
+            parts = []
+            for pid in part_ids or []:
+                j = self.jobs.get(str(pid))
+                if not j:
+                    raise ValueError(f"unknown video {pid}")
+                parts.append(j)
+            parts = compilation.validate_parts(parts)
+            cid = str(parts[0].channel_id or "")
+            if channel and cid and str(channel.get("id") or "") != cid:
+                raise ValueError("the videos do not belong to the chosen channel")
+            snap = channels.snapshot(channel) if channel else dict(parts[0].channel or {})
+            job = Job(id=time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
+                      url="", source=compilation.SOURCE, parts=[p.id for p in parts],
+                      title=title.strip() or compilation.default_title(
+                          [p.title for p in parts], 0.0, snap.get("name", "")),
+                      status="assembling", detail=f"joining {len(parts)} videos",
+                      aspect_ratio=parts[0].aspect_ratio,
+                      # inherited so the job card, the bundle and any later upscale read right;
+                      # none of them is a choice a compilation makes
+                      resolution=parts[0].resolution, video_model=parts[0].video_model,
+                      megapixels=parts[0].megapixels, audio_mode=parts[0].audio_mode,
+                      channel_id=cid, channel=snap,
+                      owner=owner or (channel or {}).get("owner", "") or parts[0].owner,
+                      thumb_text=self._resolve_thumb_text(None, channel))
+            job.save()
+            self.jobs[job.id] = job
+        self._start_compilation(job)
+        return job
+
+    def _start_compilation(self, job: Job):
+        threading.Thread(target=run_job, args=(job,), daemon=True).start()
 
     def setup_planned(self, job_id: str, aspect_ratio: str = "", art_style: str = "",
                       video_length: str = "", audio_mode: str = "", voice_id: str = "",

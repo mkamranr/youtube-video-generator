@@ -112,6 +112,100 @@ class SheetAndSystem(unittest.TestCase):
         self.assertEqual(cast.with_prefix(self.ch, "no cast here", only=["Finn"]), "no cast here")
 
 
+class Priority(unittest.TestCase):
+    """The cast ranking: which characters a new video should be cast from.
+
+    Orthogonal to `role` - a MAIN character the audience never watches and the channel's flagship
+    are both `main` - and entered by hand, since the app's YouTube scope cannot read analytics."""
+
+    def setUp(self):
+        self.ch = _channel()
+        self.by_name = {c["name"]: c for c in self.ch["cast"]}
+        self.by_name["Piko"]["priority"] = "lead"
+        self.by_name["Pip"]["priority"] = "resting"
+
+    def test_an_unranked_roster_is_untouched(self):
+        plain = _channel()
+        self.assertEqual([c["name"] for c in cast.by_priority(plain["cast"])],
+                         [c["name"] for c in plain["cast"]])
+        self.assertEqual(cast.leads(plain), [])
+        self.assertEqual(cast.resting(plain), [])
+        # and the prompt gains not one word for a channel that never used the field
+        self.assertNotIn("LEAD", cast.sheet_text(plain))
+        self.assertNotIn("RESTING", cast.sheet_text(plain))
+
+    def test_leads_sort_first_and_resting_last(self):
+        order = [c["name"] for c in cast.by_priority(self.ch["cast"])]
+        self.assertEqual(order[0], "Piko")
+        self.assertEqual(order[-1], "Pip")
+        self.assertEqual(cast.names(cast.leads(self.ch)), ["Piko"])
+        self.assertEqual(cast.names(cast.resting(self.ch)), ["Pip"])
+
+    def test_the_sort_is_stable_between_equals(self):
+        rest = [c["name"] for c in self.ch["cast"] if c["name"] not in ("Piko", "Pip")]
+        self.assertEqual([c["name"] for c in cast.by_priority(self.ch["cast"])][1:-1], rest)
+
+    def test_the_roster_sheet_marks_the_ranking_and_says_what_it_means(self):
+        s = cast.sheet_text(self.ch)
+        self.assertIn("- Piko (MAIN, LEAD", s)
+        self.assertIn(", RESTING", s)
+        self.assertIn("cast one of them in the lead", s)
+        self.assertIn("not to be cast at all unless the request names", s)
+        self.assertLess(s.index("- Piko ("), s.index("- Pip ("))   # leads are listed first
+        # normal characters carry no mark - the ranking is only worth saying where it differs
+        self.assertIn("- Finn (MAIN,", s)
+        self.assertNotIn("- Finn (MAIN, NORMAL", s)
+
+    def test_the_video_sheet_carries_no_ranking(self):
+        """By then the cast is chosen; repeating the ranking would only invite second-guessing."""
+        s = cast.sheet_text(self.ch, used=["Piko", "Pip"])
+        self.assertNotIn("LEAD", s)
+        self.assertNotIn("RESTING", s)
+
+    def test_a_resting_character_can_still_be_asked_for_by_name(self):
+        self.assertEqual(cast.names(cast.select_characters(self.ch, ["Pip"])), ["Pip"])
+        self.assertIn("The request names Pip", llm._cast_selection_rule(self.ch, "A story with Pip"))
+
+    def test_resting_characters_stay_in_active_so_finished_videos_keep_their_looks(self):
+        """active() also gates render_prefix and voice_id_for. Dropping a resting character there
+        would strip its canonical look off a video that already used it the next time one of its
+        clips was regenerated - the ranking is about what to cast next, not a retraction."""
+        self.assertIn("Pip", cast.names(cast.active(self.ch)))
+        self.assertIn("Pip:", cast.render_prefix(self.ch, "Pip waves from the gate", only=["Pip"]))
+
+    def test_main_characters_lead_first_so_the_opening_portrait_does(self):
+        self.assertEqual(cast.names(cast.main_characters(self.ch))[0], "Piko")
+
+    def test_the_week_prompt_spends_the_week_on_the_leads(self):
+        rules = llm._plan_rules(self.ch, 7, "2026-09-15", "", ())
+        self.assertIn("Most of the week belongs to the roster's LEAD characters", rules)
+        self.assertNotIn("Most of the week belongs", llm._plan_rules(_channel(), 7, "", "", ()))
+
+    def test_the_snapshot_frozen_onto_a_job_carries_the_ranking(self):
+        """Without this the whole feature is dropped at submit time: every prompt reads the cast
+        off the job's channel snapshot, not off the live channel record."""
+        snap = channels.snapshot({**self.ch, "id": "c1", "video_type": "animated"})
+        got = {c["name"]: c["priority"] for c in snap["cast"]}
+        self.assertEqual(got["Piko"], "lead")
+        self.assertEqual(got["Pip"], "resting")
+        self.assertEqual(got["Finn"], "normal")     # back-filled, never missing
+
+    def test_the_store_validates_and_back_fills_it(self):
+        clean = channels._validate_cast(
+            [{"name": "Tilly", "look": "a red tank engine", "priority": "lead"},
+             {"name": "Momo", "look": "a grey moth"}], [])
+        self.assertEqual([c["priority"] for c in clean], ["lead", "normal"])
+        with self.assertRaises(ValueError):
+            channels._validate_cast([{"name": "Tilly", "look": "x", "priority": "favourite"}], [])
+
+    def test_a_bible_may_carry_it_and_a_bad_value_does_not_fail_the_import(self):
+        parsed = bible.parse_bible("## 1. Cast\n\n### Tilly\n- **Look:** a red tank engine\n"
+                                   "- **Priority:** Lead\n\n### Momo\n- **Look:** a grey moth\n"
+                                   "- **Standing:** whatever\n")
+        got = {c["name"]: c["priority"] for c in parsed["cast"]}
+        self.assertEqual(got, {"Tilly": "lead", "Momo": "normal"})
+
+
 class Opening(unittest.TestCase):
     def test_opening_follows_cast_used(self):
         ch = _channel()

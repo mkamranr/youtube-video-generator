@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager, resolve_video_mode, upload_description
-from services import (auth, avatar, bible, browser, cast, channels, llm, music_upload, ownership,
-                      planner, schedule, users, voices)
+from services import (auth, avatar, bible, browser, cast, channels, compilation, llm,
+                      music_upload, ownership, planner, schedule, users, video, voices)
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -798,12 +798,59 @@ def put_settings(body: dict, admin: dict = Depends(auth.require_admin)):
     return {"settings": settings}
 
 
+# ---- compilations ----------------------------------------------------------
+class CompilationCreate(BaseModel):
+    channel_id: str = ""
+    parts: list[str] = []      # job ids of the finished videos, in the order they play
+    title: str = ""            # optional; the SEO step writes one when this is empty
+
+
+@app.get("/api/compilations/candidates")
+def compilation_candidates_api(channel_id: str = "", user: dict = Depends(auth.require_user)):
+    """The finished videos that may go into a compilation, newest first.
+
+    Grouped by nothing here - the picker groups by aspect ratio, because a compilation may only
+    mix videos that share one (services.compilation.validate_parts)."""
+    owner = None if auth.is_admin(user) else user["id"]
+    out = []
+    for job in manager.list(owner=owner):
+        if not compilation.eligible(job):
+            continue
+        if channel_id and job.channel_id != channel_id:
+            continue
+        final = job.dir / (job.final or "final.mp4")
+        out.append({"id": job.id, "title": job.title, "channel_id": job.channel_id,
+                    "channel_name": (job.channel or {}).get("name", ""),
+                    "aspect_ratio": job.aspect_ratio, "created": job.created,
+                    "archived": job.archived,
+                    "seconds": round(video.duration(final), 1) if final.exists() else 0.0,
+                    "thumbnail": (job.dir / "thumbnail.jpg").exists()})
+    return {"videos": out, "min_parts": compilation.MIN_PARTS,
+            "max_parts": compilation.MAX_PARTS}
+
+
+@app.post("/api/compilations", status_code=201)
+def create_compilation_api(body: CompilationCreate, user: dict = Depends(auth.require_user)):
+    """Stitch several finished videos into one long one. Starts at once - no GPU work."""
+    for pid in body.parts:
+        _owned_job(pid, user)        # 404s a foreign or unknown id before anything is created
+    ch = _owned_channel(body.channel_id, user) if body.channel_id else None
+    try:
+        job = manager.submit_compilation(body.parts, channel=ch,
+                                         owner=(ch or {}).get("owner") or user["id"],
+                                         title=body.title)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _job_json(job)
+
+
 # ---- weekly plans ----------------------------------------------------------
 class PlanCreate(BaseModel):
     channel_id: str = ""
     week_start: str = ""       # ISO date of day 1; today when empty
     notes: str = ""            # optional steer for the week
     video_mode: str = ""       # the format every video of this week is made in; "" -> song
+    videos: int = planner.DEFAULT_VIDEOS   # how many videos the week holds, spread across it
 
 
 class PlanRegen(BaseModel):
@@ -844,7 +891,8 @@ def list_plans_api(channel_id: str = "", user: dict = Depends(auth.require_user)
     names = _owner_names()
     plans = planner.list_plans(owner=owner, channel_id=channel_id or None)
     return {"plans": [{**p, "owner_name": names.get(p.get("owner", ""), "")} for p in plans],
-            "days": planner.DAYS}
+            "days": planner.DAYS, "min_videos": planner.MIN_VIDEOS,
+            "max_videos": planner.MAX_VIDEOS, "default_videos": planner.DEFAULT_VIDEOS}
 
 
 @app.post("/api/plans")
@@ -857,15 +905,16 @@ def create_plan_api(body: PlanCreate, user: dict = Depends(auth.require_user)):
         mode = resolve_video_mode(body.video_mode, ch, "description")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    videos = planner.clamp_videos(body.videos)
     try:
-        rows = llm.write_week_plan(channel=channels.snapshot(ch), days=planner.DAYS,
+        rows = llm.write_week_plan(channel=channels.snapshot(ch), days=videos,
                                    week_start=week_start, notes=body.notes,
                                    avoid=planner.previous_titles(ch["id"]), video_mode=mode)
     except Exception as e:  # noqa: BLE001  (vLLM down / bad reply)
         raise HTTPException(502, f"the LLM could not write the plan: {e}")
-    days = planner.normalize_days(rows, week_start, ch)
+    days = planner.normalize_days(rows, week_start, ch, days=videos)
     return planner.create_plan(ch["id"], ch.get("owner") or user["id"], week_start, days,
-                               body.notes, video_mode=mode)
+                               body.notes, video_mode=mode, videos=videos)
 
 
 @app.post("/api/plans/{plan_id}/regenerate")
@@ -883,14 +932,16 @@ def regenerate_plan_api(plan_id: str, body: PlanRegen, user: dict = Depends(auth
         others = [r for r in plan["days"] if r["day"] != day]
         try:
             new = llm.write_plan_day(channel=snap, day=day, others=others, feedback=body.feedback,
-                                     days=planner.DAYS, week_start=plan["week_start"],
+                                     days=plan.get("videos") or planner.DAYS,
+                                     week_start=plan["week_start"],
                                      notes=plan.get("notes", ""),
                                      avoid=planner.previous_titles(plan["channel_id"]),
                                      video_mode=plan.get("video_mode") or config.DEFAULT_VIDEO_MODE)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(502, f"the LLM could not rewrite day {day}: {e}")
         out = planner.set_day(plan_id, day,
-                              planner.validate_day(new, day, plan["week_start"], ch or None, row))
+                              planner.validate_day(new, day, plan["week_start"], ch or None, row,
+                                                   videos=plan.get("videos") or planner.DAYS))
         plan = out
     return out
 
@@ -903,7 +954,8 @@ def edit_plan_day_api(plan_id: str, day: int, body: PlanDay, user: dict = Depend
     if not row:
         raise HTTPException(404, "unknown day")
     ch = _plan_channel(plan, user)
-    clean = planner.validate_day(body.model_dump(), day, plan["week_start"], ch or None, row)
+    clean = planner.validate_day(body.model_dump(), day, plan["week_start"], ch or None, row,
+                                 videos=plan.get("videos") or planner.DAYS)
     return planner.set_day(plan_id, day, clean)
 
 

@@ -21,8 +21,23 @@ LAYOUTS = ("band", "stack", "strip")
 LOGO_RESERVE = 0.26          # fraction of the width the logo corner owns, left untouched
 SCRIM_RGB = (8, 10, 14)
 
+# (max_words, max_chars) of the overlay line, by channel audience. A kids thumbnail is scanned by
+# an adult holding a phone for a child who cannot read at all, so the line has to work as a shape:
+# two or three big words fill the frame, five small ones are a caption nobody finishes. Every other
+# audience keeps the original caps, which assume a viewer who does read the line.
+CAPS = {"kids": (3, 18)}
+DEFAULT_CAPS = (5, 24)
 
-def normalize(text: str, max_words: int = 5, max_chars: int = 24) -> str:
+
+def caps(channel: dict | None = None) -> tuple:
+    """(max_words, max_chars) for this channel's thumbnail line.
+
+    One source of truth: services.llm.write_thumbnail asks the model for a line of this length and
+    normalize() then enforces it, so the prompt and the cap can never drift apart."""
+    return CAPS.get(str((channel or {}).get("audience") or ""), DEFAULT_CAPS)
+
+
+def normalize(text: str, max_words: int = DEFAULT_CAPS[0], max_chars: int = DEFAULT_CAPS[1]) -> str:
     """One clean overlay line: no quotes, no trailing full stop, at most a few short words."""
     t = re.sub(r"\s+", " ", str(text or "")).strip()
     t = t.strip("\"'“”‘’").strip()

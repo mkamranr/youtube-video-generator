@@ -150,6 +150,39 @@ def concat_clips(clips: list, out_mp4: Path) -> Path:
     return out_mp4
 
 
+def normalize_for_concat(src: Path, out_mp4: Path, width: int, height: int,
+                         rate: float = config.VIDEO_FPS) -> Path:
+    """Re-encode one finished video to exactly width x height at `rate`, ready to be stream-copied
+    into a concatenation with others.
+
+    concat_clips uses the concat DEMUXER, which needs every input to agree on codec, resolution,
+    pixel format and frame rate - true for the clips of one job, which came out of one workflow,
+    and routinely false across jobs (different aspect ratios, different output resolutions, one
+    upscaled and one native). Its re-encode fallback does not save that case: the demuxer refuses
+    a mid-stream resolution change whatever the output codec is. So each part is brought to one
+    shape first and the concatenation itself stays a copy.
+
+    The picture is FITTED and padded rather than cropped - a part is a finished video someone may
+    already have published, so losing its edges is worse than a black border. The audio is
+    re-encoded too (a part may be mono or 48 kHz), and a part with no audio at all gets silence,
+    because one input without a stream the others have breaks the copy just as surely.
+
+    Deliberately no loudnorm: every final.mp4 left mix_audio at about -14 LUFS already, and a
+    second pass over the joined video would pump its gain across the seams."""
+    src, out_mp4 = Path(src), Path(out_mp4)
+    w, h, rate = _even(width), _even(height), float(rate or config.VIDEO_FPS)
+    cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(src)]
+    if not has_audio(src):
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-shortest"]
+    cmd += ["-vf", (f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,"
+                    f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,fps={rate},setsar=1"),
+            "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
+            "-video_track_timescale", "90000", str(out_mp4)]
+    _run(cmd)
+    return out_mp4
+
+
 def fps(path: Path) -> float:
     """Frame rate of the first video stream (25.0 when it cannot be read)."""
     out = _probe(path, "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate",

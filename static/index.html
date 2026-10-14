@@ -22,7 +22,51 @@
     <select id="ownerFilter" hidden style="max-width:180px"><option value="">All owners</option></select>
     <select id="channelFilter" style="max-width:200px"><option value="">All channels</option></select>
     <div class="search-box" id="jobSearchBox"><input type="text" id="jobSearch" placeholder="Search jobs..."></div>
+    <button class="btn secondary" id="openCompile"></button>
     <button class="btn" id="openCreate"></button>
+  </div>
+
+  <div class="modal-backdrop" id="compileModal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>New Compilation</h3>
+        <div class="spacer"></div>
+        <button class="icon-btn" id="closeCompile" title="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="page-sub" style="margin-bottom:16px">Join finished videos into one long one. A viewer who stays for a
+          twenty-minute compilation is worth many who leave a one-minute video after half of it, and that watch time is
+          what gets a channel recommended. Nothing is rendered: the videos you pick are joined as they are, in seconds,
+          with their own chapter list and a title and description written for the compilation.</p>
+        <div class="msec">
+          <div class="msec-title">Content</div>
+          <div class="row">
+            <div class="grow" style="min-width:180px">
+              <label for="cmpChannel">Channel</label>
+              <select id="cmpChannel"></select>
+            </div>
+            <div class="grow" style="min-width:200px">
+              <label for="cmpAspect">Aspect ratio</label>
+              <select id="cmpAspect"></select>
+              <div class="hint">Every video in one compilation has to share a shape, so pick which one.</div>
+            </div>
+          </div>
+          <div style="margin-top:12px">
+            <label for="cmpTitle">Title <span class="hint" style="display:inline">(optional)</span></label>
+            <input type="text" id="cmpTitle" placeholder="Left empty, one is written for you — leading with the length">
+          </div>
+        </div>
+        <div class="msec">
+          <div class="msec-title">Videos <span class="count" id="cmpCount"></span></div>
+          <div class="hint" id="cmpHint"></div>
+          <div id="cmpList" style="margin-top:10px;max-height:46vh;overflow:auto"></div>
+        </div>
+        <div class="row" style="margin-top:18px">
+          <button class="btn" id="cmpGo"></button>
+          <button class="btn secondary" id="cmpCancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="modal-backdrop" id="createModal">
@@ -564,6 +608,33 @@ function thumbHTML(j) {
     : `<div class="jc-thumb ph">${icon("video")}</div>`;
 }
 
+// A compilation has no script, audio choice, art style, length preset or clips, so most of the
+// meta a normal card shows would be blank or misleading on it. What it does have is its parts.
+// isCompiled lives in common.js, next to the stepper that needs the same distinction.
+function metaHTML(j) {
+  if (isCompiled(j)) {
+    return `<span>Compilation</span>
+      <span>${(j.parts || []).length} video${(j.parts || []).length === 1 ? "" : "s"}</span>
+      <span>${esc(j.aspect_ratio || "")}</span>
+      ${resolutionBadge(j)}`;
+  }
+  return `<span>${audioLabel(j)}</span>
+    ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
+    ${j.storyboard ? `<span>Story board</span>` : ""}
+    ${j.page_scroll ? `<span>Page scroll</span>` : ""}
+    <span>${j.music_upload ? "Length from your music"
+            : j.has_lyrics ? "Length from lyrics"
+            : j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
+    <span>${esc(j.aspect_ratio || "")}</span>
+    ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
+    ${videoModelBadge(j)}
+    ${resolutionBadge(j)}
+    ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
+    ${clipTimingText(j)}
+    ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
+       return n ? `<span style="color:var(--warn);font-weight:600">${n} clip${n>1?"s":""} need${n>1?"":"s"} regeneration</span>` : ""; })()}`;
+}
+
 function jobCard(j) {
   const canDelete = ["done", "failed"].includes(j.status);
   const needsSetup = j.status === "planned";   // from the weekly plan: not started yet
@@ -577,21 +648,7 @@ function jobCard(j) {
         <span class="jid">${j.id}</span>
         ${j.channel && j.channel.name ? `<span>${esc(j.channel.name)}</span>` : ""}
         ${j.owner_name ? `<span>${ownerBadge(j.owner_name)}</span>` : ""}
-        <span>${audioLabel(j)}</span>
-        ${j.art_style ? `<span>${esc(j.art_style)}</span>` : ""}
-        ${j.storyboard ? `<span>Story board</span>` : ""}
-        ${j.page_scroll ? `<span>Page scroll</span>` : ""}
-        <span>${j.music_upload ? "Length from your music"
-                : j.has_lyrics ? "Length from lyrics"
-                : j.video_length && j.video_length !== "Auto" ? esc(j.video_length) : "Auto length"}</span>
-        <span>${esc(j.aspect_ratio || "")}</span>
-        ${j.megapixels ? `<span>${j.megapixels} MP</span>` : ""}
-        ${videoModelBadge(j)}
-        ${resolutionBadge(j)}
-        ${j.clips_total ? `<span>${j.clips_done}/${j.clips_total} clips</span>` : ""}
-        ${clipTimingText(j)}
-        ${(() => { const n = new Set([...(j.stale_clips||[]), ...(j.regen_queue||[])]).size;
-           return n ? `<span style="color:var(--warn);font-weight:600">${n} clip${n>1?"s":""} need${n>1?"":"s"} regeneration</span>` : ""; })()}
+        ${metaHTML(j)}
         <span>${timeAgo(j.created)}</span>
       </div>
     </div>
@@ -792,6 +849,126 @@ async function loadOptions() {
   applyChannel();
 }
 
+// ---- compilations: join finished videos into one long one -------------------
+let cmpVideos = [];                 // every candidate from the server
+let cmpPicked = [];                 // ids, in the order they were ticked = the order they play
+let cmpLimits = { min_parts: 2, max_parts: 12 };
+
+function fmtLen(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  const m = Math.floor(s / 60);
+  return m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+                 : `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function cmpPool() {
+  const ch = $("#cmpChannel").value, ar = $("#cmpAspect").value;
+  return cmpVideos.filter(v => (!ch || v.channel_id === ch) && (!ar || v.aspect_ratio === ar));
+}
+
+function renderCmpAspects() {
+  // only the shapes this channel actually has, with how many videos each holds - picking the
+  // aspect ratio first is what makes the rest of the list legal by construction
+  const ch = $("#cmpChannel").value;
+  const mine = cmpVideos.filter(v => !ch || v.channel_id === ch);
+  const counts = {};
+  mine.forEach(v => { counts[v.aspect_ratio] = (counts[v.aspect_ratio] || 0) + 1; });
+  const keys = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const keep = keys.includes($("#cmpAspect").value) ? $("#cmpAspect").value : keys[0] || "";
+  $("#cmpAspect").innerHTML = keys.map(k =>
+    `<option value="${esc(k)}" ${k === keep ? "selected" : ""}>${esc(k || "unknown")} — ${counts[k]} video${counts[k] > 1 ? "s" : ""}</option>`).join("")
+    || `<option value="">no finished videos yet</option>`;
+}
+
+function renderCmpList() {
+  const pool = cmpPool();
+  const chosen = cmpPicked.filter(id => pool.some(v => v.id === id));
+  cmpPicked = chosen;
+  $("#cmpList").innerHTML = pool.length ? pool.map(v => {
+    const k = cmpPicked.indexOf(v.id);
+    return `<label class="jobcard" style="cursor:pointer;align-items:center">
+      <input type="checkbox" data-id="${esc(v.id)}" ${k >= 0 ? "checked" : ""} style="margin:0 10px 0 2px;width:18px;height:18px">
+      ${v.thumbnail ? `<img class="jc-thumb" src="/jobs/${v.id}/files/thumbnail.jpg" alt="" loading="lazy">`
+                    : `<div class="jc-thumb ph">${icon("video")}</div>`}
+      <div class="jc-main">
+        <div class="jc-title">${k >= 0 ? `<span class="count">${k + 1}</span> ` : ""}${esc(v.title || v.id)}</div>
+        <div class="jc-meta"><span class="jid">${v.id}</span><span>${fmtLen(v.seconds)}</span>
+          ${v.archived ? `<span>Archived</span>` : ""}<span>${timeAgo(v.created)}</span></div>
+      </div></label>`;
+  }).join("") : `<p class="hint">No finished video of this shape yet. A compilation is made from videos that are already done.</p>`;
+  const total = cmpPicked.reduce((t, id) => t + (pool.find(v => v.id === id)?.seconds || 0), 0);
+  const n = cmpPicked.length;
+  $("#cmpCount").textContent = n ? `${n} picked · ${fmtLen(total)}` : "";
+  const ok = n >= cmpLimits.min_parts && n <= cmpLimits.max_parts;
+  $("#cmpGo").disabled = !ok;
+  $("#cmpHint").textContent = n > cmpLimits.max_parts
+    ? `That is ${n} videos; at most ${cmpLimits.max_parts} fit in one compilation (past that a video gets no chapter of its own).`
+    : n < cmpLimits.min_parts
+      ? `Tick at least ${cmpLimits.min_parts} videos. They play in the order you tick them.`
+      : "They play in the order you ticked them, each one a chapter of the compilation.";
+}
+
+// `seed` is {channel_id, parts} handed over by the Planner's "Make a compilation from this week":
+// the dialog opens with exactly that week's finished videos already ticked, in week order.
+async function openCompile(seed) {
+  $("#compileModal").classList.add("open");
+  $("#cmpList").innerHTML = `<p class="hint">Loading…</p>`;
+  const chLabel = c => admin && c.owner_name ? `${c.name} — ${c.owner_name}` : c.name;
+  const want = (seed || {}).channel_id || $("#channel").value;
+  $("#cmpChannel").innerHTML = channelsList.map(c =>
+    `<option value="${esc(c.id)}" ${c.id === want ? "selected" : ""}>${esc(chLabel(c))}</option>`).join("");
+  try {
+    const r = await api("/api/compilations/candidates");
+    cmpVideos = r.videos || [];
+    cmpLimits = { min_parts: r.min_parts, max_parts: r.max_parts };
+  } catch (e) { toast(e.message, true); cmpVideos = []; }
+  cmpPicked = [];
+  renderCmpAspects();
+  if (seed && (seed.parts || []).length) {
+    // the week may hold more than one shape; follow the majority and let the rest drop out
+    const picked = cmpVideos.filter(v => seed.parts.includes(v.id));
+    const counts = {};
+    picked.forEach(v => { counts[v.aspect_ratio] = (counts[v.aspect_ratio] || 0) + 1; });
+    const best = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    if (best) $("#cmpAspect").value = best;
+    cmpPicked = seed.parts.filter(id => picked.some(v => v.id === id && v.aspect_ratio === best));
+  }
+  renderCmpList();
+}
+function closeCompile() { $("#compileModal").classList.remove("open"); }
+
+async function submitCompilation() {
+  const ch = $("#cmpChannel").value;
+  $("#cmpGo").disabled = true;
+  try {
+    const job = await api("/api/compilations", "POST",
+                          { channel_id: ch, parts: cmpPicked, title: $("#cmpTitle").value.trim() });
+    closeCompile();
+    $("#cmpTitle").value = "";
+    toast(`Compilation of ${cmpPicked.length} videos started`);
+    await refresh();
+    location.href = `/job/${job.id}`;
+  } catch (e) { toast(e.message, true); $("#cmpGo").disabled = false; }
+}
+
+$("#openCompile").innerHTML = icon("video") + " Create compilation";
+$("#cmpGo").innerHTML = icon("check") + " Create compilation";
+$("#closeCompile").innerHTML = icon("x");
+$("#openCompile").onclick = () => openCompile(null);
+$("#closeCompile").onclick = closeCompile;
+$("#cmpCancel").onclick = closeCompile;
+$("#cmpGo").onclick = submitCompilation;
+$("#cmpChannel").onchange = () => { cmpPicked = []; renderCmpAspects(); renderCmpList(); };
+$("#cmpAspect").onchange = renderCmpList;
+$("#cmpList").addEventListener("change", ev => {
+  const box = ev.target.closest("input[type=checkbox]");
+  if (!box) return;
+  const id = box.dataset.id;
+  cmpPicked = box.checked ? [...cmpPicked.filter(v => v !== id), id] : cmpPicked.filter(v => v !== id);
+  renderCmpList();
+});
+$("#compileModal").addEventListener("click", ev => { if (ev.target === $("#compileModal")) closeCompile(); });
+
 function openCreate() { loadVoices(); $("#createModal").classList.add("open"); setTimeout(() => $("#urls").focus(), 150); }
 function closeCreate() { $("#createModal").classList.remove("open"); }
 $("#openCreate").innerHTML = icon("plus") + " Create new video";
@@ -804,7 +981,7 @@ $("#createModal").addEventListener("click", ev => { if (ev.target === $("#create
 document.addEventListener("keydown", ev => {
   if (ev.key !== "Escape") return;
   if (!$("#artstyleList").hidden) { hideStyleList(); return; }
-  closeCreate();
+  closeCreate(); closeCompile();
 });
 
 $("#go").onclick = submit;
@@ -828,7 +1005,16 @@ $("#jobSearchBox").insertAdjacentHTML("afterbegin", icon("search"));
 $("#jobSearch").addEventListener("input", () => { page = 1; render(applyFilter(lastJobs)); });
 $("#channelFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
 $("#ownerFilter").addEventListener("change", () => { page = 1; render(applyFilter(lastJobs)); });
-loadOptions().then(() => { render(applyFilter(lastJobs)); if (location.hash === "#new") openCreate(); });
+loadOptions().then(() => {
+  render(applyFilter(lastJobs));
+  if (location.hash === "#new") openCreate();
+  if (location.hash === "#compile") {
+    let seed = null;
+    try { seed = JSON.parse(sessionStorage.getItem("videogen.compile") || "null"); } catch (e) { /* ignore */ }
+    sessionStorage.removeItem("videogen.compile");
+    openCompile(seed);
+  }
+});
 refresh();
 setInterval(refresh, 3000);
 </script>

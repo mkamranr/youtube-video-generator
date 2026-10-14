@@ -71,6 +71,70 @@ class Normalize(unittest.TestCase):
         self.assertEqual(len(planner.parse_week_start("not a date")), 10)
 
 
+class Cadence(unittest.TestCase):
+    """A week may hold fewer than seven videos, spread over it rather than stacked on its first
+    days: a new channel's reach is split across everything it uploads, so a daily trickle of thin
+    videos competes with itself."""
+
+    def setUp(self):
+        self.ch = _channel()
+
+    def test_three_videos_land_monday_wednesday_friday(self):
+        rows = planner.normalize_days([_row(i + 1) for i in range(3)], "2026-09-14", self.ch, days=3)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r["date"] for r in rows], ["2026-09-14", "2026-09-16", "2026-09-18"])
+
+    def test_two_videos_land_monday_and_thursday(self):
+        rows = planner.normalize_days([_row(1), _row(2)], "2026-09-14", self.ch, days=2)
+        self.assertEqual([r["date"] for r in rows], ["2026-09-14", "2026-09-17"])
+
+    def test_a_full_week_is_unchanged(self):
+        rows = planner.normalize_days([_row(i + 1) for i in range(7)], "2026-09-14", self.ch, days=7)
+        self.assertEqual([r["date"] for r in rows],
+                         [f"2026-09-{14 + i}" for i in range(7)])
+
+    def test_the_last_row_never_falls_outside_the_week(self):
+        for n in range(planner.MIN_VIDEOS, planner.MAX_VIDEOS + 1):
+            rows = planner.normalize_days([_row(i + 1) for i in range(n)], "2026-09-14",
+                                          self.ch, days=n)
+            self.assertLessEqual(rows[-1]["date"], "2026-09-20", f"{n} videos overflowed the week")
+            self.assertEqual(rows[0]["date"], "2026-09-14")
+
+    def test_the_count_is_clamped_and_unreadable_values_mean_a_full_week(self):
+        self.assertEqual(planner.clamp_videos(0), planner.MIN_VIDEOS)
+        self.assertEqual(planner.clamp_videos(99), planner.MAX_VIDEOS)
+        self.assertEqual(planner.clamp_videos("4"), 4)
+        self.assertEqual(planner.clamp_videos(None), planner.DEFAULT_VIDEOS)
+        self.assertEqual(planner.clamp_videos("many"), planner.DEFAULT_VIDEOS)
+
+    def test_a_plan_stores_its_count(self):
+        config.PLANS_INDEX.unlink(missing_ok=True)
+        days = planner.normalize_days([_row(i + 1) for i in range(3)], "2026-09-14", self.ch, days=3)
+        plan = planner.create_plan("ch01", "u1", "2026-09-14", days, videos=3)
+        self.assertEqual(plan["videos"], 3)
+        self.assertEqual(planner.get_plan(plan["id"])["videos"], 3)
+
+    def test_a_plan_written_before_the_count_existed_reads_as_the_week_it_was(self):
+        config.PLANS_INDEX.write_text(json.dumps({"plans": [
+            {"id": "old7", "channel_id": "ch01", "owner": "u1", "created": 1.0, "updated": 1.0,
+             "week_start": "2026-09-14", "notes": "", "video_mode": "song",
+             "days": [{"day": i + 1, "date": f"2026-09-{14 + i}"} for i in range(7)]},
+            {"id": "old0", "channel_id": "ch01", "owner": "u1", "created": 1.0, "updated": 1.0,
+             "week_start": "2026-09-14", "notes": "", "video_mode": "song", "days": []}]}),
+            encoding="utf-8")
+        self.assertEqual(planner.get_plan("old7")["videos"], 7)
+        self.assertEqual(planner.get_plan("old0")["videos"], planner.DEFAULT_VIDEOS)
+
+    def test_the_brief_tells_the_llm_fewer_means_better_not_fewer_of_the_same(self):
+        short = llm._plan_rules(self.ch, 3, "2026-09-14", "", ())
+        self.assertIn("spread across the week", short)
+        self.assertIn("3 videos a week, not one a day", short)
+        self.assertIn("week's BEST ideas", short)
+        full = llm._plan_rules(self.ch, 7, "2026-09-14", "", ())
+        self.assertIn("one per day", full)
+        self.assertNotIn("not one a day", full)
+
+
 class Store(unittest.TestCase):
     def setUp(self):
         self.ch = _channel()

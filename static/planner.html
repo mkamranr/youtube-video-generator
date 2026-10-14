@@ -44,6 +44,10 @@
         <label for="weekStart">Week starts</label>
         <input type="date" id="weekStart">
       </div>
+      <div class="grow" style="min-width:150px">
+        <label for="planVideos">Videos this week</label>
+        <select id="planVideos"></select>
+      </div>
       <div class="grow" id="planModeField" style="min-width:180px" hidden>
         <label for="planMode">Video type</label>
         <select id="planMode"></select>
@@ -53,9 +57,10 @@
         <input type="text" id="notes" placeholder="e.g. stories about sharing and first days at school">
       </div>
     </div>
+    <div class="hint" id="planVideosHint" style="margin-top:8px"></div>
     <div class="hint" id="planModeHint" hidden style="margin-top:8px"></div>
     <div class="row" style="margin-top:14px">
-      <button class="btn" id="genBtn">Generate 7-day plan</button>
+      <button class="btn" id="genBtn">Generate plan</button>
       <span class="hint" id="genHint"></span>
     </div>
   </section>
@@ -69,6 +74,9 @@ document.getElementById("nav").outerHTML = navbar("planner");
 let channelsList = [];   // the channels the user may plan for
 let plans = [];          // plans of the selected channel, newest first
 let busy = new Set();    // "planId:day" rows with a request in flight
+// how many videos a week may hold; replaced by the server's own numbers on the first refresh
+let planLimits = { min_videos: 2, max_videos: 7, default_videos: 7, days: 7 };
+let finishedJobs = [];   // ids of this channel's finished videos - which weeks can be compiled
 
 function channelName(cid) {
   const c = channelsList.find(x => x.id === cid);
@@ -143,6 +151,29 @@ function rowHTML(plan, row) {
   </div>`;
 }
 
+// The payoff of a planned week: once its videos are finished they are also the material for one
+// long video. The button hands the jobs to the compilation picker on the Jobs page rather than
+// creating anything here - which videos go in, and in what order, is a judgement call.
+function compileRowHTML(plan) {
+  const ids = (plan.days || []).map(d => d.job_id).filter(Boolean);
+  const ready = (finishedJobs.length ? ids.filter(id => finishedJobs.includes(id)) : []);
+  if (ready.length < 2) return "";
+  return `<div class="row" style="margin-top:4px;align-items:center;gap:10px">
+    <button class="btn secondary sm" onclick="compileWeek('${plan.id}')">Make a compilation from this week</button>
+    <span class="hint" style="margin:0">${ready.length} of this week's videos are finished. One long
+      video of them holds a viewer for minutes instead of seconds, which is the watch time that gets
+      a channel recommended.</span>
+  </div>`;
+}
+
+function compileWeek(planId) {
+  const plan = plans.find(p => p.id === planId);
+  const ids = (plan.days || []).map(d => d.job_id).filter(id => id && finishedJobs.includes(id));
+  // the picker on the Jobs page reads this and pre-ticks exactly these videos, in week order
+  sessionStorage.setItem("videogen.compile", JSON.stringify({ channel_id: plan.channel_id, parts: ids }));
+  location.href = "/#compile";
+}
+
 function planHTML(plan) {
   const made = (plan.days || []).filter(d => d.job_id).length;
   return `<section class="card">
@@ -164,6 +195,7 @@ function planHTML(plan) {
       <div class="spacer"></div>
       <button class="btn danger sm" onclick="removePlan('${plan.id}')">Delete plan</button>
     </div>
+    ${compileRowHTML(plan)}
   </section>`;
 }
 
@@ -182,6 +214,20 @@ async function refresh() {
   try {
     const d = await api(`/api/plans?channel_id=${encodeURIComponent($("#channel").value)}`);
     plans = d.plans || [];
+    planLimits = { min_videos: d.min_videos, max_videos: d.max_videos,
+                   default_videos: d.default_videos, days: d.days };
+    if (!$("#planVideos").options.length) {
+      const opts = [];
+      for (let n = planLimits.min_videos; n <= planLimits.max_videos; n++) {
+        opts.push(`<option value="${n}" ${n === planLimits.default_videos ? "selected" : ""}>${n} video${n > 1 ? "s" : ""}</option>`);
+      }
+      $("#planVideos").innerHTML = opts.join("");
+      applyPlanVideos();
+    }
+    try {
+      const c = await api(`/api/compilations/candidates?channel_id=${encodeURIComponent($("#channel").value)}`);
+      finishedJobs = (c.videos || []).map(v => v.id);
+    } catch (e) { finishedJobs = []; }   // only costs the compilation button
     render();
   } catch (e) { toast(e.message, true); }
 }
@@ -236,17 +282,28 @@ $("#genBtn").onclick = async () => {
   try {
     const plan = await api("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ channel_id: $("#channel").value, week_start: $("#weekStart").value,
-                             notes: $("#notes").value,
+                             notes: $("#notes").value, videos: Number($("#planVideos").value),
                              video_mode: $("#planModeField").hidden ? "" : $("#planMode").value }) });
     plans = [plan, ...plans];
     render();
-    toast("Weekly plan ready - review the seven days");
+    toast(`Weekly plan ready - review the ${(plan.days || []).length} ideas`);
   } catch (e) { toast(e.message, true); }
   finally { $("#genBtn").disabled = false; $("#genHint").textContent = ""; }
 };
 
 $("#channel").addEventListener("change", () => { applyPlanMode(); refresh(); });
 $("#planMode").addEventListener("change", applyPlanMode);
+$("#planVideos").addEventListener("change", applyPlanVideos);
+
+// Why a channel would plan fewer than seven: a new channel's reach is split across everything it
+// uploads, so a daily trickle of thin videos competes with itself. The hint says so where the
+// choice is made rather than leaving the number looking like a limitation.
+function applyPlanVideos() {
+  const n = Number($("#planVideos").value) || planLimits.days;
+  $("#planVideosHint").textContent = n >= planLimits.days
+    ? "One video a day. Every upload competes with the others for the same audience, so consider fewer, stronger videos plus a compilation of the finished ones."
+    : `${n} videos, spaced out over the week, and each one written to be worth a full watch rather than one day of seven. The days in between are where a compilation of already-finished videos goes - one long video holds a viewer far longer than several short ones.`;
+}
 
 (async function init() {
   const monday = new Date();
@@ -263,6 +320,7 @@ $("#planMode").addEventListener("change", applyPlanMode);
     if (o.default_channel_id) $("#channel").value = o.default_channel_id;
   } catch (e) { toast(e.message, true); }
   applyPlanMode();
+  applyPlanVideos();
   await refresh();
 })();
 </script>

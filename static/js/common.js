@@ -69,11 +69,21 @@ const STEP_LABELS = { planned: "Setup", queued: "Queued", drafting: "Script", aw
 const STORY_STEP_LABELS = { drafting: "Story", awaiting_approval: "Approve story",
                             tts: "Character voices" };
 
+// A compilation reuses the "assembling" status because that is literally what it does, but it
+// joins whole videos rather than one video's clips, so the step is named for that.
+const COMPILATION_STEP_LABELS = { assembling: "Join the videos" };
+
+function isCompiled(j) { return (j || {}).source === "compilation"; }
+
 function stepLabel(j, s) {
+  if (isCompiled(j) && COMPILATION_STEP_LABELS[s]) return COMPILATION_STEP_LABELS[s];
   return ((j || {}).video_mode === "story" && STORY_STEP_LABELS[s]) || STEP_LABELS[s];
 }
 
 function orderFor(j) {
+  // A compilation writes no script, renders nothing and has no clips: it joins finished videos
+  // and is done. Giving it the render stepper would show six stages it never enters.
+  if (isCompiled(j)) return ["queued", "assembling", "done"];
   const story = (j.video_mode || "") === "story";
   const mid = story ? ["tts", "scenes", "thumbnail", "music"]
             : j.audio_mode === "music" ? ["music", "scenes", "thumbnail"]

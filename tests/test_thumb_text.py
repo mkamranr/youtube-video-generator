@@ -97,6 +97,58 @@ class LlmField(unittest.TestCase):
         self.assertIn("letters of any kind", seen["user"])
 
 
+class KidsCaps(unittest.TestCase):
+    """A kids thumbnail is scanned on a phone by an adult, for a child who cannot read at all, so
+    the line has to work as a shape: two or three big words, not five small ones."""
+
+    KIDS = {"name": "Bright Minds Town", "purpose": "", "audience": "kids",
+            "video_type": "animated", "cast": []}
+    GENERAL = {**KIDS, "audience": "general"}
+
+    def test_caps_by_audience(self):
+        self.assertEqual(thumbtext.caps(self.KIDS), (3, 18))
+        self.assertEqual(thumbtext.caps(self.GENERAL), thumbtext.DEFAULT_CAPS)
+        self.assertEqual(thumbtext.caps({}), thumbtext.DEFAULT_CAPS)
+        self.assertEqual(thumbtext.caps(None), thumbtext.DEFAULT_CAPS)
+
+    def _prompt_and_texts(self, channel, texts):
+        seen = {}
+
+        def grab(msgs, **kw):
+            seen["user"] = msgs[-1]["content"]
+            return {"thumbnail_prompt": "a scene", "thumbnail_texts": texts}
+
+        with mock.patch.object(llm, "_chat", side_effect=grab):
+            out = llm.write_thumbnail("T", "narration", "style", channel=channel)
+        return seen["user"], out["thumbnail_texts"]
+
+    def test_a_kids_line_is_cut_to_three_words(self):
+        _u, texts = self._prompt_and_texts(self.KIDS, ["All aboard the little red train"])
+        self.assertEqual(texts, ["All aboard the"])
+
+    def test_a_general_line_keeps_the_original_caps(self):
+        _u, texts = self._prompt_and_texts(self.GENERAL, ["All aboard the little red train"])
+        self.assertEqual(texts, ["All aboard the little"])
+
+    def test_the_prompt_asks_for_what_normalize_enforces(self):
+        """One source of truth: if the prompt and the cap disagreed, every line would be written
+        at one length and then silently chopped to another."""
+        kids, _t = self._prompt_and_texts(self.KIDS, [])
+        self.assertIn("at most\n  3 words and under 18 characters", kids)
+        general, _t = self._prompt_and_texts(self.GENERAL, [])
+        self.assertIn("at most\n  5 words and under 24 characters", general)
+
+    def test_only_a_kids_thumbnail_gets_the_toddler_composition_rule(self):
+        kids, _t = self._prompt_and_texts(self.KIDS, [])
+        self.assertIn("TODDLER audience", kids)
+        self.assertIn("filling most of the frame", kids)
+        general, _t = self._prompt_and_texts(self.GENERAL, [])
+        self.assertNotIn("TODDLER", general)
+        # the rules it must not displace
+        self.assertIn("TOP-RIGHT corner free", kids)
+        self.assertIn("No text, subtitles, captions, letters", kids)
+
+
 class Render(unittest.TestCase):
 
     @classmethod

@@ -1120,6 +1120,7 @@ function chCastSync() {   // read the edited rows back into chCast (re-rendering
     c.name = row.querySelector(".cast-name").value.trim();
     c.kind = row.querySelector(".cast-kind").value.trim();
     c.role = row.querySelector(".cast-role").value;
+    c.priority = row.querySelector(".cast-priority").value;
     c.look = row.querySelector(".cast-look").value.trim();
     c.personality = row.querySelector(".cast-personality").value.trim();
     c.voice_id = row.querySelector(".cast-voice").value;
@@ -1141,6 +1142,12 @@ function chCastRender() {
           <select class="cast-role" style="max-width:190px">
             <option value="main" ${c.role !== "supporting" ? "selected" : ""}>Main — usual protagonist</option>
             <option value="supporting" ${c.role === "supporting" ? "selected" : ""}>Supporting</option>
+          </select>
+          <select class="cast-priority" style="max-width:210px"
+                  title="How much of the channel's output this character should carry. Separate from the role: a main character can still be one nobody watches.">
+            <option value="lead" ${c.priority === "lead" ? "selected" : ""}>Lead — carries the channel</option>
+            <option value="normal" ${(c.priority || "normal") === "normal" ? "selected" : ""}>Normal</option>
+            <option value="resting" ${c.priority === "resting" ? "selected" : ""}>Resting — don't cast</option>
           </select>
           <select class="cast-voice" style="max-width:220px"></select>
         </div>
@@ -1167,7 +1174,8 @@ $("#chCastAdd").onclick = () => {
   chCastSync();
   const max = chData.max_cast || 24;
   if (chCast.length >= max) { toast(`At most ${max} characters per channel`, true); return; }
-  chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main", look: "", personality: "", voice_id: "", has_portrait: false });
+  chCast.push({ id: "", name: "", kind: "", role: chCast.length ? "supporting" : "main",
+                priority: "normal", look: "", personality: "", voice_id: "", has_portrait: false });
   chCastRender();
   const rows = document.querySelectorAll("#chCastList .cast-row");
   rows[rows.length - 1].querySelector(".cast-name").focus();
@@ -1254,7 +1262,8 @@ function chBody() {
     made_for_kids: $("#chKids").checked,
     cast_opening: $("#chCastOpening").checked,
     characters_enabled: $("#chCharacters").checked,
-    cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role, look: c.look,
+    cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role,
+                             priority: c.priority || "normal", look: c.look,
                              personality: c.personality, voice_id: c.voice_id || "" })),
     avatars: chAvatars.map(a => ({ id: a.id || "", name: a.name, default: !!a.default })),
     defaults: {
