@@ -676,9 +676,15 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  on_review_issue=None, channel: dict | None = None,
                  opening: dict | None = None, used: list | None = None,
                  timelines: list | None = None, clip_secs: list | None = None,
-                 aligned: bool = True, beats: list | None = None, model: str = "") -> list:
+                 aligned: bool = True, beats: list | None = None, model: str = "",
+                 done: list | None = None, on_scene=None, on_review_failed=None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
+
+    done: scenes already written for this video, kept as the start of the list - one call per
+    scene over twenty-odd clips is minutes of LLM time, and an engine that dies at scene 18
+    used to throw all seventeen away. on_scene(scenes) is called after each one so the caller
+    can persist that progress; the next run passes it back as `done`.
 
     segments: optional pre-computed per-clip text (e.g. whisper-timed lyrics); empty
     entries mean nothing is heard during that clip (instrumental/silence).
@@ -693,6 +699,7 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     subject of the shot; the segment and its timeline only say when the words land on it."""
     if segments is None:
         segments = split_narration(narration, n)
+    scenes = [str(s) for s in (done or [])][:n]
     segments = (list(segments) + [""] * n)[:n]
     timelines = (list(timelines or []) + [""] * n)[:n]
     beats = (list(beats or []) + [None] * n)[:n]
@@ -717,8 +724,10 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  f"{opening['name']} alone, standing centered and facing the viewer in a simple soft "
                  f"setting ({opening.get('look', '').strip()}). Start EXACTLY from that image: {opening['name']} "
                  "comes alive, and the story begins around them - do not open with a different shot.")
-    scenes = []
+    first = len(scenes)          # everything before this came back from an earlier run
     for i, seg in enumerate(segments):
+        if i < first:
+            continue
         if on_progress:
             on_progress(f"scene {i + 1}/{n}")
         prev = (f'The previous clip\'s scene was:\n"{scenes[-1]}"\n'
@@ -800,14 +809,21 @@ Return JSON: {{"scene": "the scene prompt string"}}"""
         if config.SCRIPT_REVIEW:
             if on_progress:
                 on_progress(f"reviewing scene {i + 1}/{n}")
-            scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
-                                         prev_scene=scenes[-1] if scenes else "",
-                                         channel=channel, used=used,
-                                         timeline=timelines[i], aligned=aligned,
-                                         beat=(beats[i] or {}).get("action", "") if beats[i] else "")
+            try:
+                scene, issues = review_scene(scene, seg, style, i + 1, n, kind=kind,
+                                             prev_scene=scenes[-1] if scenes else "",
+                                             channel=channel, used=used,
+                                             timeline=timelines[i], aligned=aligned,
+                                             beat=(beats[i] or {}).get("action", "") if beats[i] else "")
+            except Exception as e:  # noqa: BLE001 - the review improves a scene we already have
+                scene, issues = scene, []
+                if on_review_failed:
+                    on_review_failed(i + 1, str(e))
             if issues and on_review_issue:
                 on_review_issue(i + 1, issues)
         scenes.append(scene)
+        if on_scene:
+            on_scene(list(scenes))
     return scenes
 
 

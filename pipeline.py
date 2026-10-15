@@ -2064,17 +2064,28 @@ def _run(job: Job):
     # scenes are written for these exact clip lengths; a legacy plan (no clip_seconds) keeps its scenes
     same_clips = "clip_seconds" not in plan or plan["clip_seconds"] == durs
     plan["clip_seconds"] = durs
-    if len(plan.get("scenes") or []) == n and same_clips:
+    have = list(plan.get("scenes") or []) if same_clips else []
+    if len(have) == n:
         job.add_log("resume: reusing scene prompts")
     else:
         job.set("scenes", f"writing {n} scene prompts with vLLM")
+        if have:
+            job.add_log(f"resume: reusing {len(have)} of {n} scene prompts")
         def scene_progress(m):
             _check_cancel(job)
             job.set("scenes", f"writing {m}")
         def review_issue(idx, issues):
             job.add_log(f"review fixed scene {idx}: " + "; ".join(issues)[:160])
+        def review_failed(idx, err):
+            job.add_log(f"scene {idx} kept unreviewed ({err})")
+        def keep(written):
+            # one LLM call per scene, two with the review on: an engine that dies at scene 18 of
+            # 22 used to cost every one of them. Saved as they land, so a resume carries on.
+            plan["scenes"] = written
+            _save_plan(job, plan)
         plan["scenes"] = llm.write_scenes(sync_text, plan["style"], n, kind=kind, segments=segments,
                                           on_progress=scene_progress, on_review_issue=review_issue,
+                                          on_review_failed=review_failed, on_scene=keep, done=have,
                                           channel=job.channel, used=plan.get("cast_used"),
                                           opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None,
                                           timelines=timelines, clip_secs=durs, aligned=aligned,
