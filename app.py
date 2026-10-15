@@ -755,6 +755,10 @@ def options(user: dict = Depends(auth.require_user)):
             "resolutions": list(config.OUTPUT_RESOLUTIONS), "default_resolution": config.DEFAULT_RESOLUTION,
             "art_styles": list(config.ART_STYLES), "default_art_style": config.DEFAULT_ART_STYLE,
             "video_lengths": list(config.VIDEO_LENGTHS), "default_video_length": config.DEFAULT_VIDEO_LENGTH,
+            # the upper bound of each preset, so the presenter hint can answer "can it cover THIS
+            # video" rather than only quoting the budget. Auto has none and reads as 0.
+            "video_length_seconds": {k: float(v[1]) if v else 0.0
+                                     for k, v in config.VIDEO_LENGTHS.items()},
             "default_source": config.DEFAULT_SOURCE,
             "default_audio_mode": "music" if config.AUDIO_MODE == "music" else "narration+music",
             "video_modes": config.VIDEO_MODES, "default_video_mode": config.DEFAULT_VIDEO_MODE,
@@ -765,6 +769,8 @@ def options(user: dict = Depends(auth.require_user)):
             "avatar_coverages": config.AVATAR_COVERAGES,
             "default_avatar_coverage": config.DEFAULT_AVATAR_COVERAGE,
             "avatar_estimates": _avatar_estimates(),
+            "avatar_budgets": {"footage_seconds": float(config.AVATAR_MAX_SECONDS),
+                               "render_minutes": float(config.AVATAR_MAX_RENDER_MINUTES)},
             "channels": chans,
             # the caller's own first channel; "" when they have none yet (admins pick explicitly)
             "default_channel_id": own[0]["id"] if own else ""}
@@ -1038,7 +1044,14 @@ def _avatar_estimates() -> dict:
             s = config.avatar_coverage_seconds(cov, name)
             secs[cov] = round(s, 1)
             mins[cov] = round(config.avatar_estimate_seconds(s, name) / 60.0, 1) if s else 0.0
-        out[name] = {"seconds": secs, "render_minutes": mins}
+        spec = config.avatar_model(name)
+        # the raw rate as well, because "Whole video" is the one coverage whose cost depends on
+        # the length of the video - which the page knows (the user just picked it) and this
+        # function does not. Without these the hint can only quote the budget.
+        out[name] = {"seconds": secs, "render_minutes": mins,
+                     "budget_seconds": round(config.avatar_budget_seconds(name), 1),
+                     "seconds_per_frame": float(spec["seconds_per_frame"]),
+                     "fps": float(spec["fps"])}
     return out
 
 

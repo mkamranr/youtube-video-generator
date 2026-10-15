@@ -528,6 +528,8 @@ TTS_CHUNK_CHARS = 300           # max characters per Fish Speech request (long t
 # ---- fixed limits ---------------------------------------------------------
 MAX_TRANSCRIPT_CHARS = 60000    # ~15k tokens, leaves room in the 32k context
 COMFY_TIMEOUT = 60 * 60         # seconds to wait for a single clip
+LLM_TIMEOUT = 300               # seconds to wait for one vLLM answer (editable below)
+PAGE_SCROLL_SPEED = 110.0       # page panel: panel-scale pixels per second (editable below)
 LYRIC_ALIGN_MIN_RATIO = 0.55    # below this whisper/lyrics token match ratio the raw whisper words are kept
 MIN_HEARD_WORDS = 8             # an uploaded track with fewer words heard in the whole song counts as
                                 # instrumental (whisper hallucinates a word or two over music), and its
@@ -621,6 +623,10 @@ EDITABLE_SETTINGS = {
     "COMFY_URL": (str, lambda v: v.startswith("http"), "ComfyUI URL", "Base URL of the ComfyUI server"),
     "VLLM_URL": (str, lambda v: v.startswith("http"), "vLLM URL", "OpenAI-compatible base URL (…/v1)"),
     "VLLM_MODEL": (str, lambda v: len(v) > 0, "vLLM model id", "Model name served by vLLM"),
+    "PAGE_SCROLL_SPEED": (float, lambda v: 20 <= v <= 300, "Page panel scroll speed (px/s)",
+                          "How fast the repository page scrolls inside its panel, in panel pixels per second (20-300). The panel is only on screen for the gap the story board cards leave - at 55 it covered a third of a screen in 11s and read as a still picture; much above 120 the text starts to smear"),
+    "LLM_TIMEOUT": (int, lambda v: 30 <= v <= 1800, "LLM timeout (s)",
+                    "How long one vLLM request may take before the job fails (30-1800). A server that accepts a request and never answers would otherwise hold the job at \u201cwriting script with the LLM\u201d for the better part of an hour"),
     "FISH_URL": (str, lambda v: v.startswith("http"), "Fish TTS URL", "Gradio URL of Fish Speech"),
     "TTS_TEMPERATURE": (float, lambda v: 0.1 <= v <= 2.0, "TTS temperature",
                         "Fish Speech sampling temperature (0.1-2)"),

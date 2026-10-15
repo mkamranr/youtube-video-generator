@@ -151,6 +151,8 @@ Every pipeline step checks for its artifact before doing work: `transcript.txt`,
 
 The ComfyUI build in use has no file-deletion API (its files route is GET-only), so cleanup **scrubs**: each rendered output and uploaded chaining frame is overwritten with a 73-byte PNG stub through the upload API (storage reclaimed; a zero-size name remains listed), and the prompt's history entry is deleted. This runs per artifact immediately after download (`COMFY_CLEANUP` setting) — long jobs never accumulate data on the render server. GPU-VRAM sharing is also managed: before TTS the app asks ComfyUI to unload models (`POST /free`), since Fish/vLLM/ComfyUI share one GPU.
 
+Every call to a remote service carries its own deadline, because all three can accept a request and then stop answering: `COMFY_TIMEOUT` per render, and `LLM_TIMEOUT` per vLLM request with the OpenAI client's silent retries turned off (its defaults — a 600-second read tried three times, doubled by the JSON-mode fallback — once held a job on "writing script with the LLM" for the better part of an hour with nothing in the log). A timed-out or unreachable LLM is raised as a `RuntimeError` naming the URL and the model, which the job page shows and `resume` continues from.
+
 ## Transcript quality gate
 
 Before any generation, captions are cleaned of cue tags (`[Music]` etc.) and validated: minimum word count and minimum words-per-minute of caption coverage (computed from caption timestamps, so it works even when video metadata is unavailable). Failing videos are refused with a clear user-facing message and consume no GPU time.

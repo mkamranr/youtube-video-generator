@@ -219,6 +219,48 @@ function fmtDuration(sec) {
   return h % 24 ? `${dd} d ${h % 24} h` : `${dd} d`;
 }
 
+// The presenter is by far the most expensive step and the two engines differ by ~33x, so the
+// cost of the current combination is spelled out while it is still a choice. "Whole video" gets
+// its own branch: it is the one coverage the budgets usually cannot pay for, and until now the
+// only notice was a line in the log of a video that had already been rendered.
+//   per        - one entry of /options avatar_estimates (seconds, render_minutes, budget_seconds,
+//                seconds_per_frame, fps)
+//   wantSeconds - how long this video may run (the upper bound of the chosen length preset), or 0
+function avatarMinutes(m) { return m < 1 ? "under a minute" : `${Math.round(m)} min`; }
+
+function avatarHint(cov, engine, estimates, wantSeconds, caps) {
+  if (cov === "none") return "No presenter on this video.";
+  const all = estimates || {}, per = all[engine];
+  if (!per) return "";
+  if (cov !== "full") {
+    return `About ${Math.round(per.seconds[cov] || 0)}s of presenter, roughly `
+      + `${avatarMinutes(per.render_minutes[cov] || 0)} of GPU time. `
+      + `Trimmed automatically if it would exceed the render budget.`;
+  }
+  const want = Number(wantSeconds) || 0;
+  const budget = per.budget_seconds || 0;
+  const costMin = e => (want * (e.fps || 24) * (e.seconds_per_frame || 0)) / 60;
+  if (want && budget >= want - 0.5) {
+    return `The whole ${Math.round(want)}s, roughly ${avatarMinutes(costMin(per))} of GPU time.`;
+  }
+  let out = want
+    ? `${engine} can pay for ${Math.round(budget)}s of presenter, not the ${Math.round(want)}s this `
+      + `video may run, so it would get the start and the end instead.`
+    : `${engine} can pay for ${Math.round(budget)}s of presenter; a video longer than that gets the `
+      + `start and the end instead.`;
+  if (!want) return out + ` Raise "Avatar: footage budget" and "Avatar: render budget" in Settings `
+    + `to cover a whole one, and pick the fastest engine you have - they differ by about 33x.`;
+  // the cheapest engine whose render would still fit the render budget - the one worth naming
+  const renderCap = (caps || {}).render_minutes || 0;
+  const able = Object.keys(all).filter(k => !renderCap || costMin(all[k]) <= renderCap)
+    .sort((a, b) => costMin(all[a]) - costMin(all[b]))[0];
+  if (!able) return out + ` No engine can cover the whole of it inside the render budget.`;
+  const same = able === engine;
+  return out + ` ${same ? "It" : able} would render the whole ${Math.round(want)}s in about `
+    + `${avatarMinutes(costMin(all[able]))}${same ? "" : " instead"} - raise "Avatar: footage budget" `
+    + `to ${Math.round(want)}s in Settings to allow it${same ? "" : `, and pick ${able} here`}.`;
+}
+
 // Clip generation start/end for the meta rows: "" for jobs without timing data (legacy),
 // "clips started 14:03" while rendering, "clips 14:03 – 15:27 (1 h 24 min)" once every clip is done.
 // The duration is active render time; the tooltip carries the wall-clock span (GPU-window parks included).

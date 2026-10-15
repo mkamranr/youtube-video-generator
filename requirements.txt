@@ -6,6 +6,7 @@ gradio_client
 youtube-transcript-api
 yt-dlp
 openai
+httpx          # imported directly for the vLLM client timeouts
 static-ffmpeg
 pillow
 fpdf2>=2.8

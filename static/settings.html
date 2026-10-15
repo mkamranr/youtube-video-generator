@@ -314,6 +314,7 @@
         <div class="field"><label for="COMFY_URL">ComfyUI URL</label><input type="text" id="COMFY_URL"><div class="hint">Base URL of the ComfyUI server</div></div>
         <div class="field"><label for="VLLM_URL">vLLM URL</label><input type="text" id="VLLM_URL"><div class="hint">OpenAI-compatible base URL (…/v1)</div></div>
         <div class="field"><label for="VLLM_MODEL">vLLM model id</label><input type="text" id="VLLM_MODEL"><div class="hint">Model name served by vLLM</div></div>
+        <div class="field"><label for="LLM_TIMEOUT">LLM timeout (s)</label><input type="number" min="30" max="1800" step="10" id="LLM_TIMEOUT"><div class="hint">How long one vLLM request may take before the job fails (30-1800)</div></div>
       </div>
     </div>
 
@@ -395,6 +396,11 @@
           <label for="STORYBOARD_ACCENT">Story board: accent colour</label>
           <input type="text" id="STORYBOARD_ACCENT" placeholder="#e9a13b" spellcheck="false">
           <div class="hint">Hex colour of the cards' kicker label and side bar, e.g. #e9a13b</div>
+        </div>
+        <div class="field">
+          <label for="PAGE_SCROLL_SPEED">Page panel: scroll speed (px/s)</label>
+          <input type="number" id="PAGE_SCROLL_SPEED" min="20" max="300" step="5">
+          <div class="hint">How fast a repository page scrolls inside its panel, in panel pixels per second. The panel is only up for the gap the story board cards leave, so this is what decides whether it reads as a scroll or a still picture; much above 120 the text starts to smear</div>
         </div>
         <div class="field">
           <label>&nbsp;</label>
@@ -712,12 +718,12 @@
 <script src="/js/common.js"></script>
 <script>
 document.getElementById("nav").outerHTML = navbar("settings");
-const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "DEFAULT_SOURCE",
+const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "LLM_TIMEOUT", "DEFAULT_SOURCE",
                 "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_VIDEO_MODEL",
                 "LTX_NEGATIVE_ANIMATED", "LTX_NEGATIVE_REAL", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_CATEGORY_ID", "YT_MAX_TAGS", "YT_CHAPTERS", "YT_CHAPTER_MIN_SECONDS",
                 "WHISPER_MODEL", "KIDS_SONG_BPM", "KIDS_SONG_WPS",
                 "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT",
-                "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION",
+                "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION", "PAGE_SCROLL_SPEED",
                 "CAPTIONS_ENABLED", "CAPTION_MAX_WORDS", "CAPTION_MAX_CHARS", "CAPTION_HIGHLIGHT",
                 "CAPTION_ACCENT", "CAPTION_FONT_SCALE", "CAPTION_BOTTOM_MARGIN",
                 "THUMB_TEXT_ENABLED", "THUMB_TEXT_VARIANTS", "THUMB_TEXT_ACCENT",

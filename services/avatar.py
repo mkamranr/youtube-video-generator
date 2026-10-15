@@ -31,6 +31,26 @@ def _duration(path: Path) -> float:
     return video.duration(path)
 
 
+def describe(wins: list, total: float) -> str:
+    """Where the presenter ended up, in the words the dialog offers - so a finished job can say
+    what it got next to what was asked for, instead of leaving the user to read the log and work
+    it out from two timestamps."""
+    if not wins:
+        return "nothing"
+    total = float(total or 0.0)
+    head = wins[0][0] <= 0.05
+    tail = total and wins[-1][1] >= total - 0.05
+    covered = sum(e - s for s, e in wins)
+    chained = all(b[0] - a[1] < 0.05 for a, b in zip(wins, wins[1:]))
+    if chained and head and tail and total and covered >= total - 0.5:
+        return "the whole video"
+    if len(wins) == 1:
+        return "the start" if head else "the end" if tail else "the middle"
+    if len(wins) == 2 and head and tail:
+        return "the start and the end"
+    return f"{len(wins)} segments"
+
+
 def segment_windows(coverage: str, total: float, engine: str = "", words=None) -> list:
     """Windows the presenter speaks in, as [(start, end)] in seconds.
 

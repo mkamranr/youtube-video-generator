@@ -386,15 +386,19 @@ function isRealistic(ch) { return !!ch && realTypes.includes(ch.video_type); }
 // ---- presenter avatar ----
 // The whole block hides unless the channel actually has an avatar with an image: offering a
 // presenter the channel cannot supply would just be a dead control.
+let avCovPicked = false;    // the user chose a coverage: do not quietly reset it under them
+
 function avatarFill(ch, d) {
   const block = $("#avatarBlock");
   const usable = ((ch && ch.avatars) || []).filter(a => a.has_image);
   block.hidden = !usable.length;
   if (!usable.length) return;
   const covs = opts.avatar_coverages || {};
+  // read before the options are rebuilt: replacing innerHTML resets the select to its first entry
+  const keep = avCovPicked && !d.avatar_coverage ? $("#avCoverage").value : "";
   $("#avCoverage").innerHTML = Object.keys(covs)
     .map(k => `<option value="${esc(k)}">${esc(covs[k])}</option>`).join("");
-  $("#avCoverage").value = d.avatar_coverage || opts.default_avatar_coverage || "both";
+  $("#avCoverage").value = keep || d.avatar_coverage || opts.default_avatar_coverage || "both";
   $("#avWho").innerHTML = usable.map(a =>
     `<option value="${esc(a.id)}">${esc(a.name)}${a.default ? " (default)" : ""}</option>`).join("");
   const want = d.avatar_id && usable.some(a => a.id === d.avatar_id)
@@ -408,28 +412,13 @@ function avatarFill(ch, d) {
 }
 
 // Lip sync is by far the most expensive step, and the engines differ by ~33x, so the cost of
-// the current combination is shown while it is being chosen.
+// the current combination is shown while it is being chosen. The sentence itself lives in
+// common.js because the planned-job setup card has to say exactly the same thing.
 function avatarCost() {
-  const cov = $("#avCoverage").value;
-  const model = $("#avModel").value || opts.default_avatar_model || "";
-  const per = (opts.avatar_estimates || {})[model];
-  const el = $("#avHint");
-  if (cov === "none") { el.textContent = "No presenter on this video."; return; }
-  if (!per) { el.textContent = ""; return; }
-  const secs = per.seconds[cov] || 0, mins = per.render_minutes[cov] || 0;
-  const asked = { intro: "at the start", outro: "at the end", both: "at the start and the end",
-                  full: "for the whole video" }[cov] || "";
-  // "Whole video" is quoted at the footage budget, because the length of the video is only
-  // known once the narration exists - so say that outright rather than let the number read as
-  // a promise the planner cannot keep.
-  el.textContent = `About ${secs.toFixed(0)}s of presenter ${asked}, roughly `
-    + `${mins < 1 ? "under a minute" : mins.toFixed(0) + " min"} of GPU time. `
-    + (cov === "full"
-      ? `Those ${secs.toFixed(0)}s are the footage budget: a video longer than that keeps the `
-        + `presenter at the start and the end instead. To cover a whole one, raise "Avatar: `
-        + `footage budget" and "Avatar: render budget" in Settings, and pick the fastest engine `
-        + `you have - they differ by about 33x per frame.`
-      : `Trimmed automatically if it would exceed the render budget.`);
+  $("#avHint").textContent = avatarHint(
+    $("#avCoverage").value, $("#avModel").value || opts.default_avatar_model || "",
+    opts.avatar_estimates, (opts.video_length_seconds || {})[$("#vlen").value] || 0,
+    opts.avatar_budgets);
 }
 
 function applyChannel() {
@@ -450,8 +439,9 @@ function applyChannel() {
   // thumbnail text is not a tech-channel thing - it has always been drawn on every channel
   $("#thumbText").checked = d.thumb_text != null ? !!d.thumb_text : true;
   avatarFill(ch, d);
-  $("#avCoverage").onchange = avatarCost;
+  $("#avCoverage").onchange = () => { avCovPicked = true; avatarCost(); };
   $("#avModel").onchange = avatarCost;
+  $("#vlen").onchange = avatarCost;      // "Whole video" depends on how long the video runs
   // repository videos are a Tech-channel feature (the server enforces it too). The option is
   // added and removed rather than hidden: a hidden <option> that is selected still shows.
   const sel = $("#source"), opt = sel.querySelector('option[value="repo"]');
@@ -569,12 +559,20 @@ async function submit() {
 
 async function cancelJob(ev, id) {
   ev.preventDefault(); ev.stopPropagation();
-  const planned = (lastJobs.find(j => j.id === id) || {}).status === "planned";
-  if (!confirm(planned ? "Discard this planned video? Nothing has been generated yet."
-                       : "Cancel this running job?")) return;
+  const status = (lastJobs.find(j => j.id === id) || {}).status;
+  const planned = status === "planned";
+  const msg = planned ? "Discard this planned video? Nothing has been generated yet."
+            : status === "awaiting_approval" ? "Discard this draft? The script will be lost."
+            : status === "drafting" ? "Cancel this job? The script being written will be discarded."
+            : "Cancel this running job?";
+  if (!confirm(msg)) return;
   try {
     await api(`/jobs/${id}/cancel`, { method: "POST" });
-    toast(planned ? "Planned video discarded" : "Cancelling job");
+    // the states with no worker are failed by the time the call returns; the rest have to
+    // be told and then reach their next checkpoint
+    toast(planned ? "Planned video discarded"
+        : ["drafting", "awaiting_approval"].includes(status) ? "Job cancelled"
+        : "Cancelling job");
     await refresh();
   } catch (e) { toast(e.message, true); }
 }

@@ -214,6 +214,29 @@ def _check_cancel(job: Job):
         raise JobPaused()
 
 
+def _draft_dropped(job: Job) -> bool:
+    """True when the user cancelled while this draft was waiting on the LLM. The draft runs in its
+    own thread, blocked in an HTTP request that cannot be interrupted from outside, so cancel()
+    fails the job there and then; whatever the writer returns afterwards is dropped rather than
+    written over that."""
+    if not job.cancel_requested:
+        return False
+    job.add_log("the draft came back after the cancel - discarded")
+    return True
+
+
+def _drafted(job: Job) -> bool:
+    """True when a script the user could still review is on disk. A first draft writes plan.json
+    only at its very end, so this holds for a rewrite and not for a first attempt - which is what
+    lets a cancelled rewrite keep the script being reviewed."""
+    try:
+        plan = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - nothing drafted yet, or half-written
+        return False
+    return bool((plan.get("narration") or "").strip()
+                or ((plan.get("story") or {}).get("beats")))
+
+
 def _gpu_gate(job: Job):
     """Checkpoint placed immediately before every ComfyUI submission of the worker path."""
     _check_cancel(job)
@@ -405,6 +428,30 @@ def _fit_narration(job: Job, plan: dict, words: int | None):
         return
     plan["narration"] = longer
     job.add_log(f"script was {have} words for a {words}-word target - extended to {got}")
+
+
+def _log_avatar_plan(job: Job):
+    """What the presenter choice will actually buy, said at submit instead of an hour later at the
+    avatar step. Both budgets decide this before anything renders, and "Whole video" is the one
+    choice the default engine can almost never pay for, so the trade belongs where it is still a
+    decision rather than in the log of a finished video."""
+    if job.avatar_coverage in ("", "none") or not job.avatar_id:
+        return
+    engine = job.avatar_model or config.DEFAULT_AVATAR_MODEL
+    label = config.AVATAR_COVERAGES.get(job.avatar_coverage, job.avatar_coverage)
+    budget = config.avatar_budget_seconds(engine)
+    if job.avatar_coverage == "full":
+        line = (f"presenter: {label} on {engine} - the budgets pay for {budget:.0f}s of footage, so "
+                f"a video longer than that keeps the presenter at the start and the end instead")
+        best = max(config.AVATAR_MODELS, key=config.avatar_budget_seconds)
+        if best != engine and config.avatar_budget_seconds(best) > budget + 1:
+            line += f" ({best} would pay for {config.avatar_budget_seconds(best):.0f}s)"
+    else:
+        want = config.avatar_coverage_seconds(job.avatar_coverage, engine)
+        mins = config.avatar_estimate_seconds(want, engine) / 60.0
+        line = (f"presenter: {label} on {engine} - about {want:.0f}s of footage, "
+                f"{'under a minute' if mins < 1 else f'{mins:.0f} min'} of GPU")
+    job.add_log(line)
 
 
 def _logo_for(job: Job):
@@ -945,9 +992,16 @@ def _page_screenshot(job: Job) -> int:
 
     Non-fatal by design: without page.png the video is finished from the README text alone."""
     png = job.dir / "page.png"
+    meta = job.dir / "page.json"
     if png.exists() and png.stat().st_size > 5000:
         job.add_log("resume: reusing the page screenshot")
-        return 0
+        # the offset is kept beside the picture, not only in the plan: this job's screenshot
+        # survived a failed draft, and returning 0 here once started the panel on the page
+        # header for the rest of the job's life
+        try:
+            return int(json.loads(meta.read_text(encoding="utf-8")).get("content_y") or 0)
+        except Exception:  # noqa: BLE001 - captured before the sidecar existed, or half-written
+            return 0
     url = job.url
     rfile = job.dir / "repo.json"
     if rfile.exists():
@@ -958,6 +1012,8 @@ def _page_screenshot(job: Job) -> int:
     try:
         job.set("drafting", "screenshotting the page")
         w, h, content_y = browser.screenshot(url, png)
+        meta.write_text(json.dumps({"width": w, "height": h, "content_y": int(content_y)}),
+                        encoding="utf-8")
         job.add_log(f"page screenshot: {w}x{h}")
         return content_y
     except Exception as e:  # noqa: BLE001 - the video is made from the README alone
@@ -1233,7 +1289,12 @@ def _avatar_assets(job: Job, plan: dict):
         if config.COMFY_CLEANUP:
             client.scrub_file("input", "", img_name)
         plan["avatar"] = {"engine": engine, "style": style, "coverage": job.avatar_coverage,
-                          "seconds": round(got, 2), "segments": segments}
+                          "seconds": round(got, 2), "segments": segments,
+                          # what was asked for next to what the budgets paid for, so the job page
+                          # can explain a trim without anyone reading the log
+                          "asked_seconds": round(asked, 2),
+                          "coverage_label": config.AVATAR_COVERAGES.get(job.avatar_coverage, ""),
+                          "delivered": avatar.describe(wins, total)}
         _save_plan(job, plan)
         chain = len(segments) > 1 and all(b["start"] - a["end"] < 0.05
                                           for a, b in zip(segments, segments[1:]))
@@ -2394,6 +2455,7 @@ class JobManager:
                   music_upload=(up or {}).get("name", ""),
                   music_seconds=float((up or {}).get("seconds", 0.0)))
         job.save()
+        _log_avatar_plan(job)
         _install_upload(job, up)
         with self.lock:
             self.jobs[job.id] = job
@@ -2454,6 +2516,22 @@ class JobManager:
                     job.set("done", "request cancelled", assemble_requested=False)
                 else:
                     job.set("failed", "cancelled by user", error="cancelled by user")
+                return
+            if job.status in ("drafting", "awaiting_approval"):
+                # Neither state has a worker that would see the flag: a draft is blocked in an LLM
+                # request no other thread can interrupt, and a job awaiting approval is not running
+                # at all. Finish the cancel here rather than leaving it on "cancelling..." forever.
+                # The flag stays set so a draft that lands afterwards drops its result; the two
+                # calls that start the next phase, approve_script and redraft_script, clear it.
+                drafting = job.status == "drafting"
+                job.cancel_requested = True
+                if drafting and _drafted(job):
+                    job.set("awaiting_approval", "rewrite cancelled - the earlier script is kept")
+                    job.add_log("rewrite cancelled by user - the earlier script is kept")
+                    return
+                job.set("failed", "cancelled by user", error="cancelled by user")
+                job.add_log("cancelled by user while the script was being written" if drafting
+                            else "cancelled by user before the script was approved")
                 return
             job.cancel_requested = True
             job.set(detail="cancelling...")
@@ -2562,6 +2640,8 @@ class JobManager:
                   planned_for=str(plan.get("date", "")), hook=str(plan.get("hook", "")),
                   thumb_idea=str(plan.get("thumb_idea", "")))
         job.save()
+        if start:          # a planned job logs it at setup instead, once it has its engine
+            _log_avatar_plan(job)
         _install_upload(job, up)
         if source_kind == "transcript":   # shown by the job page's Transcript card
             job.dir.mkdir(parents=True, exist_ok=True)
@@ -2685,6 +2765,7 @@ class JobManager:
                         f"{vm}, {ar}, {mp} MP, {res}, "
                         f"{'story' if vmode == 'story' else 'song' if mode == 'music' else 'voiceover'})"
                         " - writing the script")
+            _log_avatar_plan(job)
         self._start_draft(job)
         return job
 
@@ -2733,6 +2814,8 @@ class JobManager:
         used = _set_cast_used(job, plan, _story_blob(plan))
         job.add_log("cast in this story: " + (", ".join(used) or "none"))
 
+        if _draft_dropped(job):   # cancelled during the beats call: do not pay for the lines too
+            return
         max_words = story.line_words(clip_s, job.video_model)
         job.set("drafting", f"writing what is said over the {len(beats)} scenes")
         lines, issues = llm.write_story_lines(beats, used, channel=job.channel, used=used,
@@ -2742,6 +2825,8 @@ class JobManager:
         plan["story"]["issues"] = issues
         plan["narration"] = "\n".join(ln["text"] for ln in lines if ln.get("text", "").strip())
         used = _set_cast_used(job, plan, _story_blob(plan))
+        if _draft_dropped(job):
+            return
         job.dir.mkdir(parents=True, exist_ok=True)
         pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
         job.set("awaiting_approval", "story ready - review and approve",
@@ -2782,10 +2867,11 @@ class JobManager:
                 source_text, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
                 words=target_words, feedback=feedback, previous=previous,
                 channel=job.channel, hook=job.hook)
+            if _draft_dropped(job):   # the user cancelled while the writer was working
+                return
             _fit_narration(job, plan, target_words)   # still pre-approval: the user reviews the result
             plan["audio_mode"] = job.audio_mode
-            if content_y:
-                plan["page_content_y"] = content_y   # where the README starts in page.png
+            plan["page_content_y"] = content_y   # where the README starts in page.png
             if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
                 plan["thumbnail_idea"] = job.thumb_idea
             if cast.active(job.channel):
@@ -2803,6 +2889,9 @@ class JobManager:
                     title=plan.get("title", ""))
             job.add_log("script drafted - awaiting approval")
         except Exception as e:  # noqa: BLE001
+            if job.cancel_requested:   # cancel() already failed it: keep its reason, not this one
+                job.add_log(f"script drafting stopped by the cancel: {e}")
+                return
             job.add_log(f"script drafting failed: {e}")
             job.set("failed", f"script drafting failed: {e}", error=str(e))
 
@@ -2838,7 +2927,7 @@ class JobManager:
                             + (", ".join(_set_cast_used(job, plan, *extra)) or "none"))
             pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
             job.set("queued", "script approved - waiting for video generation",
-                    title=plan.get("title", ""), script_approved=True)
+                    title=plan.get("title", ""), script_approved=True, cancel_requested=False)
             job.add_log("script approved - queued for video generation")
             self.queue.append(job_id)
         return job
@@ -2850,7 +2939,7 @@ class JobManager:
                 raise KeyError(job_id)
             if job.status != "awaiting_approval":
                 raise ValueError("job is not awaiting script approval")
-            job.set("drafting", "rewriting script with the LLM")
+            job.set("drafting", "rewriting script with the LLM", cancel_requested=False)
         self._start_draft(job, feedback=feedback)
         return job
 

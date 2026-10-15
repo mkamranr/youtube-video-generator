@@ -5,6 +5,7 @@ here touches the network, ffmpeg or a browser - every boundary is mocked.
 
 Run with  python -m unittest discover -s tests -t .  from the repo root."""
 import json
+import pathlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -217,6 +218,90 @@ class ScrollReserve(unittest.TestCase):
             self.assertLess(win[1], total)
 
 
+class KilledFfmpeg(unittest.TestCase):
+    """The reported job lost its overlays, and before that a whole three-hour run, to an ffmpeg
+    that exited non-zero with an empty stderr - the signature of a process the kernel killed.
+    The message said only "ffmpeg failed", and the identical command succeeded when the user
+    re-ran it by hand."""
+
+    def _result(self, code, err=""):
+        return mock.Mock(returncode=code, stderr=err, stdout="")
+
+    def test_a_signal_is_named_as_a_kill_and_a_memory_problem(self):
+        with mock.patch.object(video.subprocess, "run", return_value=self._result(-9)),                 mock.patch.object(video, "KILL_RETRIES", 0):
+            with self.assertRaises(RuntimeError) as cm:
+                video._run(["ffmpeg", "-i", "x"])
+        self.assertIn("killed by signal 9", str(cm.exception))
+        self.assertIn("ran out of memory", str(cm.exception))
+
+    def test_dockers_137_is_the_same_kill(self):
+        self.assertEqual(video._killed(137), 9)
+        self.assertEqual(video._killed(143), 15)
+        self.assertEqual(video._killed(1), 0)      # an ordinary ffmpeg error
+        self.assertEqual(video._killed(0), 0)
+
+    def test_a_kill_is_tried_once_more(self):
+        runs = [self._result(-9), self._result(0)]
+        with mock.patch.object(video.subprocess, "run", side_effect=runs) as run,                 mock.patch.object(video.time, "sleep"):
+            video._run(["ffmpeg", "-i", "x"])
+        self.assertEqual(run.call_count, 2)
+
+    def test_an_ffmpeg_error_is_never_retried(self):
+        # retrying a bad filter graph only pays the wait twice and hides the real message
+        bad = self._result(1, "Error reinitializing filters!")
+        with mock.patch.object(video.subprocess, "run", return_value=bad) as run:
+            with self.assertRaises(RuntimeError) as cm:
+                video._run(["ffmpeg", "-i", "x"])
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("exit code 1", str(cm.exception))
+        self.assertIn("reinitializing filters", str(cm.exception))
+
+    def test_a_kill_that_keeps_happening_still_fails(self):
+        with mock.patch.object(video.subprocess, "run", return_value=self._result(-9)) as run,                 mock.patch.object(video.time, "sleep"):
+            with self.assertRaises(RuntimeError):
+                video._run(["ffmpeg", "-i", "x"])
+        self.assertEqual(run.call_count, video.KILL_RETRIES + 1)
+
+
+class PageContentOffset(unittest.TestCase):
+    """Where the README starts has to outlive the run that captured it. The reported job lost it
+    to a failed draft: the screenshot survived, `_page_screenshot` returned 0 on the reuse path,
+    and the panel started on the page header for every later run."""
+
+    def setUp(self):
+        config.OUTPUT_DIR = TMP / "offset-output"
+        self.job = Job(id="20260101-000000-offs01", url="https://github.com/a/b")
+        self.job.dir.mkdir(parents=True, exist_ok=True)
+        for name in ("page.png", "page.json"):
+            (self.job.dir / name).unlink(missing_ok=True)
+
+    def _shoot(self, content_y):
+        def fake(url, png):
+            _png(pathlib.Path(png))
+            return 1080, 6000, content_y
+        with mock.patch.object(pipeline.browser, "screenshot", side_effect=fake):
+            return pipeline._page_screenshot(self.job)
+
+    def test_the_offset_is_kept_beside_the_picture(self):
+        self.assertEqual(self._shoot(2460), 2460)
+        meta = json.loads((self.job.dir / "page.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["content_y"], 2460)
+
+    def test_a_reused_screenshot_keeps_its_offset(self):
+        self._shoot(2460)
+        # a second run finds page.png already there and never calls the browser again
+        with mock.patch.object(pipeline.browser, "screenshot",
+                               side_effect=AssertionError("must not re-shoot")):
+            self.assertEqual(pipeline._page_screenshot(self.job), 2460)
+        self.assertTrue(any("reusing the page screenshot" in str(e) for e in self.job.log))
+
+    def test_a_screenshot_captured_before_the_sidecar_existed_still_works(self):
+        _png(self.job.dir / "page.png")
+        with mock.patch.object(pipeline.browser, "screenshot",
+                               side_effect=AssertionError("must not re-shoot")):
+            self.assertEqual(pipeline._page_screenshot(self.job), 0)
+
+
 class ScrollFilter(unittest.TestCase):
     """The three traps: per-frame crop, quoted commas, and the image input's frame rate."""
 
@@ -262,6 +347,26 @@ class ScrollFilter(unittest.TestCase):
         lyr = video.scroll_layer(TMP / "base.mp4", self.png, 13.2, 46.8, content_y=2460)
         self.assertNotIn("y=0:", lyr["pre"])       # not the top of the page
         self.assertIn("crop=w=336:h=604:x=0:y='7", lyr["pre"])   # scaled offset, ~765
+
+    def test_the_travel_follows_the_configured_speed(self):
+        # the reported complaint: at 55 px/s an 11 s window moved the panel a third of its own
+        # height and the viewer read it as a screenshot. The travel is speed x window, always -
+        # the page is far taller than any window can cover - so the speed is the whole control.
+        def travel(speed):
+            with mock.patch.object(config, "PAGE_SCROLL_SPEED", speed):
+                pre = video.scroll_layer(TMP / "base.mp4", self.png, 41.0, 52.0)["pre"]
+            return int(pre.split("y='0+")[1].split("*")[0])
+
+        self.assertEqual(travel(55.0), 605)          # what the videos shipped with
+        self.assertEqual(travel(110.0), 1210)        # the new default: two thirds of the panel
+        self.assertGreater(travel(config.PAGE_SCROLL_SPEED), travel(55.0))
+
+    def test_a_window_can_never_outrun_the_page(self):
+        # a short page and a long window: the geometry still binds, and no negative travel
+        short = _png(TMP / "short.png", 1080, 700)
+        with mock.patch.object(config, "PAGE_SCROLL_SPEED", 300.0):
+            pre = video.scroll_layer(TMP / "base.mp4", short, 0.0, 60.0)["pre"]
+        self.assertIn("crop=w=336:h=604:x=0:y=0", pre)   # nothing to scroll: a bare position
 
     def test_audio_is_copied_and_no_layers_is_a_passthrough(self):
         argv = self._argv()

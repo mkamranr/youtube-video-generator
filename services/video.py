@@ -1,10 +1,29 @@
 """ffmpeg helpers: last-frame extraction, concatenation, upscaling, story-board overlays and audio mixing."""
 import math
 import subprocess
+import time
 from pathlib import Path
 
 import config
 from services.ffbin import ffmpeg, ffprobe
+
+
+# A process the kernel killed reports a negative return code on POSIX (-9 for SIGKILL) and, under
+# `-v error`, writes nothing at all - so the failure used to surface as "ffmpeg failed: <command>"
+# followed by an empty line, which says neither what went wrong nor that trying again would work.
+# On a container with no memory headroom the overlay pass is the peak (one input per layer, each
+# full-frame RGBA) and that is exactly what gets killed. Hence both halves of this: name it, and
+# give it one more go - never for an error ffmpeg itself reported, which a retry only repeats.
+KILL_RETRIES = 1
+KILL_RETRY_SLEEP = 5.0
+
+
+def _killed(returncode: int) -> int:
+    """The signal that killed the process, or 0 when ffmpeg exited on its own. 137 is how a
+    SIGKILL arrives through Docker's exit code (128 + 9)."""
+    if returncode < 0:
+        return -returncode
+    return returncode - 128 if returncode in (137, 143) else 0
 
 
 def _run(cmd, cwd=None):
@@ -12,10 +31,19 @@ def _run(cmd, cwd=None):
     '\\' escapes and ':' separates options, so a Windows path like C:\\jobs\\captions.ass cannot be
     written literally. Running from the job folder lets the filter name the bare file instead,
     which needs no escaping and behaves the same on Windows and Linux."""
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=(str(cwd) if cwd else None))
-    if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {' '.join(map(str, cmd))}\n{r.stderr[-2000:]}")
-    return r
+    where = str(cwd) if cwd else None
+    for attempt in range(KILL_RETRIES + 1):
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=where)
+        if r.returncode == 0:
+            return r
+        sig = _killed(r.returncode)
+        if sig and attempt < KILL_RETRIES:
+            time.sleep(KILL_RETRY_SLEEP)      # whatever took the memory may have let go of it
+            continue
+        why = (f"killed by signal {sig} - the machine or container most likely ran out of memory"
+               if sig else f"exit code {r.returncode}")
+        raise RuntimeError(f"ffmpeg {why}: {' '.join(map(str, cmd))}\n{r.stderr[-2000:]}")
+    raise RuntimeError("unreachable")
 
 
 def _probe(path: Path, *entries: str) -> str:
@@ -503,7 +531,11 @@ def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner:
 
 
 SCROLL_PANEL = 0.70       # picture-in-picture panel: this much of each frame dimension, centred
-SCROLL_SPEED = 55.0       # panel-scale pixels per second; above about 60 the text smears
+# How far the panel travels is this speed times the window, never the page height: the window is
+# only ever the gap the story board cards leave (6-12 s), so covering an 8000 px page would take
+# two minutes. config.PAGE_SCROLL_SPEED (default 110 px/s) is therefore what decides whether the
+# panel reads as a scroll or as a still picture - at the 55 it started at, an 11 s window moved it
+# a third of a panel height. It is read at call time so Settings can tune it per installation.
 SCROLL_MIN_TOTAL = 20.0   # shorter videos have no middle worth giving up
 SCROLL_MIN_WINDOW = 6.0
 
@@ -564,7 +596,8 @@ def scroll_reserve(total: float, soft: list = None, hard: list = None,
     band would drop two cards in three (at 40s the band is 22.4s); even 8s costs 2.3s of card time
     and more than halves one fact card, against 0.3s at 6s, and buys only 110px more travel. The
     band is 0.56*total, so at the SCROLL_MIN_TOTAL floor it is 11.2s wide and this window always
-    fits - which is what makes a panel on a >=20s video a guarantee rather than a hope."""
+    fits - which is what makes a panel on a >=20s video a guarantee rather than a hope. (The
+    travel those 2s would buy is config.PAGE_SCROLL_SPEED * 2 - 220px at the default.)"""
     total = float(total or 0.0)
     if total < SCROLL_MIN_TOTAL:
         return None
@@ -616,7 +649,7 @@ def scroll_layer(video: Path, page_png: Path, start: float, end: float, content_
     sh = _even(oh * pw / ow)                       # the page scaled to the panel width
     top = max(0, min(int(content_y * sh / oh), max(0, sh - ph)))
     dur = max(0.1, float(end) - float(start))
-    travel = int(min(max(0, sh - ph - top), SCROLL_SPEED * dur))
+    travel = int(min(max(0, sh - ph - top), float(config.PAGE_SCROLL_SPEED) * dur))
     # crop's x/y are per-frame expressions (ffmpeg -h filter=crop marks them T), so the panel
     # moves without any extra option - this build has no `eval` option on crop at all.
     # `t` on a looped image input is the output timeline, so the expression is written relative

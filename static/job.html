@@ -304,6 +304,11 @@
       <h2>Visual style</h2>
       <pre class="box" id="styleText"></pre>
     </section>
+    <section class="card" id="avatarSec" hidden>
+      <h2>Presenter</h2>
+      <div id="avatarText"></div>
+      <div class="hint" id="avatarWhy" style="margin-top:6px"></div>
+    </section>
   </div>
 
   <section class="card" id="scenesSec" hidden>
@@ -453,6 +458,7 @@ async function loadDetails(j) {
         ? "What is spoken" : "Narration script";
     }
     if (d.plan.style) { $("#styleSec").hidden = false; $("#styleText").textContent = d.plan.style; }
+    renderAvatar(d.plan.avatar);
     if (d.plan.music) {
       const up = d.plan.music.uploaded || "";
       $("#musicCaption").textContent = up ? `Your uploaded track: ${up}` : (d.plan.music.caption || "");
@@ -676,7 +682,7 @@ function update(j) {
   sl.textContent = j.error || j.detail || "";
   sl.classList.toggle("error", !!j.error);
   renderStepper(j);
-  $("#cancelBtn").hidden = ["done", "failed", "awaiting_approval", "drafting"].includes(j.status);
+  $("#cancelBtn").hidden = ["done", "failed", "awaiting_approval"].includes(j.status);
   $("#resumeBtn").hidden = j.status !== "failed";
   $("#approvalSec").hidden = j.status !== "awaiting_approval";
   if (j.status === "drafting") approvalLoaded = false;
@@ -811,6 +817,26 @@ async function loadUpscaleOptions() {
 // video made from a repository - the setup guide that always ships with one.
 let resOffered = false;
 let jobSource = "";
+// What the presenter actually got, next to what was asked for. The budgets can cut "Whole
+// video" down to the two bookends, and until now the only record of that was one line in a log
+// of sixty - on a video that had already cost its GPU time.
+function renderAvatar(av) {
+  const sec = $("#avatarSec");
+  if (!av || !(av.segments || []).length) { sec.hidden = true; return; }
+  sec.hidden = false;
+  const asked = av.coverage_label || av.coverage || "";
+  const got = av.delivered || `${av.segments.length} segments`;
+  $("#avatarText").textContent =
+    `${asked} requested - ${got}, ${Number(av.seconds || 0).toFixed(1)}s on ${av.engine || ""}.`;
+  const short = Number(av.asked_seconds || 0) - Number(av.seconds || 0) > 0.25;
+  $("#avatarWhy").textContent = short
+    ? `The budgets paid for ${Number(av.seconds || 0).toFixed(1)}s of the `
+      + `${Number(av.asked_seconds).toFixed(1)}s this coverage asked for. Raise "Avatar: footage `
+      + `budget" and "Avatar: render budget" in Settings, or pick a faster engine, for the next `
+      + `video - reassembling this one reuses the segments it has already rendered.`
+    : "";
+}
+
 function renderResource(res, j) {
   const show = !!(res && res.offered);
   resOffered = show;
@@ -895,12 +921,16 @@ $("#resumeBtn").onclick = async () => {
 };
 
 $("#cancelBtn").onclick = async () => {
-  const planned = lastJob && lastJob.status === "planned";
+  const status = (lastJob || {}).status;
+  const planned = status === "planned";
+  const drafting = status === "drafting";
   if (!confirm(planned ? "Discard this planned video? Nothing has been generated yet."
-                       : "Cancel this running job?")) return;
+             : drafting ? "Cancel this job? The script being written will be discarded."
+             : "Cancel this running job?")) return;
   try {
     await api(`/jobs/${jobId}/cancel`, { method: "POST" });
-    toast(planned ? "Planned video discarded" : "Cancelling job");
+    // drafting has no worker to notice the request: it is already finished by the time this returns
+    toast(planned ? "Planned video discarded" : drafting ? "Job cancelled" : "Cancelling job");
     refresh();
   } catch (e) { toast(e.message, true); }
 };
@@ -1126,16 +1156,17 @@ function suAvatarFill(j, o) {
     `<option value="">Default — ${esc(o.default_avatar_model || "")}</option>` +
     (o.avatar_models || []).map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
   $("#suAvModel").value = j.avatar_model || "";
+  // the same sentence the New Video dialog shows, including the case the budgets cannot pay
+  // for - this card used to quote a cost and never mention the fallback at all
   const cost = () => {
-    const cov = $("#suAvCoverage").value;
-    const per = (o.avatar_estimates || {})[$("#suAvModel").value || o.default_avatar_model];
-    $("#suAvHint").textContent = cov === "none" ? "No presenter on this video."
-      : per ? `About ${(per.seconds[cov] || 0).toFixed(0)}s of presenter, roughly `
-              + `${(per.render_minutes[cov] || 0) < 1 ? "under a minute" : (per.render_minutes[cov]).toFixed(0) + " min"} of GPU time.`
-      : "";
+    $("#suAvHint").textContent = avatarHint(
+      $("#suAvCoverage").value, $("#suAvModel").value || o.default_avatar_model,
+      o.avatar_estimates, (o.video_length_seconds || {})[$("#suVlen").value] || 0,
+      o.avatar_budgets);
   };
   $("#suAvCoverage").onchange = cost;
   $("#suAvModel").onchange = cost;
+  $("#suVlen").onchange = cost;
   cost();
 }
 

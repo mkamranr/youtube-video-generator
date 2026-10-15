@@ -8,7 +8,8 @@ import json
 import re
 import sys
 
-from openai import OpenAI
+import httpx
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
 import config
 from services import cast, lyrics
@@ -234,7 +235,15 @@ Never mention real people's names or brands."""
 
 
 def _client():
-    return OpenAI(base_url=config.VLLM_URL, api_key="none")
+    """The vLLM client, with the timeouts spelled out. The SDK default is a 600-second read
+    with two silent retries, so a server that accepts a request and then never decodes a token
+    - a wedged engine answers /v1/models instantly all the while - held a job at "writing script
+    with the LLM" for up to an hour per call with nothing written to the log. Retries are off for
+    the same reason: re-sending a request that timed out only pays the wait again, and a failed
+    job can be resumed from the step it stopped at. The connect timeout stays short so an
+    unreachable box fails in seconds."""
+    return OpenAI(base_url=config.VLLM_URL, api_key="none", max_retries=0,
+                  timeout=httpx.Timeout(float(config.LLM_TIMEOUT), connect=10.0))
 
 
 def _parse_json(text: str) -> dict:
@@ -251,9 +260,18 @@ def _chat(messages, max_tokens=8000) -> dict:
     kwargs = dict(model=config.VLLM_MODEL, messages=messages, temperature=0.7, max_tokens=max_tokens,
                   extra_body={"chat_template_kwargs": {"enable_thinking": False}})
     try:
-        r = c.chat.completions.create(response_format={"type": "json_object"}, **kwargs)
-    except Exception:
-        r = c.chat.completions.create(**kwargs)
+        try:
+            r = c.chat.completions.create(response_format={"type": "json_object"}, **kwargs)
+        except APIStatusError:   # answered and refused: this server may not support JSON mode
+            r = c.chat.completions.create(**kwargs)
+    except APITimeoutError as e:   # subclass of APIConnectionError, so it is caught first
+        raise RuntimeError(
+            f"the LLM at {config.VLLM_URL} accepted the request but did not answer within "
+            f"{config.LLM_TIMEOUT}s - check that vLLM is still serving {config.VLLM_MODEL} "
+            f"(restart it if it is wedged), then resume this job") from e
+    except APIConnectionError as e:
+        raise RuntimeError(f"could not reach the LLM at {config.VLLM_URL} ({e}) - start vLLM "
+                           f"or fix the URL in Settings, then resume this job") from e
     msg = r.choices[0].message
     content = msg.content or getattr(msg, "reasoning", None) or ""
     if not content.strip():

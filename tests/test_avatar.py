@@ -5,6 +5,7 @@ Run with  python -m unittest discover -s tests -t .  from the repo root. ffmpeg 
 the compositing tests assert on the command that would have been run - which is where the
 single-encode property and the alphamerge wiring actually live.
 """
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,71 @@ class ResolveAvatar(unittest.TestCase):
     def test_an_unknown_coverage_is_an_error(self):
         with self.assertRaises(ValueError):
             pipeline.JobManager._resolve_avatar("", None, "sometimes", self._channel())
+
+
+class CoverageSurvivesSubmit(unittest.TestCase):
+    """The reported bug: "Whole video" was picked in the New Video dialog and the job came back
+    with the presenter at the start and the end only, its log naming `both`. Everything between
+    the request and the stored job is pinned here, for a repo job in particular - that was the
+    source the report came from."""
+
+    def setUp(self):
+        prev = config.OUTPUT_DIR
+        config.OUTPUT_DIR = TMP / "submit-output"
+        self.addCleanup(setattr, config, "OUTPUT_DIR", prev)
+        p = mock.patch.object(pipeline.JobManager, "_start_draft")
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(pipeline.comfy, "ComfyClient")
+        p.start()
+        self.addCleanup(p.stop)
+        self.mgr = pipeline.JobManager()
+        rec = channels._validate({"name": "Daily Tech Talks", "video_type": "tech",
+                                  "audience": "general", "avatars": [{"name": "Host"}],
+                                  "defaults": {"avatar_coverage": "both"}})
+        rec["id"] = "c1"
+        self.channel = rec
+
+    def _submit(self, kind, text, **kw):
+        return self.mgr.submit_prompt(text, kind, channel=self.channel, owner="u1", **kw)
+
+    def test_full_survives_a_repo_submit(self):
+        job = self._submit("repo", "https://huggingface.co/tiiuae/Falcon-OCR",
+                           avatar_coverage="full")
+        self.assertEqual(job.avatar_coverage, "full")
+
+    def test_full_survives_a_topic_submit(self):
+        job = self._submit("topic", "A short film about trains", avatar_coverage="full")
+        self.assertEqual(job.avatar_coverage, "full")
+
+    def test_the_choice_is_written_to_disk_so_a_resume_keeps_it(self):
+        job = self._submit("repo", "https://github.com/tiiuae/falcon-ocr", avatar_coverage="full")
+        saved = json.loads((job.dir / "job.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["avatar_coverage"], "full")
+        self.assertEqual(pipeline.Job.load(job.dir / "job.json").avatar_coverage, "full")
+
+    def test_full_says_at_submit_what_the_budget_will_pay_for(self):
+        job = self._submit("topic", "A short film about trains", avatar_coverage="full")
+        line = next(l for l in job.log if "presenter:" in l)
+        self.assertIn("Whole video", line)
+        self.assertIn("the budgets pay for", line)
+        self.assertIn("start and the end", line)      # the fallback, before anything renders
+        self.assertIn("LTX 2.5", line)                # ...and the engine that would do better
+
+    def test_a_coverage_inside_the_budget_just_states_its_cost(self):
+        job = self._submit("topic", "A short film about trains", avatar_coverage="intro")
+        line = next(l for l in job.log if "presenter:" in l)
+        self.assertIn("Intro only", line)
+        self.assertIn("of GPU", line)
+        self.assertNotIn("start and the end", line)
+
+    def test_no_presenter_logs_nothing(self):
+        job = self._submit("topic", "A short film about trains", avatar_coverage="none")
+        self.assertEqual([l for l in job.log if "presenter:" in l], [])
+
+    def test_an_empty_request_still_takes_the_channel_default(self):
+        job = self._submit("topic", "A short film about trains")
+        self.assertEqual(job.avatar_coverage, "both")
 
 
 class SegmentWindows(unittest.TestCase):
@@ -217,6 +283,30 @@ class SegmentWindows(unittest.TestCase):
         wins = avatar.segment_windows("full", 600.0, "Wan 2.2 S2V")
         self.assertEqual(len(wins), 2)
         self.assertEqual(wins, avatar.segment_windows("both", 600.0, "Wan 2.2 S2V"))
+
+
+class Describe(unittest.TestCase):
+    """The phrase a finished job shows next to the coverage that was asked for."""
+
+    def test_the_two_bookends(self):
+        self.assertEqual(avatar.describe([(0.0, 4.8), (67.6, 72.3)], 72.3),
+                         "the start and the end")
+
+    def test_a_chain_that_covers_everything(self):
+        wins = [(0.0, 4.8), (4.8, 9.6), (9.6, 14.4)]
+        self.assertEqual(avatar.describe(wins, 14.4), "the whole video")
+
+    def test_one_window_at_the_top(self):
+        self.assertEqual(avatar.describe([(0.0, 12.0)], 90.0), "the start")
+
+    def test_one_window_at_the_end(self):
+        self.assertEqual(avatar.describe([(78.0, 90.0)], 90.0), "the end")
+
+    def test_nothing_rendered(self):
+        self.assertEqual(avatar.describe([], 90.0), "nothing")
+
+    def test_a_chain_that_stops_short_is_not_called_whole(self):
+        self.assertNotEqual(avatar.describe([(0.0, 4.8), (4.8, 9.6)], 72.3), "the whole video")
 
 
 class Placement(unittest.TestCase):
@@ -445,6 +535,15 @@ class AvatarStage(unittest.TestCase):
         self.assertEqual(plan["avatar"]["engine"], "LTX 2.5")
         self.assertEqual(len(plan["avatar"]["segments"]), 1)
         self.assertEqual(self.render.call_count, 1)
+
+    def test_the_plan_records_what_was_asked_for_next_to_what_was_delivered(self):
+        plan = {}
+        pipeline._avatar_assets(self.job, plan)
+        av = plan["avatar"]
+        self.assertEqual(av["coverage"], "intro")
+        self.assertEqual(av["coverage_label"], "Intro only")
+        self.assertEqual(av["delivered"], "the start")
+        self.assertGreater(av["asked_seconds"], 0)
 
     def test_coverage_none_does_nothing(self):
         self.job.avatar_coverage = "none"
