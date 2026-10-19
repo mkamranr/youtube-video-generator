@@ -454,6 +454,47 @@ class CompositeVideoLayer(unittest.TestCase):
         self.assertNotIn("alphamerge", fc)
         self.assertIn("-loop", cmd)
 
+    def test_the_default_is_still_one_symmetric_fade(self):
+        layers = [{"video": self.clip, "matte": self.matte, "w": 80, "h": 80,
+                   "start": 2.0, "end": 8.0, "fade": 0.4}]
+        _cmd, fc = self._graph(layers)
+        self.assertIn("fade=t=in:st=2.000:d=0.400:alpha=1", fc)
+        self.assertIn("fade=t=out:st=7.600:d=0.400:alpha=1", fc)
+
+    def test_an_interior_seam_gets_no_ramp_at_all(self):
+        """The whole point: a tile with a neighbour on both sides never dips."""
+        layers = [{"video": self.clip, "matte": self.matte, "w": 80, "h": 80,
+                   "start": 4.75, "end": 9.5, "fade": 0.4, "fade_in": 0.0, "fade_out": 0.0}]
+        _cmd, fc = self._graph(layers)
+        self.assertNotIn("fade=t=", fc)
+        # and the filter chain is still well formed without them
+        self.assertNotIn(",,", fc)
+        self.assertNotIn(",[c1]", fc)
+        self.assertIn("alphamerge[c1]", fc)
+
+    def test_the_two_edges_are_independent(self):
+        layers = [{"video": self.clip, "matte": self.matte, "w": 80, "h": 80,
+                   "start": 0.0, "end": 4.75, "fade": 0.4, "fade_in": 0.4, "fade_out": 0.0}]
+        _cmd, fc = self._graph(layers)
+        self.assertIn("fade=t=in:st=0.000:d=0.400", fc)
+        self.assertNotIn("fade=t=out", fc)
+
+    def test_a_png_layer_with_no_ramp_is_also_well_formed(self):
+        png = self.dir / "card.png"
+        png.write_bytes(b"x")
+        _cmd, fc = self._graph([{"png": png, "start": 1.0, "end": 4.0,
+                                 "fade_in": 0.0, "fade_out": 0.0}])
+        self.assertIn("format=rgba[c1]", fc)
+
+    def test_the_shadow_follows_the_presenter_edge_for_edge(self):
+        """It is the same matte blurred; a shadow that fades on its own would give the dip back."""
+        layers = [{"video": self.clip, "matte": self.matte, "w": 200, "h": 200,
+                   "start": 4.75, "end": 9.5, "shadow": 12.0,
+                   "fade_in": 0.0, "fade_out": 0.0}]
+        _cmd, fc = self._graph(layers)
+        self.assertIn("[sh1]", fc)
+        self.assertNotIn("fade=t=", fc)
+
     def test_layers_build_a_single_overlay_chain(self):
         png = self.dir / "card.png"
         png.write_bytes(b"x")
@@ -488,6 +529,53 @@ class AvatarLayers(unittest.TestCase):
         out = video.avatar_layers((1920, 1080), self.seg, self.dir, style="cutout")
         self.assertEqual(len(out), 1)
         self.assertGreater(out[0]["shadow"], 0)
+
+    def _chain(self, n=3, cap=4.75, bboxes=None):
+        return [{"start": round(i * cap, 3), "end": round((i + 1) * cap, 3),
+                 "video": self.clip, "matte": None,
+                 "bbox": (bboxes[i] if bboxes else [0.2, 0.1, 0.8, 1.0])}
+                for i in range(n)]
+
+    def test_a_chain_fades_in_once_and_out_once(self):
+        out = video.avatar_layers((1080, 1920), self._chain(), self.dir, style="cutout")
+        self.assertEqual([(l["fade_in"], l["fade_out"]) for l in out],
+                         [(0.4, 0.0), (0.0, 0.0), (0.0, 0.4)])
+
+    def test_separate_appearances_keep_both_ramps(self):
+        segs = [{"start": 0.0, "end": 12.0, "video": self.clip, "matte": None},
+                {"start": 58.0, "end": 70.0, "video": self.clip, "matte": None}]
+        out = video.avatar_layers((1080, 1920), segs, self.dir, style="cutout")
+        self.assertEqual([(l["fade_in"], l["fade_out"]) for l in out], [(0.4, 0.4), (0.4, 0.4)])
+
+    def test_a_chained_bubble_does_not_blink_either(self):
+        out = video.avatar_layers((1080, 1920), self._chain(2), self.dir, style="bubble")
+        # two presenter layers then two ring layers, each pair sharing the seam
+        self.assertEqual([(l["fade_in"], l["fade_out"]) for l in out],
+                         [(0.4, 0.0), (0.0, 0.4)] * 2)
+
+    def test_a_chain_is_drawn_at_one_size(self):
+        """Per-tile bounds made the figure resize at every seam - the same places it blinked."""
+        segs = self._chain(3, bboxes=[[0.30, 0.20, 0.70, 1.0],
+                                      [0.25, 0.10, 0.75, 0.9],
+                                      [0.35, 0.15, 0.65, 1.0]])
+        out = video.avatar_layers((1080, 1920), segs, self.dir, style="cutout")
+        self.assertEqual(len({(l["x"], l["y"], l["w"], l["h"]) for l in out}), 1)
+
+    def test_the_shared_box_is_the_union_so_no_tile_is_cropped(self):
+        segs = self._chain(2, bboxes=[[0.30, 0.20, 0.70, 0.90], [0.10, 0.05, 0.60, 1.0]])
+        out = video.avatar_layers((1080, 1920), segs, self.dir, style="cutout")
+        alone = video.avatar_layers(
+            (1080, 1920), [dict(segs[0], start=0.0, end=4.75, bbox=[0.10, 0.05, 0.70, 1.0])],
+            self.dir, style="cutout")
+        self.assertEqual((out[0]["w"], out[0]["h"]), (alone[0]["w"], alone[0]["h"]))
+
+    def test_two_appearances_keep_their_own_boxes(self):
+        segs = [{"start": 0.0, "end": 12.0, "video": self.clip, "matte": None,
+                 "bbox": [0.30, 0.20, 0.70, 0.90]},
+                {"start": 58.0, "end": 70.0, "video": self.clip, "matte": None,
+                 "bbox": [0.10, 0.05, 0.60, 1.00]}]
+        out = video.avatar_layers((1080, 1920), segs, self.dir, style="cutout")
+        self.assertNotEqual((out[0]["w"], out[0]["h"]), (out[1]["w"], out[1]["h"]))
 
     def test_no_segments_means_no_layers(self):
         self.assertEqual(video.avatar_layers((1920, 1080), [], self.dir), [])
@@ -603,6 +691,259 @@ class AvatarStage(unittest.TestCase):
         pipeline._avatar_assets(self.job, plan)
         self.render.assert_not_called()
         self.assertEqual(plan["avatar"]["segments"][0]["file"], "avatar_01.mp4")
+
+
+class ChainedChunks(unittest.TestCase):
+    """A long appearance on a chunked engine is a chain of passes, each one conditioned on the
+    tail of the one before it - the presenter carries his pose across the seam instead of
+    snapping back to the portrait."""
+
+    WAN = "Wan 2.2 S2V"
+
+    def test_a_tile_is_as_long_as_the_clip_the_engine_delivers(self):
+        """77 frames are rendered and 76 survive drop_first, so a 77-frame window would leave
+        overlay repeating the last frame at every seam."""
+        spec = config.avatar_model(self.WAN)
+        self.assertAlmostEqual(spec["max_segment"], (spec["chunk"] - 1) / spec["fps"])
+
+    def test_the_budget_buys_whole_tiles(self):
+        spec = config.avatar_model(self.WAN)
+        tiles = config.avatar_budget_seconds(self.WAN) / spec["max_segment"]
+        self.assertAlmostEqual(tiles, round(tiles), places=6)
+
+    def test_a_full_coverage_video_inside_the_budget_tiles_end_to_end(self):
+        total = config.avatar_budget_seconds(self.WAN)
+        wins = avatar.segment_windows("full", total, self.WAN, [])
+        self.assertGreater(len(wins), 1)
+        for a, b in zip(wins, wins[1:]):
+            self.assertAlmostEqual(a[1], b[0], places=3)
+
+    def test_the_chained_graph_is_a_separate_file(self):
+        plain = config.avatar_workflow(self.WAN)
+        chained = config.avatar_workflow(self.WAN, chain=True)
+        self.assertNotEqual(plain, chained)
+        self.assertTrue(chained.exists())
+
+    def test_an_engine_that_cannot_chain_falls_back_to_its_own_graph(self):
+        self.assertEqual(config.avatar_workflow("LTX 2.5", chain=True),
+                         config.avatar_workflow("LTX 2.5"))
+
+    def test_the_motion_clip_is_wired_into_ref_motion(self):
+        from services import comfy
+        tpl = comfy.ComfyClient.load_workflow(config.avatar_workflow(self.WAN, chain=True))
+        wf = comfy.ComfyClient.build_avatar(tpl, self.WAN, image="p.png", audio="a.wav",
+                                            seconds=4.75, filename_prefix="x",
+                                            motion="tail.mp4")
+        node, field = config.avatar_model(self.WAN)["motion"]
+        self.assertEqual(wf[node]["inputs"][field], "tail.mp4")
+        # ref_motion takes frames, so it is fed from the decoder - which is fed by the loader
+        frames = wf["11"]["inputs"]["ref_motion"][0]
+        self.assertEqual(wf[frames]["inputs"]["video"][0], node)
+
+    def test_the_plain_graph_has_no_motion_at_all(self):
+        """The first chunk of any appearance must render exactly as it did before."""
+        from services import comfy
+        tpl = comfy.ComfyClient.load_workflow(config.avatar_workflow(self.WAN))
+        wf = comfy.ComfyClient.build_avatar(tpl, self.WAN, image="p.png", audio="a.wav",
+                                            seconds=4.75, filename_prefix="x")
+        self.assertNotIn("ref_motion", wf["11"]["inputs"])
+        self.assertEqual(wf["11"]["inputs"]["ref_image"], ["7", 0])
+
+    def test_the_two_graphs_differ_only_by_the_motion_input(self):
+        from services import comfy
+        plain = comfy.ComfyClient.load_workflow(config.avatar_workflow(self.WAN))
+        chained = comfy.ComfyClient.load_workflow(config.avatar_workflow(self.WAN, chain=True))
+        self.assertEqual(set(chained) - set(plain), {"16", "17"})
+        for nid in plain:
+            if nid != "11":
+                self.assertEqual(plain[nid], chained[nid], nid)
+
+    def test_the_tail_is_the_end_of_the_clip_and_no_longer_than_the_model_takes(self):
+        spec = config.avatar_model(self.WAN)
+        d = Path(tempfile.mkdtemp(prefix="tail-", dir=TMP))
+        dest, calls = d / "t.mp4", []
+
+        def _ffmpeg(cmd, **kw):
+            calls.append(cmd)
+            dest.write_bytes(b"x")
+
+        with mock.patch.object(avatar.subprocess, "run", side_effect=_ffmpeg):
+            avatar.motion_tail(d / "c1.mp4", dest, self.WAN)
+        # resolving the ffmpeg binary runs its own probe, so pick ours out of the calls
+        cmd = next(c for c in calls if isinstance(c, (list, tuple)) and "-sseof" in c)
+        self.assertIn("-sseof", cmd)
+        self.assertAlmostEqual(-float(cmd[cmd.index("-sseof") + 1]),
+                               spec["motion_seconds"], places=3)
+        self.assertLessEqual(spec["motion_seconds"], 73 / spec["fps"] + 1e-6)
+
+    def test_an_engine_that_cannot_chain_refuses_to_make_a_tail(self):
+        with self.assertRaises(RuntimeError):
+            avatar.motion_tail(Path("c1.mp4"), Path("t.mp4"), "LTX 2.5")
+
+    def test_render_segment_picks_the_graph_from_the_motion_clip(self):
+        from services import comfy
+        seen, real = {}, comfy.ComfyClient.load_workflow
+
+        def _load(path):
+            seen["path"] = Path(path).name
+            return real(path)
+
+        client = mock.MagicMock()
+        with mock.patch.object(comfy.ComfyClient, "load_workflow", side_effect=_load):
+            avatar.render_segment(client, self.WAN, "p.png", "a.wav", 4.75,
+                                  Path("d.mp4"), prefix="x")
+            self.assertEqual(seen["path"], config.avatar_model(self.WAN)["file"])
+            avatar.render_segment(client, self.WAN, "p.png", "a.wav", 4.75,
+                                  Path("d.mp4"), prefix="x", motion_name="t.mp4")
+            self.assertEqual(seen["path"], config.avatar_model(self.WAN)["chain_file"])
+
+
+class TheResultIsNeverTheGraphsOwnInput(unittest.TestCase):
+    """LoadVideo reports the clip it opened in the prompt's outputs, tagged `type: "input"`, and
+    it runs before SaveVideo. Taking the first file in the history would therefore hand the
+    chained presenter back the tail it was given instead of the chunk it rendered - verified
+    against the box: outputs carried `{"16": {"images": [{..., "type": "input"}]}}`."""
+
+    def setUp(self):
+        from services import comfy
+        self.comfy = comfy
+        self.client = comfy.ComfyClient()
+        self.dir = Path(tempfile.mkdtemp(prefix="dl-", dir=TMP))
+        self.history = {"outputs": {
+            "16": {"images": [{"filename": "motion.mp4", "subfolder": "", "type": "input"}],
+                   "animated": [True]},
+            "15": {"videos": [{"filename": "render.mp4", "subfolder": "video",
+                               "type": "output"}]},
+        }}
+
+    def _get(self, **kw):
+        got = {}
+
+        class R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, _n):
+                return [b"x"]
+
+        def fake(url, params=None, **kwargs):
+            got.update(params or {})
+            return R()
+
+        with mock.patch.object(self.comfy.requests, "get", side_effect=fake):
+            self.client.download_output(self.history, self.dir / "out.mp4", **kw)
+        return got
+
+    def test_the_scan_skips_what_the_graph_only_read(self):
+        self.assertEqual(self._get()["filename"], "render.mp4")
+
+    def test_naming_the_save_node_is_honoured(self):
+        self.assertEqual(self._get(node_id="15")["filename"], "render.mp4")
+
+    def test_a_prompt_that_saved_nothing_still_raises(self):
+        self.history["outputs"].pop("15")
+        with self.assertRaises(self.comfy.ComfyError):
+            self._get()
+
+    def test_cleanup_leaves_the_input_alone(self):
+        scrubbed = []
+        with mock.patch.object(self.comfy.ComfyClient, "scrub_file",
+                               side_effect=lambda t, s, f: scrubbed.append((t, f)) or True), \
+                mock.patch.object(self.comfy.ComfyClient, "forget_history"):
+            self.client.cleanup_outputs(self.history, "pid")
+        self.assertEqual(scrubbed, [("output", "render.mp4")])
+
+    def test_the_avatar_render_names_its_save_node(self):
+        client = mock.MagicMock()
+        avatar.render_segment(client, "Wan 2.2 S2V", "p.png", "a.wav", 4.75,
+                              self.dir / "d.mp4", prefix="x")
+        self.assertEqual(client.run.call_args.kwargs["node_id"],
+                         config.avatar_model("Wan 2.2 S2V")["save"])
+
+
+class ChainedChunksInThePipeline(unittest.TestCase):
+    """_avatar_assets carries the tail from one tile to the next, and only within one
+    appearance: a bookend pair is two separate appearances and must not be chained."""
+
+    def setUp(self):
+        self.jdir = Path(tempfile.mkdtemp(prefix="chainjob-", dir=TMP))
+        (self.jdir / "narration.wav").write_bytes(b"x" * 2000)
+        config.CHANNELS_DIR.mkdir(parents=True, exist_ok=True)
+        self.job = mock.MagicMock()
+        self.job.dir = self.jdir
+        self.job.id = "job9"
+        self.job.channel_id = "c9"
+        self.job.avatar_id = "a9"
+        self.job.avatar_model = "Wan 2.2 S2V"
+        self.job.avatar_coverage = "full"
+        self.job.cancel_requested = False
+        self.logs = []
+        self.job.add_log.side_effect = self.logs.append
+        channels.avatar_path("c9", "a9").write_bytes(b"png")
+        # short enough that "full" tiles instead of degrading to bookends
+        self.total = config.avatar_budget_seconds("Wan 2.2 S2V")
+        mock.patch.object(pipeline.tts, "audio_duration", return_value=self.total).start()
+        mock.patch.object(pipeline, "_gpu_gate").start()
+        mock.patch.object(pipeline, "_save_plan").start()
+        client = mock.patch.object(pipeline.comfy, "ComfyClient").start()
+        client.return_value.upload_file.return_value = "uploaded.mp4"
+        client.return_value.upload_image.return_value = "portrait.png"
+        self.scrub = client.return_value.scrub_file
+        mock.patch.object(pipeline.avatar, "slice_audio", return_value=4.8125).start()
+        mock.patch.object(pipeline.avatar, "matte_segment").start()
+        self.tail = mock.patch.object(pipeline.avatar, "motion_tail").start()
+        self.render = mock.patch.object(pipeline.avatar, "render_segment").start()
+
+        def _render(_c, _e, _i, _a, _s, dest, **kw):
+            Path(dest).write_bytes(b"clip")
+            return dest
+        self.render.side_effect = _render
+        mock.patch.object(
+            pipeline.avatar, "trim_lead_frame",
+            side_effect=lambda src, dst, eng: (Path(dst).write_bytes(b"c"), dst)[1]).start()
+        self.addCleanup(mock.patch.stopall)
+
+    def _motions(self):
+        return [c.kwargs.get("motion_name", "") for c in self.render.call_args_list]
+
+    def test_every_tile_but_the_first_continues_the_one_before_it(self):
+        pipeline._avatar_assets(self.job, {})
+        motions = self._motions()
+        self.assertGreater(len(motions), 1)
+        self.assertEqual(motions[0], "")
+        self.assertTrue(all(m == "uploaded.mp4" for m in motions[1:]), motions)
+
+    def test_the_tail_handed_over_is_the_previous_tile(self):
+        pipeline._avatar_assets(self.job, {})
+        srcs = [c.args[0].name for c in self.tail.call_args_list]
+        self.assertEqual(srcs, [f"avatar_{i:02d}.mp4" for i in range(1, len(srcs) + 1)])
+
+    def test_two_separate_appearances_are_not_chained(self):
+        self.job.avatar_coverage = "both"
+        with mock.patch.object(pipeline.tts, "audio_duration", return_value=300.0):
+            pipeline._avatar_assets(self.job, {})
+        self.assertEqual(self._motions(), ["", ""])
+        self.tail.assert_not_called()
+
+    def test_a_tail_that_cannot_be_cut_costs_only_the_continuity(self):
+        self.tail.side_effect = RuntimeError("no keyframe")
+        pipeline._avatar_assets(self.job, {})
+        self.assertTrue(all(m == "" for m in self._motions()))
+        self.assertTrue(any("could not continue" in m for m in self.logs))
+        self.assertGreater(self.render.call_count, 1)      # the renders still happened
+
+    def test_the_uploaded_tail_is_scrubbed_from_the_box(self):
+        pipeline._avatar_assets(self.job, {})
+        scrubbed = [c.args[2] for c in self.scrub.call_args_list]
+        self.assertIn("uploaded.mp4", scrubbed)
+
+    def test_a_resumed_chain_still_continues_from_what_is_on_disk(self):
+        (self.jdir / "avatar_01.mp4").write_bytes(b"clip")
+        pipeline._avatar_assets(self.job, {})
+        self.assertEqual(self._motions()[0], "uploaded.mp4")   # tile 2 chained off the reused one
+        self.assertEqual(self.tail.call_args_list[0].args[0].name, "avatar_01.mp4")
 
 
 class ReassembleRouting(unittest.TestCase):

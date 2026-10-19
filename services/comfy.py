@@ -133,7 +133,7 @@ class ComfyClient:
     @staticmethod
     def build_avatar(template: dict, engine: str, image: str, audio: str, seconds: float,
                      filename_prefix: str, prompt: str = "", seed: int | None = None,
-                     frames: int | None = None) -> dict:
+                     frames: int | None = None, motion: str = "") -> dict:
         """Patch one presenter render into an avatar workflow.
 
         Like build(), every node id comes from the registry (config.AVATAR_MODELS), so this
@@ -152,6 +152,9 @@ class ComfyClient:
 
         _set("image", image)
         _set("audio", audio)
+        if motion:
+            # the tail of the previous chunk; only the chained template has somewhere to put it
+            _set("motion", motion)
         if prompt:
             _set("prompt", prompt)
         seed = random.randint(0, 2**31) if seed is None else int(seed)
@@ -262,11 +265,17 @@ class ComfyClient:
         return h
 
     def download_output(self, history: dict, dest: Path, node_id: str | None = None) -> Path:
-        """Download the saved file. If node_id is None (or has no files), scan all output nodes."""
+        """Download the saved file. If node_id is None (or has no files), scan all output nodes.
+
+        A node that merely READS a file still reports it here - LoadVideo lists the clip it
+        opened, tagged `type: "input"` - and it runs before the node that saves anything, so a
+        scan that took the first entry it found would hand back the graph's own input. Those are
+        skipped: this prompt's result is always something it wrote."""
         outputs = history.get("outputs", {})
 
         def files_of(out):
-            return out.get("videos") or out.get("images") or out.get("gifs") or out.get("audio") or []
+            found = out.get("videos") or out.get("images") or out.get("gifs") or out.get("audio") or []
+            return [f for f in found if f.get("type", "output") != "input"]
 
         files = files_of(outputs.get(node_id, {})) if node_id else []
         if not files:
@@ -289,12 +298,12 @@ class ComfyClient:
         return dest
 
     def run(self, workflow: dict, dest: Path, on_progress=None, should_stop=None,
-            cleanup: bool = False, on_cleanup_failed=None) -> Path:
+            cleanup: bool = False, on_cleanup_failed=None, node_id: str | None = None) -> Path:
         pid = self.queue(workflow)
         if on_progress:
             on_progress(f"queued in ComfyUI ({pid[:8]})")
         h = self.wait(pid, on_progress=on_progress, should_stop=should_stop)
-        result = self.download_output(h, dest)
+        result = self.download_output(h, dest, node_id)
         if cleanup and not self.cleanup_outputs(h, pid) and on_cleanup_failed:
             on_cleanup_failed()
         return result
@@ -325,6 +334,8 @@ class ComfyClient:
         for out in history.get("outputs", {}).values():
             for key in ("videos", "images", "gifs", "audio"):
                 for f in out.get(key) or []:
+                    if f.get("type", "output") == "input":
+                        continue      # something the graph read, not something it produced
                     ok = self.scrub_file(f.get("type", "output"), f.get("subfolder", ""),
                                          f["filename"]) and ok
         self.forget_history(prompt_id)

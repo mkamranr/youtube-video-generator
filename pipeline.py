@@ -1255,6 +1255,7 @@ def _avatar_assets(job: Job, plan: dict):
             ref = src
         img_name = client.upload_image(ref, name=f"videogen_avatar_{job.id}.png")
         segments = []
+        prev_end, prev_clip, chained = None, None, 0
         for i, (start, end) in enumerate(wins, 1):
             clip = d / f"avatar_{i:02d}.mp4"
             matte = d / f"avatar_{i:02d}_matte.mp4"
@@ -1264,17 +1265,35 @@ def _avatar_assets(job: Job, plan: dict):
                 _gpu_gate(job)
                 job.set("avatar", f"presenter segment {i}/{len(wins)} ({secs:.1f}s)")
                 audio_name = client.upload_file(wav, name=f"videogen_avatar_{job.id}_{i}.wav")
+                # A window that butts up against the one before it is one appearance rendered in
+                # chunks, so the chunk before it is what this one should continue. A bookend pair
+                # is two separate appearances and gets no motion. prev_clip comes off disk, so a
+                # resumed job chains exactly as a fresh one does.
+                motion_name, tail = "", d / f"avatar_{i:02d}_motion.mp4"
+                if (prev_clip is not None and prev_clip.exists() and prev_end is not None
+                        and start - prev_end < 0.05 and config.avatar_model(engine).get("motion")):
+                    try:
+                        avatar.motion_tail(prev_clip, tail, engine)
+                        motion_name = client.upload_file(
+                            tail, name=f"videogen_avatar_{job.id}_{i}_motion.mp4", mime="video/mp4")
+                        chained += 1
+                    except Exception as e:  # noqa: BLE001 - a seam is worse than a pose reset
+                        job.add_log(f"presenter avatar: segment {i} could not continue "
+                                    f"segment {i - 1} ({e}); rendering it from the portrait")
                 raw = d / f"avatar_{i:02d}_raw.mp4"
                 avatar.render_segment(
                     client, engine, img_name, audio_name, secs, raw,
                     prefix=f"video/videogen_{job.id}_avatar{i}",
                     on_progress=_progress(job, "avatar"), should_stop=lambda: job.cancel_requested,
-                    on_cleanup_failed=_cleanup_warn(job))
+                    on_cleanup_failed=_cleanup_warn(job), motion_name=motion_name)
                 avatar.trim_lead_frame(raw, clip, engine)
                 raw.unlink(missing_ok=True)
+                tail.unlink(missing_ok=True)
                 # the narration slice has served its purpose the moment the clip is down
                 if config.COMFY_CLEANUP:
                     client.scrub_file("input", "", audio_name)
+                    if motion_name:
+                        client.scrub_file("input", "", motion_name)
             if style == "cutout" and not matte.exists():
                 job.set("avatar", f"cutting out presenter segment {i}/{len(wins)}")
                 avatar.matte_segment(clip, matte, on_progress=_progress(job, "avatar"))
@@ -1284,6 +1303,7 @@ def _avatar_assets(job: Job, plan: dict):
             segments.append({"start": start, "end": end, "file": clip.name,
                              "matte": matte.name if style == "cutout" else "",
                              "bbox": list(bbox) if bbox else []})
+            prev_end, prev_clip = end, clip
         # the portrait is the reference image for EVERY segment, so it goes only once they are
         # all rendered - not inside the loop with the audio
         if config.COMFY_CLEANUP:
@@ -1299,7 +1319,8 @@ def _avatar_assets(job: Job, plan: dict):
         chain = len(segments) > 1 and all(b["start"] - a["end"] < 0.05
                                           for a, b in zip(segments, segments[1:]))
         job.add_log(f"presenter avatar: {len(segments)} segment(s)"
-                    f"{' end to end' if chain else ''}, {got:.1f}s on {engine}")
+                    f"{' end to end' if chain else ''}, {got:.1f}s on {engine}"
+                    f"{f'; {chained} continued the chunk before' if chained else ''}")
     except (JobCancelled, JobPaused, JobWaitingWindow):
         raise
     except Exception as e:  # noqa: BLE001 - a video with no presenter is still a video

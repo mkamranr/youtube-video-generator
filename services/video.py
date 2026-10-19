@@ -254,8 +254,10 @@ def subtitles_ok(ass_path) -> bool:
 def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subtitles=None) -> Path:
     """Composite timed RGBA image layers over the video in ONE encode.
 
-    layers: [{png, start, end, x, y, pre, fade}] - `pre` is extra filter steps applied to the image
-    stream before the alpha fades (the scrolling panel uses it for its scale+crop); x/y default
+    layers: [{png, start, end, x, y, pre, fade, fade_in, fade_out}] - `pre` is extra filter steps
+    applied to the image stream before the alpha fades (the scrolling panel uses it for its
+    scale+crop); `fade` is the symmetric ramp and `fade_in`/`fade_out` override it per edge and may
+    be 0, which is how two layers that butt up against each other avoid blinking; x/y default
     to 0, which is the full-frame story-board card case, and may each be an ffmpeg per-frame
     expression (a string) instead of a number - that is how a story board card eases into place
     without a second pass. The audio is copied as is.
@@ -287,17 +289,31 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
     parts, prev, nin = [], "[0:v]", 1
     for i, lyr in enumerate(layers, 1):
         start, end = float(lyr["start"]), min(float(lyr["end"]), total)
-        f = max(0.05, min(float(lyr.get("fade", fade)), (end - start) / 2))
+        span = end - start
+        # One ramp each side, so a layer that butts up against the next one can say "no ramp
+        # here". `fade` alone is symmetric and can never be zero; fade_in/fade_out override it
+        # per edge and CAN be zero, which is what a chained presenter needs - see _seam_fades.
+        f = max(0.05, min(float(lyr.get("fade", fade)), span / 2))
+        fi = f if lyr.get("fade_in") is None else max(0.0, min(float(lyr["fade_in"]), span))
+        fo = f if lyr.get("fade_out") is None else max(0.0, min(float(lyr["fade_out"]), span))
+        fo = max(0.0, min(fo, span - fi))
         pre = lyr.get("pre") or ""
         x, y = _pos(lyr.get("x", 0)), _pos(lyr.get("y", 0))
-        fades = (f"fade=t=in:st={start:.3f}:d={f:.3f}:alpha=1,"
-                 f"fade=t=out:st={end - f:.3f}:d={f:.3f}:alpha=1")
+        ramps = []
+        if fi > 0:
+            ramps.append(f"fade=t=in:st={start:.3f}:d={fi:.3f}:alpha=1")
+        if fo > 0:
+            ramps.append(f"fade=t=out:st={end - fo:.3f}:d={fo:.3f}:alpha=1")
+        # carries its own leading comma, so a layer with no ramp at all still joins cleanly
+        fades = "".join("," + r for r in ramps)
         if lyr.get("video"):
             # A moving layer (the talking-head presenter). Its own frame rate is the engine's,
             # not the video's - Wan renders at 16 fps - so fps= resamples it before anything
             # else. setpts slides it to its window; overlay's default eof_action=repeat holds
-            # the last frame if the clip is marginally shorter than the window, and the alpha
-            # fade has already taken it to zero by then.
+            # the last frame if the clip is marginally shorter than the window. At the end of a
+            # chain the alpha fade hides that; INSIDE a chain there is no fade any more, which
+            # is why the engine's segment cap is the clip's real length (config.avatar_model)
+            # rather than its chunk length - a held frame there would read as a stutter.
             w, h = _even(lyr.get("w") or 0), _even(lyr.get("h") or 0)
             scale = f",scale={w}:{h}" if w and h else ""
             cmd += ["-i", str(Path(lyr["video"]))]
@@ -329,7 +345,7 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
                                  f"split=2[avm{i}][avs{i}]")
                     parts.append(f"[avs{i}]gblur=sigma={shadow:.1f}[avsb{i}]")
                     parts.append(f"color=c=black:s={w}x{h}:r={rate:.4f}:d={total:.3f}[avk{i}]")
-                    parts.append(f"[avk{i}][avsb{i}]alphamerge,colorchannelmixer=aa={op:.2f},"
+                    parts.append(f"[avk{i}][avsb{i}]alphamerge,colorchannelmixer=aa={op:.2f}"
                                  f"{fades}[sh{i}]")
                     # the presenter's x/y are plain numbers (unlike a card's easing expression),
                     # so the offset is arithmetic; _pos still guards the expression case
@@ -341,10 +357,10 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
                     prev = f"[vs{i}]"
                 else:
                     parts.append(f"[{mi}:v]fps={rate:.4f}{scale},format=gray{mshift}[avm{i}]")
-                parts.append(f"[avc{i}][avm{i}]alphamerge,{fades}[c{i}]")
+                parts.append(f"[avc{i}][avm{i}]alphamerge{fades}[c{i}]")
             else:
                 parts.append(f"[{vi}:v]fps={rate:.4f}{scale},format=rgba{pre},"
-                             f"setpts=PTS-STARTPTS+{start:.3f}/TB,{fades}[c{i}]")
+                             f"setpts=PTS-STARTPTS+{start:.3f}/TB{fades}[c{i}]")
         else:
             # -framerate: a looped image decodes at 25 fps by default, which makes a moving crop
             # step in 25 Hz jumps no matter what the video itself runs at
@@ -352,7 +368,7 @@ def composite(video: Path, layers: list, out_mp4: Path, fade: float = 0.5, subti
                     "-i", str(Path(lyr["png"]))]
             vi = nin
             nin += 1
-            parts.append(f"[{vi}:v]format=rgba{pre},{fades}[c{i}]")
+            parts.append(f"[{vi}:v]format=rgba{pre}{fades}[c{i}]")
         parts.append(f"{prev}[c{i}]overlay={x}:{y}:eval=frame:"
                      f"enable='between(t,{start:.3f},{end:.3f})'[v{i}]")
         prev = f"[v{i}]"
@@ -473,6 +489,56 @@ def _fill_box(x: int, y: int, bw: int, bh: int, bbox, bottom: bool = True) -> tu
     return int(round(nx)), int(round(ny)), dw, dh
 
 
+SEAM = 0.05     # two windows closer than this share a boundary: one appearance, not two
+
+
+def _seam_fades(segs: list, fade: float) -> list:
+    """(fade_in, fade_out) per segment, with no ramp at an interior seam.
+
+    A whole-video presenter on a chunked engine is laid down as tile after tile with no gap
+    (avatar._tile rounds the shared boundary once, precisely so there is none). Every tile used
+    to carry its own fade in AND out, and the two ramps run one after the other rather than
+    crossing - so at the boundary both layers sat at alpha 0 and the presenter vanished for the
+    better part of a second, 23 times in a 111 s video. A chain now fades in once at its start
+    and out once at its end; the bookend coverages are untouched because their segments are
+    nowhere near each other."""
+    out = []
+    for i, s in enumerate(segs):
+        after = i > 0 and abs(float(s["start"]) - float(segs[i - 1]["end"])) < SEAM
+        before = (i + 1 < len(segs)
+                  and abs(float(segs[i + 1]["start"]) - float(s["end"])) < SEAM)
+        out.append((0.0 if after else fade, 0.0 if before else fade))
+    return out
+
+
+def _chain_bboxes(segs: list) -> list:
+    """Each segment's bbox replaced by the union over the chain it belongs to.
+
+    _fill_box sizes and anchors the figure from the bbox, so per-tile bounds made the presenter
+    change size and jump at every seam - the same places the fade was blinking. The union is the
+    box that holds the figure in EVERY tile of the chain, so the geometry is computed once and
+    no tile is cropped to make it fit. A lone segment keeps its own bbox exactly as before."""
+    out = [s.get("bbox") for s in segs]
+    run = []
+
+    def _merge():
+        boxes = [out[j] for j in run if out[j] and len(out[j]) == 4]
+        if len(boxes) > 1:
+            u = [min(b[0] for b in boxes), min(b[1] for b in boxes),
+                 max(b[2] for b in boxes), max(b[3] for b in boxes)]
+            for j in run:
+                if out[j]:
+                    out[j] = u
+
+    for i in range(len(segs)):
+        if run and abs(float(segs[i]["start"]) - float(segs[i - 1]["end"])) >= SEAM:
+            _merge()
+            run = []
+        run.append(i)
+    _merge()
+    return out
+
+
 def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner: str = "",
                   size_pct=None, cutout_pct=None, margin_pct=None, accent: str = "",
                   clear_bottom: float = 0.0, fade: float = 0.4) -> list:
@@ -491,16 +557,17 @@ def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner:
     if not segs or bw < 2 or bh < 2:
         return []
     out = []
+    edges = _seam_fades(segs, fade)
     if style == "bubble":
         ss = 4      # supersample, then downscale: the circle edge has to be antialiased or it
         mask = Image.new("L", (bw * ss, bh * ss), 0)   # crawls against moving video
         ImageDraw.Draw(mask).ellipse((0, 0, bw * ss - 1, bh * ss - 1), fill=255)
         mask_png = out_dir / "avatar_mask.png"
         mask.resize((bw, bh), Image.LANCZOS).save(mask_png)
-        for s in segs:
+        for s, (fi, fo) in zip(segs, edges):
             out.append({"video": s["video"], "matte": mask_png, "w": bw, "h": bh,
                         "x": x, "y": y, "start": float(s["start"]), "end": float(s["end"]),
-                        "fade": fade})
+                        "fade": fade, "fade_in": fi, "fade_out": fo})
         ring = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(sh).ellipse((x + 6, y + 10, x + bw + 6, y + bh + 10), fill=(0, 0, 0, 130))
@@ -513,16 +580,16 @@ def avatar_layers(size: tuple, segments: list, out_dir, style: str = "", corner:
         ring_png = out_dir / "avatar_ring.png"
         ring.save(ring_png)
         # the ring is drawn AFTER the bubble so it sits on the cut edge rather than under it
-        for s in segs:
-            out.append({"png": ring_png, "x": 0, "y": 0,
-                        "start": float(s["start"]), "end": float(s["end"]), "fade": fade})
+        for s, (fi, fo) in zip(segs, edges):
+            out.append({"png": ring_png, "x": 0, "y": 0, "start": float(s["start"]),
+                        "end": float(s["end"]), "fade": fade, "fade_in": fi, "fade_out": fo})
     else:
         bottom = "bottom" in (corner or config.AVATAR_CORNER)
-        for s in segs:
-            dx, dy, dw, dh = _fill_box(x, y, bw, bh, s.get("bbox"), bottom)
+        for s, (fi, fo), bbox in zip(segs, edges, _chain_bboxes(segs)):
+            dx, dy, dw, dh = _fill_box(x, y, bw, bh, bbox, bottom)
             out.append({"video": s["video"], "matte": s.get("matte"), "w": dw, "h": dh,
                         "x": dx, "y": dy, "start": float(s["start"]), "end": float(s["end"]),
-                        "fade": fade,
+                        "fade": fade, "fade_in": fi, "fade_out": fo,
                         # scaled with the figure so the shadow reads the same at every resolution
                         "shadow": max(4.0, bw / 45.0),
                         "shadow_dx": max(4, bw // 52), "shadow_dy": max(4, bw // 62),

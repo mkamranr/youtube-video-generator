@@ -151,12 +151,15 @@ AVATAR_MODELS = {
     "Wan 2.2 S2V": {
         "file": "avatar_wan_s2v.json",
         "fps": 16,
-        # Frames per pass. The model was trained on this length and the graph renders exactly
-        # one chunk, so a segment is capped here rather than chained: WanSoundImageToVideoExtend
-        # exists for longer takes, but its latent stitching is unverified and each experiment
-        # costs a ~6 min render. 4.81 s of presenter per appearance is plenty for an intro.
+        # Frames per pass: the length the model was trained on, and all one graph renders.
+        # A longer appearance is a chain of these, each one conditioned on the tail of the one
+        # before (see "chain_file" below), so the cap is per PASS rather than per appearance.
         "chunk": 77,
-        "max_segment": 77 / 16.0,
+        # ...and a pass delivers one frame fewer than it renders, because drop_first throws the
+        # reference frame away. The window has to match the clip: a tile 1/16 s longer than its
+        # video leaves overlay repeating the last frame at every seam, which used to hide under
+        # the fade and now would not.
+        "max_segment": (77 - 1) / 16.0,
         "square": 640,          # the size it was trained at; also what the cut-out look needs
         "seconds_per_frame": 9.16,
         "drop_first": True,     # frame 0 carries the ref image, not generated picture
@@ -173,6 +176,16 @@ AVATAR_MODELS = {
         "length": ("11", "length"),          # in frames
         "width": ("11", "width"), "height": ("11", "height"),
         "save": "15",
+        # Chaining. The same graph with the previous chunk's tail wired into the S2V node's
+        # ref_motion, which is Wan's own long-take mechanism: it keeps the last 73 frames,
+        # pads a shorter clip with grey, and VAE-encodes them as motion conditioning, leaving
+        # the output length alone. (WanSoundImageToVideoExtend is the other candidate and the
+        # wrong one - it wants a LATENT, so it can only chain inside a single graph run, while
+        # this pipeline renders one chunk per HTTP call.) ref_image stays the portrait either
+        # way, which is what keeps a long chain from drifting off the likeness.
+        "chain_file": "avatar_wan_s2v_chain.json",
+        "motion": ("16", "file"),
+        "motion_seconds": 73 / 16.0,
     },
     "LTX 2.5": {
         "file": "avatar_ltx_2_5_a2v.json",
@@ -242,8 +255,10 @@ def avatar_model(name: str = "") -> dict:
     return AVATAR_MODELS.get(name or DEFAULT_AVATAR_MODEL) or AVATAR_MODELS[DEFAULT_AVATAR_MODEL]
 
 
-def avatar_workflow(name: str = "") -> Path:
-    return WORKFLOWS_DIR / avatar_model(name)["file"]
+def avatar_workflow(name: str = "", chain: bool = False) -> Path:
+    """The engine's graph; the chained variant when there is a previous chunk to continue."""
+    spec = avatar_model(name)
+    return WORKFLOWS_DIR / ((chain and spec.get("chain_file")) or spec["file"])
 
 
 def avatar_frames(seconds: float, name: str = "") -> int:
@@ -297,9 +312,13 @@ def avatar_budget_seconds(name: str = "") -> float:
     frames = int(float(AVATAR_MAX_RENDER_MINUTES) * 60.0 / max(1e-6, spf))
     if chunk:
         # whole chunks only, rounded DOWN: avatar_frames() rounds a request up to the next
-        # chunk, so budgeting a partial one would quietly overshoot the cap it just enforced
-        frames = (frames // chunk) * chunk
-    return max(0.0, min(float(AVATAR_MAX_SECONDS), frames / float(fps)))
+        # chunk, so budgeting a partial one would quietly overshoot the cap it just enforced.
+        # What the budget BUYS is max_segment per chunk, not chunk/fps - a dropped reference
+        # frame is rendered and paid for, and never seen.
+        seconds = (frames // chunk) * float(spec.get("max_segment") or chunk / float(fps))
+    else:
+        seconds = frames / float(fps)
+    return max(0.0, min(float(AVATAR_MAX_SECONDS), seconds))
 
 
 # ---- music workflow and its node ids (fixed) ------------------------------

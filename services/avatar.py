@@ -160,21 +160,51 @@ def slice_audio(narration: Path, start: float, end: float, dst: Path, engine: st
     return exact
 
 
+def motion_tail(clip: Path, dest: Path, engine: str = "") -> Path:
+    """The end of a finished chunk, to be handed to the next one as the motion it continues.
+
+    Wan S2V takes up to `motion_seconds` of ref_motion and keeps the LAST frames of whatever it
+    is given, so the tail is both all it can use and all that is worth uploading. Re-encoded
+    rather than stream-copied: -sseof lands on the nearest keyframe, and a chunk this short has
+    one at the front, so a copy would hand over the whole clip."""
+    spec = config.avatar_model(engine)
+    secs = float(spec.get("motion_seconds") or 0.0)
+    if secs <= 0:
+        raise RuntimeError(f"{engine or config.DEFAULT_AVATAR_MODEL} cannot be chained")
+    fps = float(spec["fps"])
+    subprocess.run([ffmpeg(), "-y", "-v", "error", "-sseof", f"-{secs:.4f}", "-i", str(clip),
+                    "-an", "-r", f"{fps}", "-c:v", "libx264", "-crf", "16",
+                    "-pix_fmt", "yuv420p", str(dest)], check=True)
+    if not Path(dest).exists():
+        raise RuntimeError("could not cut the motion tail")
+    return Path(dest)
+
+
 def render_segment(client, engine: str, image_name: str, audio_name: str, seconds: float,
                    dest: Path, prefix: str, prompt: str = "", seed=None,
-                   on_progress=None, should_stop=None, on_cleanup_failed=None) -> Path:
+                   on_progress=None, should_stop=None, on_cleanup_failed=None,
+                   motion_name: str = "") -> Path:
     """Animate the portrait against one narration slice. Returns the raw clip.
+
+    `motion_name` is an uploaded motion_tail() from the chunk before this one, when there is
+    one: it selects the engine's chained graph, and the presenter carries his pose and gesture
+    across the seam instead of snapping back to the portrait. An engine with no chained graph
+    ignores it, as does the first chunk of any appearance.
 
     cleanup=COMFY_CLEANUP like every other render: the clip is scrubbed from the server the
     moment it has been downloaded, rather than waiting for the orphan sweep. A presenter
     segment is a 640x640 video and the box is shared, so leaving it there is not free."""
     from services import comfy
-    tpl = comfy.ComfyClient.load_workflow(config.avatar_workflow(engine))
+    tpl = comfy.ComfyClient.load_workflow(config.avatar_workflow(engine, chain=bool(motion_name)))
     wf = comfy.ComfyClient.build_avatar(tpl, engine, image=image_name, audio=audio_name,
                                         seconds=seconds, filename_prefix=prefix,
-                                        prompt=prompt or config.AVATAR_PROMPT, seed=seed)
+                                        prompt=prompt or config.AVATAR_PROMPT, seed=seed,
+                                        motion=motion_name)
+    # name the node that saves: the chained graph also contains a node that LOADS a video,
+    # and every output node is otherwise fair game for the download
     client.run(wf, dest, on_progress=on_progress, should_stop=should_stop,
-               cleanup=config.COMFY_CLEANUP, on_cleanup_failed=on_cleanup_failed)
+               cleanup=config.COMFY_CLEANUP, on_cleanup_failed=on_cleanup_failed,
+               node_id=config.avatar_model(engine).get("save"))
     return dest
 
 
