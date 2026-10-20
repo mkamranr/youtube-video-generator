@@ -18,7 +18,7 @@ import threading
 import time
 
 import config
-from services import channels, schedule, video
+from services import channels, gpu, schedule, video
 
 ROLES = ("main", "supporting")
 
@@ -292,6 +292,7 @@ def start_candidates(cid: str, char_id: str, count: int = 3) -> bool:
 def _generate(cid: str, char_id: str, count: int):
     from services.comfy import ComfyClient
     st = _state[(cid, char_id)]
+    lease = f"_cast:{cid}:{char_id}"   # not a job, but it renders, so it queues for the GPU too
     try:
         ch = channels.get_channel(cid) or {}
         # the RAW roster on purpose: the editor renders portraits even while characters are off,
@@ -312,7 +313,10 @@ def _generate(cid: str, char_id: str, count: int):
                 if not schedule.is_open():
                     st["waiting"] = True
                     schedule.wait_until_open()
-                    st["waiting"] = False
+                if not gpu.held_by(lease):   # and queue behind whatever a job is rendering
+                    st["waiting"] = True
+                    gpu.wait_until_free(lease)
+                st["waiting"] = False
                 wf = client.build_thumbnail(template, prompt, f"videogen/_cast/{cid}_{char_id}_{k}",
                                             seed=random.randint(0, 2**53), aspect_ratio=aspect)
                 client.run(wf, raw, cleanup=config.COMFY_CLEANUP)
@@ -323,6 +327,7 @@ def _generate(cid: str, char_id: str, count: int):
             finally:
                 raw.unlink(missing_ok=True)
     finally:
+        gpu.release(lease)
         st["generating"] = False
         st["waiting"] = False
         st["finished"] = time.time()

@@ -1,6 +1,9 @@
 """GPU schedule window: when enabled, ComfyUI renders may only be submitted between
 GPU_WINDOW_START and GPU_WINDOW_END (server local time). LLM and TTS work is never gated.
 
+This is *when* the GPU may be used. Which job is using it right now is the separate lease in
+services/gpu.py, which also covers TTS - the two are checked one after the other.
+
 All functions read `config` live, so a Settings save applies immediately. An overnight
 window (start > end, e.g. 22:00-06:00) wraps past midnight; start == end counts as
 "always open" (the per-key setting validators cannot compare the two values)."""

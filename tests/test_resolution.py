@@ -124,7 +124,7 @@ class OnDemandUpscale(unittest.TestCase):
         (self.job.dir / "final.mp4").write_bytes(b"x")
         self.m = object.__new__(pipeline.JobManager)
         self.m.lock = threading.RLock()
-        self.m.jobs, self.m.queue, self.m.current = {self.job.id: self.job}, [], None
+        self.m.jobs, self.m.queue, self.m.running = {self.job.id: self.job}, [], set()
 
         def fake_upscale(src, out, w, h):
             Path(out).write_bytes(f"{w}x{h}".encode())

@@ -12,9 +12,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (avatar, browser, cast, chapters, channels, comfy, compilation, llm, lyrics,
-                      music_upload, repo, resource, schedule, sfx, story, storyboard, thumbtext,
-                      transcript, tts, video, voices)
+from services import (avatar, browser, cast, chapters, channels, comfy, compilation, gpu, llm,
+                      lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
+                      thumbtext, transcript, tts, video, voices)
 from services import cardtemplates
 
 
@@ -207,6 +207,13 @@ class JobWaitingWindow(BaseException):
     pass
 
 
+class JobWaitingGpu(BaseException):
+    """Raised right before a generation step when another job holds the GPU lease. The job is
+    parked back in the queue with everything it has done so far kept, so the lane it was using
+    goes to a job that still has LLM work to do. BaseException for the same reason as above."""
+    pass
+
+
 def _check_cancel(job: Job):
     if job.cancel_requested:
         raise JobCancelled()
@@ -237,11 +244,21 @@ def _drafted(job: Job) -> bool:
                 or ((plan.get("story") or {}).get("beats")))
 
 
-def _gpu_gate(job: Job):
-    """Checkpoint placed immediately before every ComfyUI submission of the worker path."""
+def _gpu_gate(job: Job, window: bool = True):
+    """Checkpoint placed immediately before every generation step of the worker path.
+
+    Takes the GPU lease, so only one job at a time renders or speaks while the other lane carries
+    on with LLM work. The lease is kept from here until the job reaches `assembling` (local
+    ffmpeg) or its run ends, whichever comes first - never handed back between clips, because a
+    render is not worth interleaving.
+
+    window=False is for Fish TTS: the schedule window gates ComfyUI submissions only, and giving
+    narration an opinion about the window would park jobs the window was never meant to stop."""
     _check_cancel(job)
-    if not schedule.is_open():
+    if window and not schedule.is_open():
         raise JobWaitingWindow()
+    if not gpu.acquire(job.id):
+        raise JobWaitingGpu()
 
 
 def _cleanup_warn(job: Job):
@@ -525,6 +542,10 @@ def run_job(job: Job):
             _run_maintenance(job)
             return
         _run(job)
+    except JobWaitingGpu:
+        job.gpu_wait = True
+        job.add_log("another video is on the GPU - parked until it is free")
+        job.set("queued", "waiting for the GPU - another video is rendering")
     except JobPaused:
         job.pause_requested = False
         job.add_log("paused - a priority clip regeneration runs first")
@@ -540,6 +561,11 @@ def run_job(job: Job):
         job.add_log(f"FAILED: {e}")
         job.add_log(traceback.format_exc()[-1500:])
         job.set("failed", str(e), error=str(e))
+    finally:
+        # however this run ended - finished, parked, cancelled or failed - the GPU goes back. A job
+        # that never took the lease releases nothing, so a parked job cannot free the lease of the
+        # job that refused it.
+        gpu.release(job.id)
 
 
 def _clip_on_disk(path: Path) -> bool:
@@ -826,6 +852,7 @@ def _story_audio(job: Job, plan: dict) -> tuple:
                 job.add_log(note)
             notes.clear()
             job.set("tts", f"speaking line {i}/{n} ({speaker})")
+            _gpu_gate(job, window=False)   # Fish shares the GPU with ComfyUI: one job speaks at a time
             client = client or tts.connect()
             ln["seconds"] = round(tts.synthesize(text, wav, on_progress=_progress(job, "tts"),
                                                  ref_audio=ref_audio, ref_text=ref_text,
@@ -2063,6 +2090,7 @@ def _run(job: Job):
             else:
                 job.add_log("narration voice: default, kept the same for the whole video")
             job.set("tts", "synthesizing narration with Fish Speech")
+            _gpu_gate(job, window=False)   # Fish shares the GPU with ComfyUI: one job speaks at a time
             duration = tts.synthesize(plan["narration"], narration_file,
                                       on_progress=_progress(job, "tts"),
                                       ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
@@ -2221,6 +2249,9 @@ def _run(job: Job):
 
     _check_cancel(job)
     # 8. assemble
+    # every render this job needed is on disk and assembly is local ffmpeg, so the GPU goes back
+    # now rather than at the end of the run: the next job starts rendering while this one encodes
+    gpu.release(job.id)
     job.set("assembling", "concatenating clips and mixing audio")
     final = _assemble(job, plan, narration_file, music_file)
     job.set("done", "finished", final=final.name)
@@ -2281,17 +2312,33 @@ def sweep_deleted_dirs() -> int:
 
 
 class JobManager:
-    """Serial worker: one job at a time so the GPU is not contended."""
+    """Two lanes over one GPU: generation is serialized by the lease in services/gpu.py, while a
+    second job gets on with the work that needs no GPU - its transcript, its vLLM calls, whisper
+    timing, ffmpeg assembly. A job that reaches a generation step while another holds the lease is
+    parked back in the queue with everything it has done kept, and the lane moves to a job that
+    still has work it can do."""
+
+    LANES = 2
 
     def __init__(self):
         self.jobs: dict[str, Job] = {}
         self.queue: list[str] = []
-        self.current: str | None = None
+        self.running: set[str] = set()
         self.lock = threading.Lock()
-        self.worker = threading.Thread(target=self._loop, daemon=True)
+        self.workers = [threading.Thread(target=self._loop, daemon=True) for _ in range(self.LANES)]
         self._load_existing()
-        self.worker.start()
+        for w in self.workers:
+            w.start()
         threading.Thread(target=self._sweep_comfy, daemon=True).start()
+
+    @property
+    def current(self) -> str | None:
+        """The job that owns the GPU, or any running job when nobody does. What "in progress"
+        means to a user watching the queue: the one whose renders they are waiting behind."""
+        held = gpu.holder()
+        if held and held in self.running:
+            return held
+        return next(iter(self.running), None)
 
     def _sweep_comfy(self):
         """Scrub orphaned videogen assets on the ComfyUI server (retries/crashes leave some)."""
@@ -2299,7 +2346,7 @@ class JobManager:
             return
         try:
             with self.lock:
-                skip = [j for j in ([self.current] + list(self.queue)) if j]
+                skip = [j for j in (list(self.running) + list(self.queue)) if j]
             n = comfy.ComfyClient().sweep_orphans(skip_ids=skip)
             if n:
                 print(f"comfy sweep: scrubbed {n} orphaned file(s)")
@@ -2505,18 +2552,26 @@ class JobManager:
             self._start_draft(job)
         return job
 
+    def _next_job(self) -> str | None:
+        """Pop the first job this lane can actually move forward (caller holds the lock).
+
+        A job parked at a generation step stays put while the thing it waited for is still true -
+        the window shut, or the GPU held by someone else - so a lane is never spent picking one up
+        only to park it again. A job already running in the other lane is skipped too: a priority
+        regeneration puts the job it paused back in the queue while it is still finishing its
+        current step."""
+        blocked = not schedule.is_open() or gpu.busy()
+        for idx, cand in enumerate(self.queue):
+            j = self.jobs.get(cand)
+            if j is not None and (j.gpu_wait and blocked or cand in self.running):
+                continue
+            return self.queue.pop(idx)
+        return None
+
     def _loop(self):
         while True:
-            jid = None
             with self.lock:
-                # first runnable job in order; jobs parked for the GPU window stay put while it is closed
-                closed = not schedule.is_open()
-                for idx, cand in enumerate(self.queue):
-                    j = self.jobs.get(cand)
-                    if j is not None and j.gpu_wait and closed:
-                        continue
-                    jid = self.queue.pop(idx)
-                    break
+                jid = self._next_job()
             if jid is None:
                 time.sleep(1)
                 continue
@@ -2525,15 +2580,16 @@ class JobManager:
                                and not job.regen_queue and not job.assemble_requested):
                 continue
             job.pause_requested = False
-            self.current = jid
+            with self.lock:
+                self.running.add(jid)
             try:
                 run_job(job)
             finally:
-                self.current = None
-                if job.gpu_wait:        # parked: back to the queue, other jobs get their LLM/TTS work done
-                    with self.lock:
-                        if jid not in self.queue:
-                            self.queue.append(jid)
+                with self.lock:
+                    self.running.discard(jid)
+                    # parked: back to the queue, so the other lane keeps its LLM/TTS work moving
+                    if job.gpu_wait and jid not in self.queue:
+                        self.queue.append(jid)
                 threading.Thread(target=self._sweep_comfy, daemon=True).start()
 
     def cancel(self, job_id: str):
@@ -3094,6 +3150,8 @@ class JobManager:
                                             idea=plan.get("thumbnail_idea", "")))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
+            gpu.wait_until_free(job.id, on_wait=lambda h: job.set(
+                "thumbnail", "waiting for the GPU - another video is rendering"))
             job.set("thumbnail", "rendering the new thumbnail")
             tw, th = _render_thumbnail(job, plan, d / "thumb_base.jpg", on_progress=_progress(job, "thumbnail"))
             _thumb_variants(job, plan, select=thumbtext.AUTO)   # a fresh concept, a fresh best line
@@ -3103,6 +3161,8 @@ class JobManager:
         except Exception as e:  # noqa: BLE001
             job.add_log(f"thumbnail regeneration failed: {e}")
             job.set("done", f"thumbnail regeneration failed: {e}")
+        finally:
+            gpu.release(job.id)
 
     def set_thumbnail(self, job_id: str, variant=None, texts=None) -> Job:
         """Pick which thumbnail the video ships with, and/or replace the overlay lines.
@@ -3128,7 +3188,7 @@ class JobManager:
             raise ValueError("unarchive the job first")
         if job.status != "done":
             raise ValueError("only finished jobs can be modified")
-        if job_id == self.current or job_id in self.queue:
+        if job_id in self.running or job_id in self.queue:
             raise ValueError("job is already queued or running")
         if job.upscaling:
             raise ValueError("an upscale of the final video is in progress - wait for it to finish")
@@ -3304,7 +3364,7 @@ class JobManager:
             job = self.jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
-            if job_id == self.current:
+            if job_id in self.running:
                 raise ValueError("job is currently running and cannot be deleted")
             if job.status in ("assembling", "thumbnail", "drafting"):
                 raise ValueError(f"job is busy ({job.status}) - wait until it finishes, then delete it")

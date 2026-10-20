@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 import config
 from pipeline import JobManager, resolve_video_mode, upload_description
-from services import (auth, avatar, bible, browser, cast, channels, compilation, llm,
+from services import (auth, avatar, bible, browser, cast, channels, compilation, gpu, llm,
                       music_upload, ownership, planner, schedule, users, video, voices)
 
 app = FastAPI(title="VideoGen")
@@ -1596,6 +1596,8 @@ def health(admin: dict = Depends(auth.require_admin)):
 PREVIEW_SUBJECT = ("A cheerful young fox explorer waving happily in a sunny meadow, holding a small "
                    "red balloon. No text, subtitles, logos or watermarks of any kind.")
 _preview_state = {"generating": False, "current": "", "errors": 0, "waiting": False}
+# the previews are not a job, so they hold the GPU lease under a name of their own
+PREVIEW_LEASE = "_style_previews"
 _preview_lock = threading.Lock()
 
 
@@ -1652,7 +1654,10 @@ def _generate_previews():
                 if not schedule.is_open():   # admin renders obey the GPU window too
                     _preview_state["waiting"] = True
                     schedule.wait_until_open()
-                    _preview_state["waiting"] = False
+                if not gpu.held_by(PREVIEW_LEASE):   # and queue behind whatever a job is rendering
+                    _preview_state["waiting"] = True
+                    gpu.wait_until_free(PREVIEW_LEASE)
+                _preview_state["waiting"] = False
                 wf = client.build_thumbnail(template, f"{desc}\n\n{PREVIEW_SUBJECT}",
                                             f"videogen/_style_previews/{slug}")
                 client.run(wf, raw, cleanup=config.COMFY_CLEANUP)
@@ -1665,6 +1670,7 @@ def _generate_previews():
                 except OSError:
                     pass
     finally:
+        gpu.release(PREVIEW_LEASE)
         _preview_state["generating"] = False
         _preview_state["current"] = ""
         _preview_state["waiting"] = False
