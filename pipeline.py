@@ -293,11 +293,17 @@ def _length_params(job: Job):
 def _clip_seconds(job: Job, duration: float | None = None) -> float:
     """Clip length this job renders: longer targets use longer clips so a 5-minute video is
     ~27 clips instead of ~59 (Auto keeps the global CLIP_SECONDS). A lyric-driven song and an
-    uploaded music track have no preset, so their measured length picks the rung instead."""
+    uploaded music track have no preset, so their measured length picks the rung instead.
+
+    The Settings clip length is the FLOOR, the same way a story line's own length is
+    (story.clip_durations): a target preset can only ever lengthen a clip, never shorten it, so
+    asking for 10 s clips gets 10 s clips on a 30-45 second video instead of the rung's 5 s."""
     secs = duration or float(getattr(job, "music_seconds", 0.0) or 0.0)
     if (getattr(job, "lyrics", "") or getattr(job, "music_upload", "")) and secs:
-        return config.clip_seconds_for_duration(secs)
-    return config.video_length_clip_seconds(job.video_length or "Auto")
+        rung = config.clip_seconds_for_duration(secs)
+    else:
+        rung = config.video_length_clip_seconds(job.video_length or "Auto")
+    return max(float(config.CLIP_SECONDS), rung)
 
 
 def _truncated(t: dict, l_max: float) -> bool:

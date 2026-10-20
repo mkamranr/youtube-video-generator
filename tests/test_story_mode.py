@@ -579,7 +579,7 @@ class StoryAudio(unittest.TestCase):
                                                  {"speaker": "Narrator", "text": ""},
                                                  {"speaker": "Pip", "text": "Hi!"},
                                                  {"speaker": "Pip", "text": "Bye!"}]}}
-        with self._ref("x"):
+        with self._ref("x"), mock.patch.object(config, "CLIP_SECONDS", 5):   # FULL is the 5 s clip
             _f, durs, secs = pipeline._story_audio(self.job, plan)
         self.assertEqual(secs[1], 0.0)
         self.assertAlmostEqual(durs[1], FULL)

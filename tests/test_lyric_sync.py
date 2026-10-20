@@ -365,10 +365,25 @@ class GivenLyrics(unittest.TestCase):
 
     def test_clip_seconds_helper_prefers_the_measured_duration(self):
         import pipeline
-        self.assertEqual(pipeline._clip_seconds(self._job(), 200.0), 8)
-        self.assertEqual(pipeline._clip_seconds(self._job()), config.video_length_clip_seconds("Auto"))
-        plain = pipeline.Job(id="t", url="", channel=_channel(), video_length="4-5 minutes")
-        self.assertEqual(pipeline._clip_seconds(plain, 45.0), 10)   # no lyrics: the preset still wins
+        # pinned rather than read from the saved settings: this test is about the rungs, and the
+        # Settings clip length is a floor over them (see the test below)
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(pipeline._clip_seconds(self._job(), 200.0), 8)
+            self.assertEqual(pipeline._clip_seconds(self._job()), config.video_length_clip_seconds("Auto"))
+            plain = pipeline.Job(id="t", url="", channel=_channel(), video_length="4-5 minutes")
+            self.assertEqual(pipeline._clip_seconds(plain, 45.0), 10)   # no lyrics: the preset still wins
+
+    def test_the_settings_clip_length_is_a_floor_no_preset_can_lower(self):
+        """Ask for 10 s clips and a 30-45 second video renders 10 s clips, not the rung's 5 s."""
+        import pipeline
+        short = pipeline.Job(id="t", url="", channel=_channel(), video_length="30-45 seconds")
+        longer = pipeline.Job(id="t", url="", channel=_channel(), video_length="4-5 minutes")
+        with mock.patch.object(config, "CLIP_SECONDS", 10):
+            self.assertEqual(pipeline._clip_seconds(short), 10)               # the preset's 5 s loses
+            self.assertEqual(pipeline._clip_seconds(self._job(), 150.0), 10)  # so does the lyric rung's 6 s
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(pipeline._clip_seconds(short), 5)
+            self.assertEqual(pipeline._clip_seconds(longer), 10)   # a longer preset still lengthens it
 
     def test_resolve_lyrics_rejects_rather_than_trims(self):
         import pipeline

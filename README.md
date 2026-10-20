@@ -208,7 +208,7 @@ All settings are editable at runtime on the **Settings** page (persisted to `set
 | `TTS_CHUNK_CHARS` | `300` | Max characters per Fish request; longer narration is split and concatenated (100–500) |
 | `DEFAULT_SOURCE` | `url` | Preselected creation mode in the New Video dialog |
 | `TARGET_VIDEO_SECONDS` | `90` | Music mode song-length target; `0` = no target (song covers full content, up to 6 min) |
-| `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s) |
+| `CLIP_SECONDS` | `5` | Length of each generated clip (2–15 s). A floor, not a cap: a target length of `2-3 minutes` or longer asks for 6/8/10 s clips to keep the clip count near 27, and whichever is longer wins — so raising this always lengthens the clips, on every target |
 | `DEFAULT_VIDEO_MODEL` | `MiniMax H3` | Which ComfyUI workflow renders the clips (`MiniMax H3` or `LTX 2.5`); each video can override it in the New Video dialog. The two round clip length differently — a requested 5 s renders as 5.17 s (124 frames) on MiniMax H3 and 5.04 s (121 frames) on LTX 2.5 — and that length is frozen into `plan["clip_seconds"]` when the video is planned, so the choice cannot be changed afterwards. Thumbnails, cast portraits and story board images always render on MiniMax H3, whatever a video picked |
 | `LTX_NEGATIVE_ANIMATED` | see `config.py` | Negative prompt sent to LTX 2.5 on an `animated` channel. MiniMax H3 has no negative-prompt input and ignores it |
 | `LTX_NEGATIVE_REAL` | see `config.py` | The same for a `real` or `tech` channel, where naming cartoon and video-game looks helps rather than fighting the art style |

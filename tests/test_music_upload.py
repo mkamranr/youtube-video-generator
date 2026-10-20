@@ -150,15 +150,18 @@ class LengthFollowsTheTrack(unittest.TestCase):
 
     def test_an_uploaded_track_picks_the_clip_rung_from_its_own_length(self):
         job = self._job(music_upload="song.mp3", music_seconds=200.0, video_length="Auto")
-        self.assertEqual(pipeline._clip_seconds(job, 200.0),
-                         config.clip_seconds_for_duration(200.0))
-        # and without the duration argument it still uses the stored length
-        self.assertEqual(pipeline._clip_seconds(job), config.clip_seconds_for_duration(200.0))
+        # pinned under the rung it is testing: the Settings clip length is a floor over it
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(pipeline._clip_seconds(job, 200.0),
+                             config.clip_seconds_for_duration(200.0))
+            # and without the duration argument it still uses the stored length
+            self.assertEqual(pipeline._clip_seconds(job), config.clip_seconds_for_duration(200.0))
 
     def test_a_preset_job_is_unaffected(self):
         job = self._job(video_length="1-2 minutes")
-        self.assertEqual(pipeline._clip_seconds(job, 200.0),
-                         config.video_length_clip_seconds("1-2 minutes"))
+        with mock.patch.object(config, "CLIP_SECONDS", 5):
+            self.assertEqual(pipeline._clip_seconds(job, 200.0),
+                             config.video_length_clip_seconds("1-2 minutes"))
 
     def test_a_lyrics_job_without_a_duration_still_falls_back_to_the_preset_rung(self):
         job = self._job(lyrics="[Verse]\nTwinkle twinkle little star", video_length="Auto")
