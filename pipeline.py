@@ -1360,6 +1360,24 @@ def _avatar_assets(job: Job, plan: dict):
         job.add_log(f"presenter avatar failed ({e}); assembling without it")
 
 
+def _avatar_rect(job: Job, plan: dict, size: tuple):
+    """The part of the frame the presenter covers, as (x0, y0, x1, y1), or None for no presenter.
+
+    What the story board cards are kept clear of. It is a CORNER box - a fifth of a 9:16 frame as
+    a cut-out, a fortieth as a bubble - which is why the cards are trimmed against this rect
+    rather than against the whole frame for the time the presenter speaks.
+
+    avatar_box and not video._fill_box: _fill_box deliberately overshoots the box with the
+    engine's transparent padding, so it would reserve screen the presenter does not cover."""
+    info = plan.get("avatar") or {}
+    if not (info.get("segments") or []):
+        return None
+    # the same style and caption reserve _avatar_overlay draws with, so the two cannot disagree
+    clear = config.CAPTION_BOTTOM_MARGIN if job.captions else 0.0
+    x, y, w, h = video.avatar_box(size, style=info.get("style") or "", clear_bottom=clear)
+    return (x, y, x + w, y + h)
+
+
 def _avatar_overlay(job: Job, plan: dict, size: tuple, total: float) -> list:
     """composite() layers for the presenter, or []. Rebuilt on every assembly so a resolution
     or style change applies on reassembly without re-rendering the expensive part."""
@@ -1489,8 +1507,9 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     # they cover is simply not visible, and unlike a fact card they cannot be moved
     hook_win = [(0.0, hook_end)] if hook_end else []
     end_win = [(end_start, total)] if end_start < total else []
-    # the presenter owns its corner for these windows; fact cards and the page panel are kept
-    # out of them by the same trim/reserve machinery the hook and end cards use
+    # The presenter owns only its CORNER for these windows. The cards are trimmed against that
+    # rect (and moved above it where they hit it); the page panel, which is wide enough that a
+    # corner is most of it, still reserves the window outright the way the hook and end cards do.
     av_win = [(float(x["start"]), min(float(x["end"]), total))
               for x in ((plan.get("avatar") or {}).get("segments") or [])]
     if job.storyboard and isinstance(plan.get("storyboard"), list):
@@ -1502,7 +1521,16 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
             cards = storyboard.trim_schedule(cards, hook_win, size=size)
             cards = storyboard.trim_schedule(cards, end_win, size=size)
             if av_win:
-                cards = storyboard.trim_schedule(cards, av_win, size=size)
+                # a rect per window, so a card clear of the presenter keeps its whole window and
+                # one that is not rises above it - see storyboard.trim_schedule
+                before = len(cards)
+                av_rect = _avatar_rect(job, plan, size)
+                cards = storyboard.trim_schedule(
+                    cards, [(s, e, av_rect) for s, e in av_win], size=size)
+                moved = sum(1 for c in cards if c.get("lifted"))
+                if moved or len(cards) < before:
+                    job.add_log(f"presenter: {moved} of {before} story board cards lifted clear "
+                                f"of it, {before - len(cards)} dropped")
         except Exception as e:  # noqa: BLE001 - never lose the video over the overlay
             job.add_log(f"story board overlay failed ({e}); assembling without it")
             cards = []

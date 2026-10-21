@@ -16,6 +16,10 @@ from services import cast, llm, video
 
 CARD_FADE = 0.5      # seconds of alpha fade in/out per card
 CARD_INSET = 0.35    # seconds a card stays clear of the clip cut on each side
+CARD_CLEAR_FRAC = 0.03   # how much of a card another overlay has to cover before the
+                         # card is worth moving: the presenter's matte is transparent
+                         # at its edges and a bubble clips the corner of a full-width
+                         # card by well under a percent, which is not a collision
 MAX_LINES = {"headline": 2, "body": 3}
 
 KICKERS = ("KEY FACT", "DID YOU KNOW", "HOW IT WORKS", "TAKEAWAY", "BY THE NUMBERS",
@@ -327,7 +331,22 @@ def _freeze_templates(cards: list, seed: str, add_log=None) -> list:
 
 def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0.2,
                   size: tuple = None) -> list:
-    """Shorten or drop cards so they never share the screen with the hook or the end card.
+    """Keep the cards clear of whatever else owns the screen, by MOVING them where it can.
+
+    busy takes two shapes, and the difference is the whole point:
+
+    (start, end)         the window is owned outright and nothing else may be on screen in it -
+                         the hook and the end card, which both composite a full-frame scrim.
+                         A card inside such a window loses it, exactly as it always has.
+    (start, end, rect)   only `rect` = (x0, y0, x1, y1) of the frame is taken. The presenter is a
+                         CORNER box - a fifth of a 9:16 frame as a cut-out, a fortieth as a
+                         bubble - so a card that misses it plays untouched, and a card that hits
+                         it is raised above it rather than dropped. Only a card with nowhere to
+                         rise into falls back to losing its window.
+
+    Moving beats dropping here for the same reason captions.lift_spans moves a caption above a
+    card instead of hiding it: reserving the whole frame for a corner overlay took every card off
+    a video the presenter never leaves, which is precisely the video the cards are there for.
 
     Applied after the cards are drawn (the PNGs are already on disk and cost nothing to keep) but
     before they are handed to composite, so a card squeezed out of existence simply never appears.
@@ -340,22 +359,58 @@ def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0
     out = []
     for lyr in layers:
         start, end = float(lyr["start"]), float(lyr["end"])
-        for bs, be in busy or []:
-            bs, be = float(bs) - pad, float(be) + pad
+        lift = 0
+        for span in busy or []:
+            rect = span[2] if len(span) > 2 else None
+            bs, be = float(span[0]) - pad, float(span[1]) + pad
             if be <= start or bs >= end:
                 continue
+            if rect is not None:
+                room = _clearance(lyr.get("rect"), rect, size, lift)
+                if room is None:        # misses the taken part of the frame: leave it alone
+                    continue
+                if room > 0:            # can sit above it instead of losing its window
+                    lift = room
+                    continue
             if bs <= start and be >= end:      # fully covered
                 start = end = 0.0
                 break
             start = max(start, be) if bs <= start else start
             end = min(end, bs) if be >= end else end
         if end - start >= min_dur:
-            out.append(_retimed(lyr, round(start, 3), round(end, 3), size))
+            out.append(_retimed(lyr, round(start, 3), round(end, 3), size, lift))
     return out
 
 
-def _retimed(lyr: dict, start: float, end: float, size) -> dict:
-    """A copy of `lyr` on the window [start, end], with its motion expression re-anchored there.
+def _clearance(rect, busy_rect, size, lift: int = 0):
+    """How far a card has to rise to clear `busy_rect`, measured from where it was DRAWN.
+
+    None when it already misses it and needs nothing; 0 when it collides and cannot get out of
+    the way, which is the caller's signal to fall back to trimming the window. `lift` is what the
+    card has already been raised by an earlier window, so the overlap is tested where the card
+    will actually be rather than where the template put it."""
+    if not rect or not busy_rect:
+        # No rect to measure means the caller cannot say what is covered, so assume everything is
+        return 0
+    x0, y0 = int(rect[0]), int(rect[1]) - lift
+    x1, y1 = int(rect[2]), int(rect[3]) - lift
+    bx0, by0, bx1, by1 = (int(v) for v in busy_rect)
+    ox0, oy0 = max(x0, bx0), max(y0, by0)
+    ox1, oy1 = min(x1, bx1), min(y1, by1)
+    if ox1 <= ox0 or oy1 <= oy0:
+        return None
+    if (ox1 - ox0) * (oy1 - oy0) <= CARD_CLEAR_FRAC * max(1, (x1 - x0) * (y1 - y0)):
+        return None                     # a graze, not a collision
+    gap = int(0.02 * int(size[1])) if size else 0
+    want = (y1 - by0) + gap             # how far the card's bottom edge has to travel
+    if y0 - want < 0:
+        return 0                        # no frame left above it to rise into
+    return lift + want
+
+
+def _retimed(lyr: dict, start: float, end: float, size, lift: int = 0) -> dict:
+    """A copy of `lyr` on the window [start, end], raised by `lift` pixels, with its motion
+    expression re-anchored there.
 
     The template guard matters: motion_xy returns (0, 0) for a template it does not know, and
     MOTION.get(None) is None, so recomputing a layer that carries no template would quietly wipe
@@ -365,6 +420,25 @@ def _retimed(lyr: dict, start: float, end: float, size) -> dict:
     if size and moved and lyr.get("template"):
         from services import cardtemplates      # module-level would be circular
         out["x"], out["y"] = cardtemplates.motion_xy(lyr["template"], size, start, end)
+    return _lifted(out, int(lift)) if lift else out
+
+
+def _lifted(lyr: dict, lift: int) -> dict:
+    """A copy of `lyr` drawn `lift` pixels higher up the frame.
+
+    The PNG is full-frame, so raising the overlay's y IS the move: no re-render, no second pass,
+    and the transparent remainder hangs off the top where overlay clips it for free. `y` is either
+    a plain number or one of motion_xy's per-frame ease-out expressions, and video._pos takes a
+    negative number as happily as a string, so both forms simply lose `lift` - subtracting an
+    integer cannot introduce the ':' or brackets _pos forbids. `rect` travels with it: the
+    captions read it to place themselves above the card (captions.lift_spans)."""
+    out = dict(lyr)
+    y = lyr.get("y", 0)
+    out["y"] = f"{y}-{lift}" if isinstance(y, str) else int(y) - lift
+    rect = lyr.get("rect")
+    if rect:
+        out["rect"] = (int(rect[0]), int(rect[1]) - lift, int(rect[2]), int(rect[3]) - lift)
+    out["lifted"] = int(lift)
     return out
 
 

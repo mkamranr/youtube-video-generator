@@ -223,6 +223,110 @@ class TrimSchedule(unittest.TestCase):
         self.assertEqual(storyboard.trim_schedule([self.layer(2.8, 4.0)], [(0.0, 3.2)]), [])
 
 
+class TrimScheduleAroundThePresenter(unittest.TestCase):
+    """A busy window carrying a rect takes only THAT part of the frame.
+
+    The presenter is a corner box, so trimming a card out of the whole time it speaks dropped
+    every card on a video it never leaves - which is the video the cards are there for. A card
+    that misses the rect plays untouched; one that hits it rises above it.
+    """
+    PORTRAIT = (1080, 1920)
+
+    def setUp(self):
+        x, y, w, h = video.avatar_box(self.PORTRAIT, style="cutout")
+        self.presenter = (x, y, x + w, y + h)
+        bx, by, bw, bh = video.avatar_box(self.PORTRAIT, style="bubble")
+        self.bubble = (bx, by, bx + bw, by + bh)
+        # where the lower_third and quote_slab templates actually draw on a 1080x1920 frame
+        self.low = (64, 1373, 1016, 1652)
+        self.high = (64, 935, 1016, 1190)
+
+    def layer(self, start, end, rect, template="lower_third"):
+        return {"png": "x.png", "start": start, "end": end, "x": 0, "y": 0,
+                "rect": rect, "template": template}
+
+    def trim(self, layers, busy):
+        return storyboard.trim_schedule(layers, busy, size=self.PORTRAIT)
+
+    def test_a_presenter_who_never_leaves_no_longer_takes_every_card(self):
+        """The reported bug: "full" coverage is one window over the whole video, so every card
+        was fully covered and the assembled video had no story board at all."""
+        cards = [self.layer(s, e, self.low) for s, e in [(5.3, 9.6), (15.3, 19.6), (25.3, 29.6)]]
+        got = self.trim(cards, [(0.0, 30.0, self.presenter)])
+        self.assertEqual(len(got), 3)
+
+    def test_a_contiguous_chain_of_windows_no_longer_takes_every_card(self):
+        """A chunked engine covers the video with back-to-back windows. Each one pushed the
+        card's start forward and pulled its end back in the same pass, so the card ended up
+        with a negative length and was dropped."""
+        cards = [self.layer(s, e, self.low) for s, e in [(5.3, 9.6), (15.3, 19.6), (25.3, 29.6)]]
+        chain = [(round(t * 4.81, 3), round(min(30.0, (t + 1) * 4.81), 3)) for t in range(7)]
+        got = self.trim(cards, [(s, e, self.presenter) for s, e in chain])
+        self.assertEqual(len(got), 3)
+
+    def test_a_card_clear_of_the_presenter_is_identical(self):
+        lyr = self.layer(5.0, 25.0, self.high, template="quote_slab")
+        self.assertEqual(self.trim([lyr], [(0.0, 30.0, self.presenter)]), [lyr])
+
+    def test_a_bubble_grazing_a_card_is_not_a_collision(self):
+        """A bubble clips the corner of a full-width card by under a percent of it. Moving the
+        card for that would be a visible jump for no reason - see CARD_CLEAR_FRAC."""
+        lyr = self.layer(5.0, 25.0, self.low)
+        self.assertEqual(self.trim([lyr], [(0.0, 30.0, self.bubble)]), [lyr])
+
+    def test_a_colliding_card_is_lifted_rather_than_dropped(self):
+        got = self.trim([self.layer(5.0, 25.0, self.low)], [(0.0, 30.0, self.presenter)])
+        self.assertEqual(len(got), 1)
+        lift = got[0]["lifted"]
+        self.assertGreater(lift, 0)
+        self.assertEqual(got[0]["start"], 5.0)          # it keeps its whole window
+        self.assertEqual(got[0]["end"], 25.0)
+        self.assertEqual(got[0]["y"], -lift)            # the PNG is full-frame: y IS the move
+        self.assertEqual(got[0]["rect"],
+                         (self.low[0], self.low[1] - lift, self.low[2], self.low[3] - lift))
+
+    def test_a_lifted_card_ends_up_above_the_presenter_and_on_the_frame(self):
+        """The two things the lift has to be worth doing: it clears the presenter, and it does
+        not push the card off the top of the frame."""
+        got = self.trim([self.layer(5.0, 25.0, self.low)], [(0.0, 30.0, self.presenter)])
+        self.assertLessEqual(got[0]["rect"][3], self.presenter[1])
+        self.assertGreaterEqual(got[0]["rect"][1], 0)
+
+    def test_a_card_with_nowhere_to_rise_loses_its_window_instead(self):
+        full_frame = self.layer(5.0, 25.0, (0, 0) + self.PORTRAIT)
+        self.assertEqual(self.trim([full_frame], [(0.0, 30.0, self.presenter)]), [])
+
+    def test_a_lifted_card_keeps_its_motion_expression_usable(self):
+        """video._pos single-quotes an expression and forbids ':' and brackets in it, so the
+        lift has to compose with the ease-out rather than replace it."""
+        lyr = self.layer(5.0, 25.0, self.low)
+        lyr["x"], lyr["y"] = cardtemplates.motion_xy("lower_third", self.PORTRAIT, 5.0, 25.0)
+        self.assertIsInstance(lyr["y"], str)     # guards the fixture, not the code
+        got = self.trim([lyr], [(0.0, 30.0, self.presenter)])
+        y = got[0]["y"]
+        self.assertIsInstance(y, str)
+        self.assertTrue(y.startswith(lyr["y"]))
+        self.assertNotIn(":", y)
+        self.assertNotIn("[", y)
+        self.assertEqual(video._pos(y), f"'{y}'")
+
+    def test_a_window_without_a_rect_still_owns_the_whole_frame(self):
+        """The hook and the end card both composite a full-frame scrim, so for them the old
+        rule is the right one: nothing else may be on screen at all."""
+        cards = [self.layer(s, e, self.low) for s, e in [(5.3, 9.6), (15.3, 19.6), (25.3, 29.6)]]
+        self.assertEqual(storyboard.trim_schedule(cards, [(0.0, 30.0)], size=self.PORTRAIT), [])
+        one = storyboard.trim_schedule(cards, [(0.0, 12.0)], size=self.PORTRAIT)
+        # the first card is inside the window and lost; the others start after it and are
+        # untouched, pad and all - the point is that none of them was MOVED to make room
+        self.assertEqual([(c["start"], c["end"]) for c in one], [(15.3, 19.6), (25.3, 29.6)])
+
+    def test_a_card_with_no_rect_of_its_own_is_treated_as_full_frame(self):
+        """A hand-edited plan or a layer built before cards carried a rect: with nothing to
+        measure, the safe reading is that the card covers everything."""
+        lyr = {"png": "x.png", "start": 5.0, "end": 25.0, "x": 0, "y": 0, "rect": None}
+        self.assertEqual(self.trim([lyr], [(0.0, 30.0, self.presenter)]), [])
+
+
 class Sfx(unittest.TestCase):
 
     def test_hits_closer_than_half_a_second_collapse(self):
