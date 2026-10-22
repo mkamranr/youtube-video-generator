@@ -228,6 +228,17 @@ AVATAR_OUTRO_SECONDS = 12.0     # ...and at the end
 # They are not interchangeable: 24 s of footage costs ~70 min on Wan and ~2.5 min on LTX.
 AVATAR_MAX_SECONDS = 30.0       # footage cap per video
 AVATAR_MAX_RENDER_MINUTES = 45.0  # wall-clock cap; coverage trims to fit, with the reason logged
+# How long one unbroken motion chain may get. Each chunk of a whole-video presenter is
+# conditioned on the tail of the chunk before it, which is what carries the pose across the seam
+# - but it is also a recursive path: chunk N continues chunk N-1's PIXELS, which already deviate
+# a little from the portrait, and the deviation compounds. Past roughly 30-40 s of one chain the
+# face is recognisably someone else. So every Nth chunk is rendered from the portrait alone,
+# which costs a visible pose reset at that seam and bounds how far the drift can accumulate.
+# Counted as the longest run that may share one anchor, so 4 anchors chunks 1, 5, 9...
+# 0 = never reset, which is the behaviour before this existed.
+# Note it does nothing until AVATAR_MAX_RENDER_MINUTES is raised: at the shipped 45 minutes Wan
+# can only afford 3 chunks, which is one run either way.
+AVATAR_CHAIN_MAX = 4
 AVATAR_SIZE_PCT = 0.22          # bubble diameter as a fraction of the frame's SHORT side
 AVATAR_CUTOUT_PCT = 0.58        # cut-out height as a fraction of the frame HEIGHT
 AVATAR_MAX_WIDTH_PCT = 0.60     # ...but never wider than this much of the frame WIDTH, which is
@@ -240,6 +251,16 @@ AVATAR_MARGIN_PCT = 0.035       # inset from the frame edge, fraction of the sho
 AVATAR_CORNER = "bottom-right"
 AVATAR_CORNERS = ("bottom-right", "bottom-left", "top-right", "top-left")
 AVATAR_MATTE_MODEL = "u2net_human_seg.onnx"   # CPU ONNX matting, in MODELS_DIR
+# Measuring the likeness, on the CPU like the matting. Both from the OpenCV Zoo and both read
+# through the opencv-python already in requirements.txt - no new dependency, just two files in
+# MODELS_DIR. Optional: without them a render is identical, it is simply not measured.
+AVATAR_FACE_DETECT_MODEL = "face_detection_yunet_2023mar.onnx"      # YuNet, ~0.2 MB
+AVATAR_FACE_EMBED_MODEL = "face_recognition_sface_2021dec.onnx"     # SFace, ~37 MB
+# SFace's own same-person cosine threshold. Read it as a FLOOR, not as a drift test: measured
+# against the spike footage, a different person scores 0.36 and the engine the notes call "a
+# younger, thinner stranger" still scores 0.75 against the portrait's 0.80 - so this catches a
+# likeness that has collapsed, not one that has merely wandered. The per-chunk trend does that.
+AVATAR_FACE_MIN_COSINE = 0.363
 # Portraits are stored square and at most this wide: the squaring is done once at upload (it
 # needs a matte to find the head, which is too slow to repeat per video) and 1024 leaves room
 # above the 640 the biggest engine renders, so a better model later costs no re-upload.
@@ -739,6 +760,15 @@ EDITABLE_SETTINGS = {
                                   "output frame, so 24 s of footage is ~70 min - and coverage is trimmed to "
                                   "fit this with the reason written to the job log, rather than a job quietly "
                                   "taking hours on a queue other videos are waiting in"),
+    "AVATAR_CHAIN_MAX": (int, lambda v: 0 <= v <= 64, "Avatar: chunks per anchor",
+                         "Whole-video presenter only, and only on an engine that renders in fixed "
+                         "chunks (Wan 2.2 S2V: 4.8s each). Each chunk continues the one before it, "
+                         "which keeps the pose across the seam but compounds its drift away from "
+                         "the uploaded face - past about 30-40s of one chain the presenter is "
+                         "someone else. This many chunks in a row share one anchor, then the next "
+                         "is rendered from the portrait again: 4 resets every ~19s, at the price "
+                         "of a visible pose change there. 0 never resets. It has no effect until "
+                         "the render budget above is raised, since 45 minutes only buys 3 chunks"),
     "AVATAR_SIZE_PCT": (float, lambda v: 0.05 <= v <= 0.6, "Avatar: bubble size",
                         "Bubble diameter as a fraction of the frame's short side, so it scales with every "
                         "resolution and aspect ratio"),

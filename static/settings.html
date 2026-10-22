@@ -622,6 +622,11 @@
           <div class="hint">The same at the end of the video</div>
         </div>
         <div class="field">
+          <label for="AVATAR_CHAIN_MAX">Avatar: chunks per anchor</label>
+          <input type="number" id="AVATAR_CHAIN_MAX" min="0" max="64" step="1">
+          <div class="hint"><b>Whole video</b> on a chunked engine (Wan 2.2 S2V: 4.8s a chunk) renders each chunk conditioned on the tail of the one before it, which carries the pose across the seam &mdash; but each one continues the <i>picture</i> of the last, so small deviations from the uploaded face compound, and past about 30&ndash;40 seconds the presenter is recognisably someone else. This many chunks in a row share one anchor and then the next is rendered from the portrait again: <b>4</b> resets every ~19s, at the cost of a visible pose change at that seam. 0 never resets. No effect until the render budget above is raised &mdash; 45 minutes only buys 3 chunks, which is one run either way</div>
+        </div>
+        <div class="field">
           <label for="DEFAULT_AVATAR_STYLE">Avatar: look</label>
           <select id="DEFAULT_AVATAR_STYLE">
             <option value="cutout">Cut-out (no background)</option>
@@ -734,6 +739,7 @@ const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "LLM_TIMEOUT"
                 "AVATAR_MAX_SECONDS", "AVATAR_MAX_RENDER_MINUTES", "AVATAR_INTRO_SECONDS",
                 "AVATAR_OUTRO_SECONDS", "DEFAULT_AVATAR_STYLE", "AVATAR_MAX_WIDTH_PCT",
                 "AVATAR_CUTOUT_PCT", "AVATAR_SIZE_PCT", "AVATAR_CORNER", "AVATAR_MARGIN_PCT",
+                "AVATAR_CHAIN_MAX",
                 "GPU_SCHEDULE_ENABLED", "GPU_WINDOW_START", "GPU_WINDOW_END"];
 
 // ---- role: users get Channels + Your account; admins get every card ----

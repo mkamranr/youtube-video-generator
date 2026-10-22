@@ -165,7 +165,10 @@ Before any generation, captions are cleaned of cue tags (`[Music]` etc.) and val
 output/<job_id>/
   job.json            persisted job state (resume source of truth)
   avatar_NN.mp4       presenter segment (lip-synced talking head), avatar_NN_matte.mp4 its
-                      per-frame cut-out alpha, avatar_NN.wav the narration slice it speaks
+                      per-frame cut-out alpha, avatar_NN.wav the narration slice it speaks, and
+                      avatar_ref.png the squared portrait every chunk is rendered from.
+                      avatar_NN_raw.mp4 / avatar_NN_motion.mp4 are transient: the chunk as it
+                      came off the box, and the tail of it the next chunk is conditioned on
   transcript.txt      source captions, or the pasted text for transcript jobs
   plan.json           music.mp3           narration.wav
   clip_01..NN.mp4     frame_NN.jpg        thumbnail.jpg      thumb_raw.mp4

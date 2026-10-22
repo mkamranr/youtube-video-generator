@@ -39,7 +39,7 @@ None of these are committed to git.
 
 `pip install -r requirements.txt` installs everything else, including ffmpeg/ffprobe binaries (downloaded on first use) and Pillow.
 
-### 2.1 Presenter avatar (optional) — two model files to stage by hand
+### 2.1 Presenter avatar (optional) — model files to stage by hand
 
 The talking-head presenter needs weights on both machines, and neither set is in git: one is
 too large for a repository, the other is 24 GB on a box that is air-gapped by design. Skip
@@ -54,6 +54,24 @@ deliberately not done on the GPU box, which is shared, serial, and cannot `pip i
 `models/`. `VIDEOGEN_MODELS_DIR` moves that folder elsewhere. **Under Docker** put it in
 `./data/models/` on the host instead — compose bind-mounts that to `/app/models`, and the file
 is excluded from the build context by `.dockerignore`, so it is never baked into the image.
+
+**On the app host — the two face models, for measuring the likeness.** Optional even by the
+standards of this section: without them a presenter renders identically, it is simply not
+measured. They are what puts a number on how far a long chained presenter has drifted off the
+uploaded portrait, per chunk, in the job log and in `plan.json` — and what
+`scripts/avatar_identity.py` reads back. Both come from the
+[OpenCV Zoo](https://github.com/opencv/opencv_zoo) and are read through the `opencv-python`
+already in `requirements.txt`, so they add no dependency:
+
+```
+models/face_detection_yunet_2023mar.onnx      0.2 MB   opencv_zoo/models/face_detection_yunet/
+models/face_recognition_sface_2021dec.onnx     37 MB   opencv_zoo/models/face_recognition_sface/
+```
+
+Same folder, same `VIDEOGEN_MODELS_DIR` and same `./data/models/` under Docker as the matting
+model. Read the scores as a coarse instrument: a different person measures about 0.44 below the
+real one, which is decisive, but the metric will not adjudicate a subtle resemblance, and a
+move smaller than about 0.04 between chunks is inside its own error.
 
 **On the ComfyUI box — the Wan 2.2 S2V weights.** Four files, ~24 GB, listed with their
 destination folders in `scripts/install_wan_s2v.sh`. Run that script on the box if it has

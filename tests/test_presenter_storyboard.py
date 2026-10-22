@@ -183,5 +183,72 @@ class PresenterAndCardsTogether(unittest.TestCase):
                 self.assertLess(max(rows), im.height)
 
 
+@unittest.skipUnless(ffmpeg_works(), "no usable ffmpeg/libx264 on this machine")
+class TheMotionTailCarriesTheRightFrames(unittest.TestCase):
+    """What the next chunk of a chained presenter is actually conditioned on.
+
+    The tail is cut from the chunk as it came off the box rather than from trim_lead_frame's
+    re-encode, which is one lossy generation fewer in a path that feeds itself. That is only
+    free if both files yield the SAME frames, and the only way to know is to encode a render
+    whose frames are individually identifiable and read them back - the arithmetic is asserted
+    in test_avatar.py, but an off-by-one in -sseof would satisfy it and still hand the model a
+    frame short.
+    """
+
+    ENGINE = "Wan 2.2 S2V"
+
+    @classmethod
+    def setUpClass(cls):
+        from services import avatar
+        cls.avatar = avatar
+        cls.spec = config.avatar_model(cls.ENGINE)
+        fps, chunk = cls.spec["fps"], cls.spec["chunk"]
+        d = TMP / "motiontail"
+        (d / "src").mkdir(parents=True, exist_ok=True)
+        # frame n is a solid grey of luma n+1, so a frame read back names its own index
+        for n in range(chunk):
+            Image.new("L", (64, 64), n + 1).convert("RGB").save(d / "src" / f"f{n:03d}.png")
+        cls.raw = d / "raw.mp4"
+        subprocess.run([video.ffmpeg(), "-y", "-v", "error", "-framerate", str(fps),
+                        "-i", str(d / "src" / "f%03d.png"), "-r", str(fps),
+                        "-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv420p", str(cls.raw)],
+                       check=True)
+        cls.clip = d / "clip.mp4"
+        avatar.trim_lead_frame(cls.raw, cls.clip, cls.ENGINE)
+        cls.from_raw = d / "tail_raw.mp4"
+        cls.from_clip = d / "tail_clip.mp4"
+        avatar.motion_tail(cls.raw, cls.from_raw, cls.ENGINE)
+        avatar.motion_tail(cls.clip, cls.from_clip, cls.ENGINE)
+
+    @staticmethod
+    def indices(path: Path) -> list:
+        """Which frames of the render a clip holds, read back out of their luma."""
+        buf = subprocess.run([video.ffmpeg(), "-v", "error", "-i", str(path), "-f", "rawvideo",
+                              "-pix_fmt", "gray", "-s", "64x64", "-"],
+                             capture_output=True, check=True).stdout
+        px = 64 * 64
+        return [buf[i * px] - 1 for i in range(len(buf) // px)]
+
+    def test_the_tail_is_the_same_frames_whichever_file_it_is_cut_from(self):
+        self.assertEqual(self.indices(self.from_raw), self.indices(self.from_clip))
+
+    def test_the_tail_is_as_long_as_the_model_will_keep(self):
+        want = round(self.spec["motion_seconds"] * self.spec["fps"])
+        self.assertEqual(len(self.indices(self.from_raw)), want)
+
+    def test_the_tail_ends_on_the_last_rendered_frame(self):
+        """It is the END of the chunk that the next one continues; losing the last frame would
+        put a gap at the seam the chain exists to close."""
+        self.assertEqual(self.indices(self.from_raw)[-1], self.spec["chunk"] - 1)
+
+    def test_the_tail_never_carries_the_reference_slot(self):
+        """Frame 0 of a Wan render is the ref-image conditioning slot and comes out broken -
+        trim_lead_frame drops it from the clip, and the tail must not reintroduce it."""
+        self.assertNotIn(0, self.indices(self.from_raw))
+
+    def test_the_trimmed_clip_starts_one_frame_into_the_render(self):
+        self.assertEqual(self.indices(self.clip)[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1236,6 +1236,40 @@ def _avatar_pending(job: Job, plan: dict) -> bool:
                 and not (plan.get("avatar") or {}).get("segments"))
 
 
+def _avatar_face_summary(segments: list) -> dict:
+    """The likeness across the chain, as plan fields. Empty when nothing was measured."""
+    scored = [s["face"] for s in segments if (s.get("face") or {}).get("faces")]
+    if not scored:
+        return {}
+    return {"face_first": scored[0]["mean"], "face_last": scored[-1]["mean"],
+            "face_min": min(f["min"] for f in scored),
+            "face_means": [f["mean"] for f in scored]}
+
+
+def _log_avatar_faces(job: Job, segments: list):
+    """Say what happened to the likeness, in one line, for a chain long enough to drift.
+
+    First chunk to last is the number that matters: the portrait is the reference image for every
+    chunk, but each one is conditioned on the pixels of the one before it, so a long chain walks
+    away from the face it started on. Read the TREND - the absolute score is a blunt instrument,
+    and a presenter who has merely wandered still scores well clear of AVATAR_FACE_MIN_COSINE."""
+    scored = [(i, s["face"]) for i, s in enumerate(segments, 1)
+              if (s.get("face") or {}).get("faces")]
+    if len(scored) < 2:
+        return
+    first, last = scored[0][1]["mean"], scored[-1][1]["mean"]
+    worst = min(f["min"] for _i, f in scored)
+    line = (f"presenter avatar: likeness to the portrait {first:.2f} -> {last:.2f} "
+            f"over {len(scored)} chunk(s), worst frame {worst:.2f}")
+    blind = [i for i, s in enumerate(segments, 1)
+             if (s.get("face") or {}).get("frames") and not s["face"]["faces"]]
+    if blind:
+        line += f"; no face found at all in chunk(s) {', '.join(str(i) for i in blind)}"
+    if worst < config.AVATAR_FACE_MIN_COSINE:
+        line += f" - under {config.AVATAR_FACE_MIN_COSINE:.3f} is a different person"
+    job.add_log(line)
+
+
 def _avatar_assets(job: Job, plan: dict):
     """Render the presenter segments: one lip-synced clip (and its matte) per window.
 
@@ -1288,11 +1322,31 @@ def _avatar_assets(job: Job, plan: dict):
             ref = src
         img_name = client.upload_image(ref, name=f"videogen_avatar_{job.id}.png")
         segments = []
-        prev_end, prev_clip, chained = None, None, 0
+        # Which appearance each window belongs to. Every chunk of one appearance renders on that
+        # appearance's own seed: the portrait is the reference either way, but fresh noise per
+        # chunk makes the model re-interpret the same face at every seam.
+        apps = avatar.appearances(wins)
+        # ...and which of them may continue the chunk before it. Every AVATAR_CHAIN_MAXth chunk
+        # is rendered from the portrait alone instead, so the drift the chain accumulates cannot
+        # run the whole length of a long appearance. `anchors` is how many of those resets this
+        # setting actually bought, measured against leaving the chain unbroken.
+        may_chain = avatar.chain_plan(wins, engine, config.AVATAR_CHAIN_MAX)
+        anchors = sum(1 for unbroken, now in zip(avatar.chain_plan(wins, engine, 0), may_chain)
+                      if unbroken and not now)
+        # prev_raw is the chunk as it came off the box, kept one iteration so the next chunk's
+        # motion can be cut from it rather than from trim_lead_frame's re-encode. Tracked in
+        # memory and never looked for on disk, because a pause, a cancel or a crash can abort a
+        # chunk mid-download and leave a truncated one behind - so anything already there is
+        # swept now rather than risked as conditioning, which also keeps the job directory (which
+        # app.py lists) from showing a second copy of a segment after a failed run.
+        for stale in d.glob("avatar_*_raw.mp4"):
+            stale.unlink(missing_ok=True)
+        prev_end, prev_clip, prev_raw, chained = None, None, None, 0
         for i, (start, end) in enumerate(wins, 1):
             clip = d / f"avatar_{i:02d}.mp4"
             matte = d / f"avatar_{i:02d}_matte.mp4"
-            if not clip.exists():
+            clip_existed = clip.exists()
+            if not clip_existed:
                 wav = d / f"avatar_{i:02d}.wav"
                 secs = avatar.slice_audio(nar, start, end, wav, engine)
                 _gpu_gate(job)
@@ -1301,12 +1355,12 @@ def _avatar_assets(job: Job, plan: dict):
                 # A window that butts up against the one before it is one appearance rendered in
                 # chunks, so the chunk before it is what this one should continue. A bookend pair
                 # is two separate appearances and gets no motion. prev_clip comes off disk, so a
-                # resumed job chains exactly as a fresh one does.
+                # resumed job chains exactly as a fresh one does - which is also why the tail
+                # falls back to it: a chunk that was reused rather than rendered has no raw.
                 motion_name, tail = "", d / f"avatar_{i:02d}_motion.mp4"
-                if (prev_clip is not None and prev_clip.exists() and prev_end is not None
-                        and start - prev_end < 0.05 and config.avatar_model(engine).get("motion")):
+                if may_chain[i - 1] and prev_clip is not None and prev_clip.exists():
                     try:
-                        avatar.motion_tail(prev_clip, tail, engine)
+                        avatar.motion_tail(prev_raw or prev_clip, tail, engine)
                         motion_name = client.upload_file(
                             tail, name=f"videogen_avatar_{job.id}_{i}_motion.mp4", mime="video/mp4")
                         chained += 1
@@ -1318,9 +1372,14 @@ def _avatar_assets(job: Job, plan: dict):
                     client, engine, img_name, audio_name, secs, raw,
                     prefix=f"video/videogen_{job.id}_avatar{i}",
                     on_progress=_progress(job, "avatar"), should_stop=lambda: job.cancel_requested,
-                    on_cleanup_failed=_cleanup_warn(job), motion_name=motion_name)
+                    on_cleanup_failed=_cleanup_warn(job), motion_name=motion_name,
+                    seed=avatar.chunk_seed(job.id, apps[i - 1]))
                 avatar.trim_lead_frame(raw, clip, engine)
-                raw.unlink(missing_ok=True)
+                # the PREVIOUS render has served its last purpose (this chunk's motion); this one
+                # is kept until the next chunk has cut its own tail from it
+                if prev_raw is not None:
+                    prev_raw.unlink(missing_ok=True)
+                prev_raw = raw
                 tail.unlink(missing_ok=True)
                 # the narration slice has served its purpose the moment the clip is down
                 if config.COMFY_CLEANUP:
@@ -1333,10 +1392,26 @@ def _avatar_assets(job: Job, plan: dict):
             # where the figure sits inside the square frame, so the overlay can draw the
             # FIGURE at the size that was asked for rather than the frame around it
             bbox = avatar.matte_bounds(matte) if style == "cutout" and matte.exists() else None
+            # How far this chunk's face has drifted from the portrait. Measured HERE rather than
+            # inside the render branch, and outside the cut-out branch, so it covers a reused
+            # chunk on a resume and a bubble-look video too. None whenever the two CPU models
+            # are not staged, which costs the measurement and nothing else.
+            face = avatar.face_identity(clip, ref) if avatar.face_models_ready() else None
             segments.append({"start": start, "end": end, "file": clip.name,
                              "matte": matte.name if style == "cutout" else "",
-                             "bbox": list(bbox) if bbox else []})
+                             "bbox": list(bbox) if bbox else [],
+                             "face": face or {},
+                             # rendered from the portrait alone rather than continuing the chunk
+                             # before it - true for the first chunk of every appearance, and for
+                             # each deliberate re-anchor after that
+                             "anchored": not may_chain[i - 1]})
             prev_end, prev_clip = end, clip
+            if clip_existed:
+                # a reused chunk leaves no render to cut a tail from, so the next one falls back
+                # to the trimmed clip rather than continuing some earlier chunk's render
+                prev_raw = None
+        if prev_raw is not None:
+            prev_raw.unlink(missing_ok=True)
         # the portrait is the reference image for EVERY segment, so it goes only once they are
         # all rendered - not inside the loop with the audio
         if config.COMFY_CLEANUP:
@@ -1347,13 +1422,19 @@ def _avatar_assets(job: Job, plan: dict):
                           # can explain a trim without anyone reading the log
                           "asked_seconds": round(asked, 2),
                           "coverage_label": config.AVATAR_COVERAGES.get(job.avatar_coverage, ""),
-                          "delivered": avatar.describe(wins, total)}
+                          "delivered": avatar.describe(wins, total),
+                          "chain_max": int(config.AVATAR_CHAIN_MAX or 0),
+                          # the likeness across the chain, so a drift can be read off a finished
+                          # job instead of re-measured (scripts/avatar_identity.py does that)
+                          **_avatar_face_summary(segments)}
         _save_plan(job, plan)
         chain = len(segments) > 1 and all(b["start"] - a["end"] < 0.05
                                           for a, b in zip(segments, segments[1:]))
         job.add_log(f"presenter avatar: {len(segments)} segment(s)"
                     f"{' end to end' if chain else ''}, {got:.1f}s on {engine}"
-                    f"{f'; {chained} continued the chunk before' if chained else ''}")
+                    f"{f'; {chained} continued the chunk before' if chained else ''}"
+                    f"{f', {anchors} re-anchored to the portrait' if anchors else ''}")
+        _log_avatar_faces(job, segments)
     except (JobCancelled, JobPaused, JobWaitingWindow):
         raise
     except Exception as e:  # noqa: BLE001 - a video with no presenter is still a video

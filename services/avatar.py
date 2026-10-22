@@ -16,6 +16,7 @@ The matte is written as a plain grayscale video; services/video.composite() alph
 with the colour video at assembly time, which is the same path the circle bubble takes with a
 static mask. Nothing here knows how the presenter is finally drawn.
 """
+import random
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,9 @@ from services.ffbin import ffmpeg
 
 MIN_SEGMENT = 1.5          # shorter than this reads as a glitch rather than a presenter
 GAP_SEARCH = 1.2           # how far to hunt for a word gap when snapping a window edge
+SEAM = 0.05                # windows closer than this are one appearance, not two. The same
+                           # number as video.SEAM, deliberately: what counts as one appearance
+                           # has to be the same answer for the chain, the seed and the overlay.
 
 
 def _duration(path: Path) -> float:
@@ -124,6 +128,69 @@ def _tile(total: float, cap: float) -> list:
     return out
 
 
+def appearances(wins: list) -> list:
+    """Which appearance each window belongs to, as a 1-based index per window.
+
+    A contiguous run of windows is ONE appearance rendered in chunks; a gap starts another. The
+    bookend coverages give two appearances, "full" on a chunked engine gives one of many chunks,
+    and the caller needs to tell them apart to decide what may be chained and what shares a
+    seed. Derived from the windows rather than tracked through the render loop, so a resumed job
+    - which skips the chunks already on disk - gets the same answer as a fresh one."""
+    out, n = [], 0
+    for i, (s, _e) in enumerate(wins):
+        if i == 0 or s - wins[i - 1][1] >= SEAM:
+            n += 1
+        out.append(n)
+    return out
+
+
+def chain_plan(wins: list, engine: str = "", max_chain: int = 0) -> list:
+    """Whether each window may continue the one before it, as a flag per window.
+
+    False means that chunk is rendered from the portrait alone, with no ref_motion - which is how
+    the first chunk of every appearance has always rendered, so it needs no new graph.
+
+    The point of saying no on purpose: chaining hands each chunk the PIXELS of the one before it,
+    so a chunk eight deep is conditioned on eight generations of small deviations and the face has
+    walked off the portrait. `max_chain` is the longest run allowed to share one anchor, so 4
+    anchors chunks 1, 5, 9... and no chunk is ever more than three hops from the photograph. 0
+    keeps one unbroken chain, which is what this did before.
+
+    Derived from the windows, not counted as the render loop goes: a resumed job skips the chunks
+    already on disk, so a counter incremented per render would re-anchor in different places the
+    second time round."""
+    apps = appearances(wins)
+    chainable = bool(config.avatar_model(engine).get("motion"))
+    cap = max(0, int(max_chain or 0))
+    out, start = [], 0
+    for i, app in enumerate(apps):
+        if i == 0 or app != apps[i - 1]:
+            start = i                       # first chunk of an appearance: nothing to continue
+            out.append(False)
+        else:
+            out.append(chainable and (not cap or (i - start) % cap != 0))
+    return out
+
+
+def chunk_seed(job_id: str, appearance: int = 1) -> int:
+    """The sampler seed every chunk of one appearance renders on.
+
+    Fixed per appearance rather than drawn fresh per chunk, which is what ComfyClient.build_avatar
+    falls back to. With the portrait pinned as ref_image for the whole chain, fresh noise makes the
+    model land on its own reading of the same face in every chunk, so the likeness wobbles across
+    the seams on top of whatever the motion chain drifts. It is also the only reason two runs can
+    be compared at all: without it every render differs, and no change to the chain can be
+    measured.
+
+    Per APPEARANCE, not per video: the intro and the outro of a bookend pair are two separate
+    performances and would read as a loop if they rendered identically.
+
+    Derived from the job id the way the card layouts are (cardtemplates.pick_templates), so a
+    resume seeds exactly as the first pass did. Kept clear of 2**31 because build_avatar spreads
+    `seed + i` over an engine's seed nodes."""
+    return random.Random(f"{job_id}|avatar|{appearance}").randrange(2 ** 31 - 16)
+
+
 def _snap(start: float, end: float, words, total: float) -> tuple:
     """Pull a window's edges onto gaps between spoken words.
 
@@ -166,14 +233,24 @@ def motion_tail(clip: Path, dest: Path, engine: str = "") -> Path:
     Wan S2V takes up to `motion_seconds` of ref_motion and keeps the LAST frames of whatever it
     is given, so the tail is both all it can use and all that is worth uploading. Re-encoded
     rather than stream-copied: -sseof lands on the nearest keyframe, and a chunk this short has
-    one at the front, so a copy would hand over the whole clip."""
+    one at the front, so a copy would hand over the whole clip.
+
+    `clip` wants to be the chunk as it came OFF the box rather than trim_lead_frame's output.
+    This is a path that feeds itself - chunk N's pixels are chunk N+1's conditioning - so every
+    generation of lossy encoding in it compounds over the chain. The frames are the same either
+    way: the tail is the last 73 of a 77-frame render and of the 76-frame clip trimmed from it,
+    which are both raw frames 4..76, so taking the earlier file costs nothing and saves an
+    encode. crf 0 for the same reason, and the pixel format and codec stay what ComfyUI's
+    SaveVideo already wrote - h264 yuv420p - so LoadVideo on the box opens the same thing it
+    always did. It costs about 8 MB a tail against 1 MB at crf 16, and a second to encode:
+    nothing next to the twelve minutes of GPU the chunk it conditions will take."""
     spec = config.avatar_model(engine)
     secs = float(spec.get("motion_seconds") or 0.0)
     if secs <= 0:
         raise RuntimeError(f"{engine or config.DEFAULT_AVATAR_MODEL} cannot be chained")
     fps = float(spec["fps"])
     subprocess.run([ffmpeg(), "-y", "-v", "error", "-sseof", f"-{secs:.4f}", "-i", str(clip),
-                    "-an", "-r", f"{fps}", "-c:v", "libx264", "-crf", "16",
+                    "-an", "-r", f"{fps}", "-c:v", "libx264", "-crf", "0",
                     "-pix_fmt", "yuv420p", str(dest)], check=True)
     if not Path(dest).exists():
         raise RuntimeError("could not cut the motion tail")
@@ -399,6 +476,128 @@ def matte_bounds(matte: Path, thresh: float = 0.5) -> tuple | None:
         return (float(xs.min()) / W, float(ys.min()) / H,
                 float(xs.max() + 1) / W, float(ys.max() + 1) / H)
     except Exception:          # noqa: BLE001 - framing must never fail a render
+        return None
+
+
+def _face_models():
+    """The YuNet detector and the SFace recogniser. Raises when either file is missing.
+
+    cv2, not onnxruntime: opencv-python ships both of these as first-class objects, so the
+    alignment crop SFace needs comes with them instead of having to be reimplemented. Same
+    arrangement as the matting either way - a CPU model in MODELS_DIR, kept off the shared box."""
+    import cv2
+
+    det = config.MODELS_DIR / config.AVATAR_FACE_DETECT_MODEL
+    emb = config.MODELS_DIR / config.AVATAR_FACE_EMBED_MODEL
+    for p in (det, emb):
+        if not p.exists():
+            raise FileNotFoundError(f"avatar face model missing: {p}")
+    return (cv2.FaceDetectorYN_create(str(det), "", (320, 320), 0.6, 0.3, 5000),
+            cv2.FaceRecognizerSF_create(str(emb), ""))
+
+
+def _embed(det, rec, bgr):
+    """The identity vector of the clearest face in one BGR frame, or None if there is no face."""
+    import numpy as np
+
+    h, w = bgr.shape[:2]
+    det.setInputSize((w, h))
+    ok, faces = det.detect(bgr)
+    if not ok or faces is None or not len(faces):
+        return None
+    # by confidence rather than by position: YuNet promises no ordering
+    return rec.feature(rec.alignCrop(bgr, faces[int(np.argmax(faces[:, 14]))]))
+
+
+def face_models_ready() -> bool:
+    """Whether the likeness can be measured at all, without loading anything.
+
+    Checked before the work starts so a deployment that never staged the two files pays nothing
+    - not an ffmpeg call per chunk, and not a 37 MB model load."""
+    return ((config.MODELS_DIR / config.AVATAR_FACE_DETECT_MODEL).exists()
+            and (config.MODELS_DIR / config.AVATAR_FACE_EMBED_MODEL).exists())
+
+
+def _sample_frames(clip: Path, samples: int) -> list:
+    """Frame indices to measure a chunk at: evenly spread, past the clip's lead-in.
+
+    The lead-in is skipped because it is not a fair sample of the likeness. Scoring every frame
+    of a Wan chunk against its portrait: frame 0 lands at 0.36 against a take mean of 0.81,
+    because it is the ref-image conditioning slot rather than generated picture, and frames 1-4
+    sit at 0.69-0.71 while the model settles out of the reference. Those five frames alone pull
+    the standard deviation of a take from 0.041 to 0.065 - noise the measurement does not need.
+    thumbnail_cutout skips the opening for the same reason."""
+    from services import video
+
+    fps = video.fps(clip) or 0.0
+    total = int(round(float(video.duration(clip) or 0.0) * fps))
+    if total < 3:
+        return [max(0, total - 1)]
+    lead, last = max(1, total // 10), total - 1
+    if samples >= last - lead + 1:
+        return list(range(lead, last + 1))
+    step = (last - lead) / float(samples - 1) if samples > 1 else 0.0
+    return sorted({min(last, lead + int(round(k * step))) for k in range(samples)})
+
+
+def face_identity(clip: Path, portrait: Path, samples: int = 5) -> dict | None:
+    """How much like the portrait the presenter still looks, over one chunk.
+
+    {"mean", "min", "faces", "frames"} - cosine similarity against the portrait's own face,
+    sampled across the clip rather than taken from one frame, because a single frame mid-blink
+    or mid-syllable is noise. `faces` below `frames` is itself the strongest signal available:
+    a likeness that has melted stops being detected as a face at all.
+
+    Read this as a COARSE instrument, and read the trend rather than any single number. Measured
+    on the spike footage: a different person sits 0.44 below the real one, which is decisive,
+    and two takes of the same engine agree to 0.002. But the gap between the engine that holds
+    the likeness and the one the notes call "a younger, thinner stranger" is only 0.053, against
+    a 5-frame mean's own error of about 0.018 (take sd 0.041). So this will show a chain that
+    has collapsed, and a drift that moves a chunk mean by more than ~0.04 - it will not
+    adjudicate a subtle resemblance, and a smaller move than that is not evidence of anything.
+
+    None when the models are not staged, the clip cannot be read, or the portrait has no
+    findable face. Never raises - the same contract as matte_bounds and _subject_bounds, because
+    a measurement must never cost a render that has already been paid for."""
+    try:
+        import numpy as np
+        import cv2
+        from services import video
+
+        if not face_models_ready():
+            return None
+        det, rec = _face_models()
+        ref = _embed(det, rec, cv2.imread(str(portrait)))
+        if ref is None:
+            return None
+        W, H = video.frame_size(clip)
+        # One decode of a handful of frames, named by index rather than thinned by the fps
+        # filter: a whole-clip rawvideo pass (what matting does) would be ~90 MB for a chunk
+        # this size, and asking for a RATE would make the frame count depend on the duration
+        # probe - which, if it ever came back wrong, would quietly pull in frame 0. Frame 0 is
+        # the one frame that must not be measured: on Wan it is the reference-image slot and
+        # comes out broken, and even on a trimmed clip the opening frame has a closed mouth
+        # (thumbnail_cutout avoids it for the same reason). An index past the end simply yields
+        # no frame, so a bad probe costs samples instead of corrupting the score.
+        picks = _sample_frames(clip, max(1, int(samples)))
+        if not picks:
+            return None
+        sel = "+".join(rf"eq(n\,{n})" for n in picks)
+        raw = subprocess.run([ffmpeg(), "-v", "error", "-i", str(clip),
+                              "-vf", f"select='{sel}'", "-vsync", "0",
+                              "-f", "rawvideo", "-pix_fmt", "bgr24",
+                              "-"], capture_output=True, check=True).stdout
+        frames = np.frombuffer(raw, np.uint8).reshape(-1, H, W, 3)
+        scores = []
+        for f in frames:
+            e = _embed(det, rec, np.ascontiguousarray(f))
+            if e is not None:
+                scores.append(float(rec.match(ref, e, cv2.FaceRecognizerSF_FR_COSINE)))
+        if not scores:
+            return {"mean": 0.0, "min": 0.0, "faces": 0, "frames": int(len(frames))}
+        return {"mean": round(float(np.mean(scores)), 4), "min": round(min(scores), 4),
+                "faces": len(scores), "frames": int(len(frames))}
+    except Exception:          # noqa: BLE001 - measuring must never fail a render
         return None
 
 

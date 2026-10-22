@@ -118,6 +118,13 @@ class CoverageSurvivesSubmit(unittest.TestCase):
     source the report came from."""
 
     def setUp(self):
+        # The shipped budgets, pinned: every assertion below is about what the DEFAULTS buy
+        # and what the warning says when they cannot pay for "Whole video". Raising the
+        # render budget is the supported way to afford a long presenter, and it would make
+        # Wan cover the video and tie LTX's budget to it - a different message, correctly.
+        mock.patch.multiple(config, AVATAR_MAX_SECONDS=30.0,
+                            AVATAR_MAX_RENDER_MINUTES=45.0).start()
+        self.addCleanup(mock.patch.stopall)
         prev = config.OUTPUT_DIR
         config.OUTPUT_DIR = TMP / "submit-output"
         self.addCleanup(setattr, config, "OUTPUT_DIR", prev)
@@ -608,6 +615,9 @@ class AvatarStage(unittest.TestCase):
         mock.patch.object(pipeline.avatar, "slice_audio", return_value=12.0).start()
         mock.patch.object(pipeline.avatar, "matte_segment").start()
         self.render = mock.patch.object(pipeline.avatar, "render_segment").start()
+        # the clips here are 5-byte stand-ins with no face to find: stubbed out rather
+        # than left to spawn ffmpeg and load a 37 MB model per chunk
+        mock.patch.object(pipeline.avatar, "face_identity", return_value=None).start()
 
         def _render(_c, _e, _i, _a, _s, dest, **kw):
             Path(dest).write_bytes(b"clip")
@@ -707,8 +717,17 @@ class ChainedChunks(unittest.TestCase):
         self.assertAlmostEqual(spec["max_segment"], (spec["chunk"] - 1) / spec["fps"])
 
     def test_the_budget_buys_whole_tiles(self):
+        """The RENDER budget buys whole tiles - which is what avatar_budget_seconds rounds down
+        for, and all it can promise.
+
+        Pinned rather than read off live Settings, because the footage cap is a flat number
+        applied AFTER that rounding: 45 s of footage against 120 render minutes is a legitimate
+        setting for a whole-video presenter and buys 9.47 tiles, which would fail a test that is
+        about the arithmetic rather than about anyone's settings. It costs nothing - the last
+        window is simply short - so the cap is lifted here instead."""
         spec = config.avatar_model(self.WAN)
-        tiles = config.avatar_budget_seconds(self.WAN) / spec["max_segment"]
+        with mock.patch.object(config, "AVATAR_MAX_SECONDS", 3600.0):
+            tiles = config.avatar_budget_seconds(self.WAN) / spec["max_segment"]
         self.assertAlmostEqual(tiles, round(tiles), places=6)
 
     def test_a_full_coverage_video_inside_the_budget_tiles_end_to_end(self):
@@ -762,6 +781,10 @@ class ChainedChunks(unittest.TestCase):
         spec = config.avatar_model(self.WAN)
         d = Path(tempfile.mkdtemp(prefix="tail-", dir=TMP))
         dest, calls = d / "t.mp4", []
+        # Resolve the ffmpeg binary BEFORE subprocess is mocked. ffbin._resolve() probes for
+        # it and lru_caches the answer for the whole process, so letting that probe run against
+        # the mock would decide what every later test in the suite decodes with.
+        video.ffmpeg()
 
         def _ffmpeg(cmd, **kw):
             calls.append(cmd)
@@ -775,6 +798,39 @@ class ChainedChunks(unittest.TestCase):
         self.assertAlmostEqual(-float(cmd[cmd.index("-sseof") + 1]),
                                spec["motion_seconds"], places=3)
         self.assertLessEqual(spec["motion_seconds"], 73 / spec["fps"] + 1e-6)
+
+    def test_the_tail_is_encoded_near_lossless(self):
+        """crf 0, and the same codec and pixel format ComfyUI's SaveVideo already wrote - the
+        re-encode exists only to cut the tail, so it should give the VAE back what it was handed
+        rather than a third generation of compression."""
+        d = Path(tempfile.mkdtemp(prefix="tailq-", dir=TMP))
+        dest, calls = d / "t.mp4", []
+        # Resolve the ffmpeg binary BEFORE subprocess is mocked. ffbin._resolve() probes for
+        # it and lru_caches the answer for the whole process, so letting that probe run against
+        # the mock would decide what every later test in the suite decodes with.
+        video.ffmpeg()
+
+        def _ffmpeg(cmd, **kw):
+            calls.append(cmd)
+            dest.write_bytes(b"x")
+
+        with mock.patch.object(avatar.subprocess, "run", side_effect=_ffmpeg):
+            avatar.motion_tail(d / "c1.mp4", dest, self.WAN)
+        cmd = next(c for c in calls if isinstance(c, (list, tuple)) and "-sseof" in c)
+        self.assertEqual(cmd[cmd.index("-crf") + 1], "0")
+        self.assertEqual(cmd[cmd.index("-pix_fmt") + 1], "yuv420p")
+        self.assertEqual(cmd[cmd.index("-c:v") + 1], "libx264")
+
+    def test_the_last_frames_of_the_render_are_the_last_frames_of_the_trimmed_clip(self):
+        """Why cutting from either file is the same picture: the render is `chunk` frames, the
+        clip is one fewer after drop_first, and the tail is the last `motion_seconds` of both -
+        which lands on the same frame of the render, so the earlier file is free to prefer."""
+        spec = config.avatar_model(self.WAN)
+        kept = int(round(spec["motion_seconds"] * spec["fps"]))
+        from_raw = spec["chunk"] - kept                  # first kept frame, counted in the render
+        from_clip = (spec["chunk"] - 1) - kept + 1       # ...and through the trimmed clip
+        self.assertEqual(from_raw, from_clip)
+        self.assertEqual(from_raw, 4)
 
     def test_an_engine_that_cannot_chain_refuses_to_make_a_tail(self):
         with self.assertRaises(RuntimeError):
@@ -863,6 +919,80 @@ class TheResultIsNeverTheGraphsOwnInput(unittest.TestCase):
                          config.avatar_model("Wan 2.2 S2V")["save"])
 
 
+class AppearancesAndSeeds(unittest.TestCase):
+    """One appearance is a contiguous run of windows, and every chunk of it renders on one seed.
+
+    Fresh noise per chunk is what ComfyClient.build_avatar does when nobody passes a seed, and
+    with the portrait pinned as ref_image for the whole chain it makes the model re-read the same
+    face at every seam. It also makes two runs incomparable, which is the part that matters while
+    the chain is being worked on."""
+
+    WAN = "Wan 2.2 S2V"
+
+    def test_a_contiguous_chain_is_one_appearance(self):
+        with mock.patch.multiple(config, AVATAR_MAX_SECONDS=3600.0,
+                                 AVATAR_MAX_RENDER_MINUTES=150.0):
+            wins = avatar.segment_windows("full", 43.0, self.WAN, [])
+        self.assertGreater(len(wins), 4)
+        self.assertEqual(set(avatar.appearances(wins)), {1})
+
+    def test_a_bookend_pair_is_two_appearances(self):
+        wins = avatar.segment_windows("both", 300.0, self.WAN, [])
+        self.assertEqual(avatar.appearances(wins), [1, 2])
+
+    def test_no_windows_is_no_appearances(self):
+        self.assertEqual(avatar.appearances([]), [])
+
+    def test_a_gap_no_wider_than_the_seam_is_still_one_appearance(self):
+        """The same 0.05 s the chain and the overlay use - _tile rounds a shared boundary once,
+        so neighbours can sit a rounding error apart and must not be read as two performances."""
+        self.assertEqual(avatar.appearances([(0.0, 4.75), (4.76, 9.5)]), [1, 1])
+        self.assertEqual(avatar.appearances([(0.0, 4.75), (5.5, 10.25)]), [1, 2])
+
+    def test_a_long_chain_is_cut_into_runs_that_share_one_anchor(self):
+        """4 means chunks 1, 5, 9 render from the portrait alone, so nothing is ever more than
+        three hops of accumulated drift away from the photograph."""
+        wins = [(i * 4.75, (i + 1) * 4.75) for i in range(9)]
+        plan = avatar.chain_plan(wins, self.WAN, 4)
+        self.assertEqual([i for i, may in enumerate(plan, 1) if not may], [1, 5, 9])
+
+    def test_a_cap_of_zero_leaves_the_chain_unbroken(self):
+        """What this did before the setting existed, still reachable from Settings."""
+        wins = [(i * 4.75, (i + 1) * 4.75) for i in range(9)]
+        plan = avatar.chain_plan(wins, self.WAN, 0)
+        self.assertEqual([i for i, may in enumerate(plan, 1) if not may], [1])
+
+    def test_a_cap_of_one_never_chains_at_all(self):
+        wins = [(i * 4.75, (i + 1) * 4.75) for i in range(5)]
+        self.assertEqual(avatar.chain_plan(wins, self.WAN, 1), [False] * 5)
+
+    def test_a_new_appearance_restarts_the_count_rather_than_inheriting_it(self):
+        """A bookend pair is two performances; the outro must not be treated as chunk 2 of the
+        intro just because it is the second window."""
+        wins = avatar.segment_windows("both", 300.0, self.WAN, [])
+        self.assertEqual(avatar.chain_plan(wins, self.WAN, 4), [False, False])
+
+    def test_an_engine_with_no_chained_graph_never_chains(self):
+        wins = [(i * 5.0, (i + 1) * 5.0) for i in range(4)]
+        self.assertEqual(avatar.chain_plan(wins, "LTX 2.5", 4), [False] * 4)
+
+    def test_the_same_job_and_appearance_always_seed_the_same(self):
+        self.assertEqual(avatar.chunk_seed("job9", 1), avatar.chunk_seed("job9", 1))
+
+    def test_two_appearances_of_one_job_do_not_render_identically(self):
+        self.assertNotEqual(avatar.chunk_seed("job9", 1), avatar.chunk_seed("job9", 2))
+
+    def test_two_jobs_do_not_share_a_seed(self):
+        self.assertNotEqual(avatar.chunk_seed("jobA", 1), avatar.chunk_seed("jobB", 1))
+
+    def test_the_seed_leaves_room_for_the_registrys_own_offset(self):
+        """build_avatar spreads `seed + i` across an engine's seed nodes, so a seed at the top of
+        the range would push the second node past the 2**31 the convention lives in."""
+        for jid in ("a", "bb", "20261021-120000-abc123", "x" * 40):
+            for app in (1, 2, 7):
+                self.assertLess(avatar.chunk_seed(jid, app) + 8, 2 ** 31)
+
+
 class ChainedChunksInThePipeline(unittest.TestCase):
     """_avatar_assets carries the tail from one tile to the next, and only within one
     appearance: a bookend pair is two separate appearances and must not be chained."""
@@ -882,7 +1012,12 @@ class ChainedChunksInThePipeline(unittest.TestCase):
         self.logs = []
         self.job.add_log.side_effect = self.logs.append
         channels.avatar_path("c9", "a9").write_bytes(b"png")
-        # short enough that "full" tiles instead of degrading to bookends
+        # short enough that "full" tiles instead of degrading to bookends. The caps are
+        # pinned, not read off live Settings: raising the render budget to pay for a longer
+        # presenter is exactly what a drifting chain needs, and it must not silently change how
+        # many tiles these tests run over.
+        mock.patch.multiple(config, AVATAR_MAX_SECONDS=3600.0,
+                            AVATAR_MAX_RENDER_MINUTES=45.0).start()
         self.total = config.avatar_budget_seconds("Wan 2.2 S2V")
         mock.patch.object(pipeline.tts, "audio_duration", return_value=self.total).start()
         mock.patch.object(pipeline, "_gpu_gate").start()
@@ -892,6 +1027,9 @@ class ChainedChunksInThePipeline(unittest.TestCase):
         client.return_value.upload_image.return_value = "portrait.png"
         self.scrub = client.return_value.scrub_file
         mock.patch.object(pipeline.avatar, "slice_audio", return_value=4.8125).start()
+        # the clips here are 5-byte stand-ins with no face to find: stubbed out rather
+        # than left to spawn ffmpeg and load a 37 MB model per chunk
+        mock.patch.object(pipeline.avatar, "face_identity", return_value=None).start()
         mock.patch.object(pipeline.avatar, "matte_segment").start()
         self.tail = mock.patch.object(pipeline.avatar, "motion_tail").start()
         self.render = mock.patch.object(pipeline.avatar, "render_segment").start()
@@ -908,6 +1046,9 @@ class ChainedChunksInThePipeline(unittest.TestCase):
     def _motions(self):
         return [c.kwargs.get("motion_name", "") for c in self.render.call_args_list]
 
+    def _seeds(self):
+        return [c.kwargs.get("seed") for c in self.render.call_args_list]
+
     def test_every_tile_but_the_first_continues_the_one_before_it(self):
         pipeline._avatar_assets(self.job, {})
         motions = self._motions()
@@ -915,10 +1056,121 @@ class ChainedChunksInThePipeline(unittest.TestCase):
         self.assertEqual(motions[0], "")
         self.assertTrue(all(m == "uploaded.mp4" for m in motions[1:]), motions)
 
-    def test_the_tail_handed_over_is_the_previous_tile(self):
+    def test_the_tail_is_cut_from_the_render_rather_than_the_re_encode(self):
+        """It used to be cut from the trimmed clip, which is a second lossy generation inside a
+        path that feeds itself: chunk N's pixels are chunk N+1's conditioning, so the loss
+        compounds over the chain. Same frames either way (raw 4..76 both ways), one encode less."""
         pipeline._avatar_assets(self.job, {})
         srcs = [c.args[0].name for c in self.tail.call_args_list]
-        self.assertEqual(srcs, [f"avatar_{i:02d}.mp4" for i in range(1, len(srcs) + 1)])
+        self.assertGreater(len(srcs), 0)
+        self.assertEqual(srcs, [f"avatar_{i:02d}_raw.mp4" for i in range(1, len(srcs) + 1)])
+
+    def test_no_render_is_left_behind_once_the_stage_is_done(self):
+        """The raw is carried one iteration, not kept: app.py lists the job directory, so a
+        leftover would show up on the job page as a second copy of every segment."""
+        pipeline._avatar_assets(self.job, {})
+        self.assertEqual(sorted(p.name for p in self.jdir.glob("*_raw.mp4")), [])
+
+    def test_a_raw_left_behind_by_an_aborted_run_is_never_trusted(self):
+        """A pause, a cancel or a crash can abort a chunk mid-download. prev_raw is tracked in
+        memory, so the next run cuts from the trimmed clip rather than handing the model a
+        truncated file - and the stale one is swept rather than left on the job page."""
+        (self.jdir / "avatar_01.mp4").write_bytes(b"clip")
+        stale = self.jdir / "avatar_01_raw.mp4"
+        stale.write_bytes(b"truncated")
+        pipeline._avatar_assets(self.job, {})
+        self.assertEqual(self.tail.call_args_list[0].args[0].name, "avatar_01.mp4")
+        self.assertFalse(stale.exists())
+
+    def test_a_stale_raw_from_a_failed_run_is_swept_before_anything_renders(self):
+        """app.py lists the job directory, so one left behind would show up as a second copy of
+        a segment. Swept at the start rather than cleaned up at the end, which an exception
+        anywhere in the stage would skip."""
+        for i in (1, 2, 7):
+            (self.jdir / f"avatar_{i:02d}_raw.mp4").write_bytes(b"stale")
+        pipeline._avatar_assets(self.job, {})
+        self.assertEqual(sorted(p.name for p in self.jdir.glob("*_raw.mp4")), [])
+
+    def test_every_chunk_of_one_appearance_renders_on_the_same_seed(self):
+        pipeline._avatar_assets(self.job, {})
+        seeds = self._seeds()
+        self.assertGreater(len(seeds), 1)
+        self.assertEqual(set(seeds), {avatar.chunk_seed(self.job.id, 1)})
+
+    def test_the_intro_and_the_outro_are_not_rendered_from_the_same_noise(self):
+        self.job.avatar_coverage = "both"
+        with mock.patch.object(pipeline.tts, "audio_duration", return_value=300.0):
+            pipeline._avatar_assets(self.job, {})
+        seeds = self._seeds()
+        self.assertEqual(len(seeds), 2)
+        self.assertNotEqual(seeds[0], seeds[1])
+
+    def test_a_resumed_chain_seeds_the_missing_chunks_as_the_first_pass_did(self):
+        """The seed comes off the job id and the window list, both of which a resume rebuilds -
+        so the chunks it still has to render match the ones already on disk."""
+        pipeline._avatar_assets(self.job, {})
+        fresh = self._seeds()
+        self.assertGreater(len(fresh), 1)
+        # keep the first chunk, throw the rest away: that is what a resume actually finds
+        for clip in sorted(self.jdir.glob("avatar_*.mp4"))[1:]:
+            clip.unlink()
+        self.render.reset_mock()
+        pipeline._avatar_assets(self.job, {})
+        self.assertEqual(self._seeds(), fresh[1:])
+
+    def _long_chain(self, **over):
+        """A chain long enough to drift: the shipped render budget only buys 3 chunks, so the
+        settings that make this bug reachable at all have to be pinned up here too."""
+        caps = {"AVATAR_MAX_SECONDS": 3600.0, "AVATAR_MAX_RENDER_MINUTES": 150.0}
+        caps.update(over)
+        plan = {}
+        with mock.patch.multiple(config, **caps), \
+                mock.patch.object(pipeline.tts, "audio_duration", return_value=43.0):
+            pipeline._avatar_assets(self.job, plan)
+        return plan
+
+    def test_the_chain_is_re_anchored_to_the_portrait_before_the_face_drifts(self):
+        self._long_chain(AVATAR_CHAIN_MAX=4)
+        motions = self._motions()
+        self.assertEqual(len(motions), 9)
+        self.assertEqual([i for i, m in enumerate(motions, 1) if not m], [1, 5, 9])
+
+    def test_a_chain_cap_of_zero_never_re_anchors(self):
+        self._long_chain(AVATAR_CHAIN_MAX=0)
+        motions = self._motions()
+        self.assertEqual([i for i, m in enumerate(motions, 1) if not m], [1])
+
+    def test_the_plan_says_which_chunks_were_anchored(self):
+        plan = self._long_chain(AVATAR_CHAIN_MAX=4)
+        segs = plan["avatar"]["segments"]
+        self.assertEqual(plan["avatar"]["chain_max"], 4)
+        self.assertEqual([i for i, s in enumerate(segs, 1) if s["anchored"]], [1, 5, 9])
+
+    def test_the_log_says_how_many_times_it_re_anchored(self):
+        self._long_chain(AVATAR_CHAIN_MAX=4)
+        self.assertTrue(any("2 re-anchored to the portrait" in m for m in self.logs), self.logs)
+
+    def test_a_resumed_chain_re_anchors_at_the_same_chunks_a_fresh_one_does(self):
+        """The schedule comes off the window list, which a resume rebuilds from the same inputs -
+        a counter walked through the render loop would skip the reused chunks and shift it."""
+        self._long_chain(AVATAR_CHAIN_MAX=4)
+        fresh = [bool(m) for m in self._motions()]
+        for clip in sorted(self.jdir.glob("avatar_??.mp4"))[4:]:
+            clip.unlink()                           # keep the first four, re-render the rest
+        self.render.reset_mock()
+        self.tail.reset_mock()
+        self._long_chain(AVATAR_CHAIN_MAX=4)
+        self.assertEqual([bool(m) for m in self._motions()], fresh[4:])
+
+    def test_re_anchoring_does_not_reintroduce_the_seam_fade(self):
+        """The invariant that makes this cheap: the overlay reads timestamps, not the motion
+        chain, so a chunk rendered from the portrait is still part of one contiguous appearance
+        and still gets a single fade in and out."""
+        plan = self._long_chain(AVATAR_CHAIN_MAX=4)
+        segs = plan["avatar"]["segments"]
+        edges = video._seam_fades(segs, 0.4)
+        self.assertEqual(sum(1 for fi, _fo in edges if fi), 1)
+        self.assertEqual(sum(1 for _fi, fo in edges if fo), 1)
 
     def test_two_separate_appearances_are_not_chained(self):
         self.job.avatar_coverage = "both"
@@ -944,6 +1196,102 @@ class ChainedChunksInThePipeline(unittest.TestCase):
         pipeline._avatar_assets(self.job, {})
         self.assertEqual(self._motions()[0], "uploaded.mp4")   # tile 2 chained off the reused one
         self.assertEqual(self.tail.call_args_list[0].args[0].name, "avatar_01.mp4")
+
+
+# The spike footage and the two face models are both gitignored (generated media, and a 37 MB
+# weight file), so whatever needs real pixels skips rather than fails where they are absent.
+SPIKE = Path(__file__).resolve().parent.parent / "output" / "_avatar_spike"
+
+
+def _has_faces() -> bool:
+    return avatar.face_models_ready() and (SPIKE / "avatar.png").exists()
+
+
+class FaceIdentityDegradesQuietly(unittest.TestCase):
+    """A measurement must never cost a render that has already been paid for.
+
+    Same contract as matte_bounds and _subject_bounds: every failure returns None and the job
+    carries on, because by the time this runs the GPU has already spent twelve minutes a chunk."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp(prefix="faceid-", dir=TMP))
+
+    def test_a_missing_model_measures_nothing_rather_than_failing(self):
+        empty = self.d / "nomodels"
+        empty.mkdir()
+        with mock.patch.object(config, "MODELS_DIR", empty):
+            self.assertFalse(avatar.face_models_ready())
+            self.assertIsNone(avatar.face_identity(self.d / "c.mp4", self.d / "p.png"))
+
+    def test_an_unreadable_clip_measures_nothing_rather_than_failing(self):
+        self.assertIsNone(avatar.face_identity(self.d / "gone.mp4", self.d / "gone.png"))
+
+    def test_a_clip_that_is_not_a_video_measures_nothing_rather_than_failing(self):
+        junk = self.d / "junk.mp4"
+        junk.write_bytes(b"not a video")
+        self.assertIsNone(avatar.face_identity(junk, self.d / "p.png"))
+
+    @unittest.skipUnless(avatar.face_models_ready(), "face models not staged in models/")
+    def test_a_portrait_with_no_face_measures_nothing_rather_than_guessing(self):
+        from PIL import Image
+        flat = self.d / "flat.png"
+        Image.new("RGB", (320, 320), (40, 60, 80)).save(flat)
+        self.assertIsNone(avatar.face_identity(self.d / "c.mp4", flat))
+
+
+@unittest.skipUnless(_has_faces(), "face models or spike footage unavailable")
+class FaceIdentityMeasuresTheLikeness(unittest.TestCase):
+    """That the number means something, against footage whose answer is already written down.
+
+    output/_avatar_spike/FINDINGS.md recorded by eye that Wan "holds the likeness" and that LTX
+    renders "a younger, thinner stranger", and avatar_holo.mp4 is a different person altogether.
+    A metric that cannot reproduce that ordering is not measuring identity, so this is the test
+    that earns the rest of the feature."""
+
+    def test_the_portrait_scores_against_its_own_engine(self):
+        got = avatar.face_identity(SPIKE / "avatar_wan_s20.mp4", SPIKE / "avatar.png")
+        self.assertIsNotNone(got)
+        self.assertEqual(got["faces"], got["frames"])
+        self.assertGreater(got["min"], config.AVATAR_FACE_MIN_COSINE)
+
+    def test_a_different_person_lands_under_the_same_person_threshold(self):
+        got = avatar.face_identity(SPIKE / "avatar_holo.mp4", SPIKE / "avatar.png")
+        self.assertIsNotNone(got)
+        self.assertLess(got["mean"], config.AVATAR_FACE_MIN_COSINE)
+
+    def test_two_takes_of_one_engine_agree(self):
+        """The property the pipeline actually relies on: chunk against chunk, same subject and
+        same engine, the number is steady. Two separate 20-step and 10-step renders of the same
+        portrait measured 0.798 and 0.796 - so a chain that walks away from the face is visible
+        as a move, and the measurement is not itself the thing moving."""
+        a = avatar.face_identity(SPIKE / "avatar_wan_s20.mp4", SPIKE / "avatar.png")
+        b = avatar.face_identity(SPIKE / "avatar_wan_s10.mp4", SPIKE / "avatar.png")
+        self.assertLess(abs(a["mean"] - b["mean"]), 0.04)
+
+    def test_the_measurement_repeats(self):
+        clip, port = SPIKE / "avatar_wan_s20.mp4", SPIKE / "avatar.png"
+        self.assertEqual(avatar.face_identity(clip, port), avatar.face_identity(clip, port))
+
+    def test_the_lead_in_of_a_chunk_is_not_measured(self):
+        """Frame 0 of a Wan render is the ref-image slot and scores 0.36 against a take mean of
+        0.81; frames 1-4 sit at 0.69-0.71 while the model settles out of the reference. Sampling
+        them would report drift that is really just the start of every chunk."""
+        picks = avatar._sample_frames(SPIKE / "avatar_wan_s20.mp4", 5)
+        self.assertTrue(picks)
+        self.assertGreater(min(picks), 4)
+
+    def test_a_clip_with_nothing_to_find_is_counted_rather_than_dropped(self):
+        """A likeness that has melted stops being detected as a face at all, so `faces` short of
+        `frames` is a signal in its own right - not an error."""
+        d = Path(tempfile.mkdtemp(prefix="noface-", dir=TMP))
+        blank = d / "blank.mp4"
+        avatar.subprocess.run([video.ffmpeg(), "-y", "-v", "error", "-f", "lavfi",
+                        "-i", "color=c=gray:s=320x320:r=16:d=2", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", str(blank)], check=True)
+        got = avatar.face_identity(blank, SPIKE / "avatar.png")
+        self.assertIsNotNone(got)
+        self.assertEqual(got["faces"], 0)
+        self.assertGreater(got["frames"], 0)
 
 
 class ReassembleRouting(unittest.TestCase):
@@ -1081,6 +1429,9 @@ class ServerCleanup(unittest.TestCase):
         mock.patch.object(pipeline.avatar, "matte_segment").start()
         mock.patch.object(pipeline.avatar, "trim_lead_frame",
                           side_effect=lambda src, dst, eng: (Path(dst).write_bytes(b"c"), dst)[1]).start()
+        # the clips here are 5-byte stand-ins with no face to find: stubbed out rather
+        # than left to spawn ffmpeg and load a 37 MB model per chunk
+        mock.patch.object(pipeline.avatar, "face_identity", return_value=None).start()
         r = mock.patch.object(pipeline.avatar, "render_segment").start()
         r.side_effect = lambda _c, _e, _i, _a, _s, dest, **kw: (Path(dest).write_bytes(b"clip"), dest)[1]
         self.client = mock.patch.object(pipeline.comfy, "ComfyClient").start().return_value
