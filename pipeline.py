@@ -12,8 +12,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 import config
-from services import (avatar, browser, cast, chapters, channels, comfy, compilation, gpu, llm,
-                      lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
+from services import (avatar, browser, captions, cast, chapters, channels, comfy, compilation,
+                      gpu, llm, lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
                       thumbtext, transcript, tts, video, voices)
 from services import cardtemplates
 
@@ -1208,6 +1208,7 @@ def _caption_assets(job: Job, plan: dict):
         else:
             nar = d / "narration.wav"
             if not (nar.exists() and nar.stat().st_size > 1000):
+                job.add_log("captions: no narration audio to time; none added")
                 return
             job.set("tts", "timing the words for captions (whisper)")
             heard = lyrics.transcribe_words(nar, initial_prompt=plan.get("narration", "")[:600],
@@ -1219,6 +1220,7 @@ def _caption_assets(job: Job, plan: dict):
             words = aligned if ratio >= config.LYRIC_ALIGN_MIN_RATIO else heard
             src = "script" if ratio >= config.LYRIC_ALIGN_MIN_RATIO else "whisper"
         if not words:
+            job.add_log(f"captions: no words came back from the {src} timing; none added")
             return
         plan["caption_words"] = {"words": words, "source": src,
                                  "whisper_model": config.WHISPER_MODEL}
@@ -1499,15 +1501,24 @@ def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float)
     # config.CAPTIONS_ENABLED is a MASTER switch, checked here rather than when the job was
     # created: turning it off in Settings and reassembling must strip the captions from a video
     # that already chose them, which is the whole point of a master switch.
-    if not (config.CAPTIONS_ENABLED and job.captions
-            and (plan.get("caption_words") or {}).get("words")):
+    # Each skip of a job that asked for captions says why: a video that silently came out without
+    # them, with nothing in the log, is otherwise undiagnosable from the job page.
+    if not job.captions:
+        return None
+    if not config.CAPTIONS_ENABLED:
+        job.add_log("captions are switched off in Settings (master switch); none burned in")
+        return None
+    words = (plan.get("caption_words") or {}).get("words")
+    if not words:
+        job.add_log("captions: no word timings on the plan; none burned in")
         return None
     try:
         job.set("assembling", "writing the captions")
         phrases = captions.clamp(
-            captions.group(plan["caption_words"]["words"], max_words=config.CAPTION_MAX_WORDS,
+            captions.group(words, max_words=config.CAPTION_MAX_WORDS,
                            max_chars=config.CAPTION_MAX_CHARS), total)
         if not phrases:
+            job.add_log(f"captions: no on-screen groups from {len(words)} words; none burned in")
             return None
         # a card owns the lower third for whole clips at a time, so the caption moves above it
         # for that window rather than being suppressed
@@ -2323,6 +2334,9 @@ def _run(job: Job):
     # 6c. caption word timings (before the clips, so a failure surfaces early; non-fatal)
     if job.captions:
         _caption_assets(job, plan)
+    else:
+        # one line, so a log of a video that came out bare always says whether it asked
+        job.add_log("captions: off for this video")
 
     # 6d. the presenter avatar. After the word timings on purpose: the segment windows are
     # snapped to gaps between spoken words, and those timings are already on the plan.

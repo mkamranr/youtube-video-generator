@@ -123,6 +123,44 @@ class MasterSwitches(unittest.TestCase):
         self.job.captions = False
         with mock.patch.object(config, "CAPTIONS_ENABLED", True):
             self.assertIsNone(pipeline._caption_track(self.job, self.plan, (1080, 1920), [], 10.0))
+        self.assertEqual(self.logs, [])     # the video's own choice is not news
+
+    def test_captions_master_off_says_so(self):
+        with mock.patch.object(config, "CAPTIONS_ENABLED", False):
+            pipeline._caption_track(self.job, self.plan, (1080, 1920), [], 10.0)
+        self.assertTrue(any("master switch" in m for m in self.logs), self.logs)
+
+    def test_captions_with_no_word_timings_say_so(self):
+        """The symptom behind these: a captioned video came out bare with nothing in its log."""
+        with mock.patch.object(config, "CAPTIONS_ENABLED", True):
+            self.assertIsNone(pipeline._caption_track(self.job, {}, (1080, 1920), [], 10.0))
+        self.assertTrue(any("no word timings" in m for m in self.logs), self.logs)
+
+    def test_captions_with_no_groups_say_so(self):
+        with mock.patch.object(config, "CAPTIONS_ENABLED", True), \
+             mock.patch.object(pipeline.captions, "clamp", return_value=[]):
+            self.assertIsNone(pipeline._caption_track(self.job, self.plan, (1080, 1920), [], 10.0))
+        self.assertTrue(any("no on-screen groups" in m for m in self.logs), self.logs)
+
+    def test_captions_on_write_a_track(self):
+        """The happy path, end to end through the real captions module: pipeline never imported
+        it, every call raised NameError into the except, and every video came out bare."""
+        self.plan = {"caption_words": {"words": [
+            {"text": "hello", "start": 0.0, "end": 0.4}, {"text": "world", "start": 0.4, "end": 0.9}]}}
+        with mock.patch.object(config, "CAPTIONS_ENABLED", True), \
+             mock.patch.object(pipeline.video, "subtitles_ok", return_value=True):
+            ass = pipeline._caption_track(self.job, self.plan, (1080, 1920), [], 10.0)
+        self.assertIsNotNone(ass, self.logs)
+        self.assertTrue(Path(ass).exists())
+        self.assertFalse(any("failed" in m for m in self.logs), self.logs)
+
+    def test_caption_timing_with_no_narration_says_so(self):
+        plan = {"narration": "hello there"}
+        with mock.patch.object(pipeline, "_is_story", return_value=False), \
+             mock.patch.object(pipeline, "_song_words", return_value=[]):
+            pipeline._caption_assets(self.job, plan)
+        self.assertNotIn("caption_words", plan)
+        self.assertTrue(any("no narration audio" in m for m in self.logs), self.logs)
 
     def test_thumbnail_text_master_off_builds_no_variants(self):
         with mock.patch.object(config, "THUMB_TEXT_ENABLED", False), \
