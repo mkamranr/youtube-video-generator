@@ -184,13 +184,28 @@ class Render(unittest.TestCase):
         """Guards against the corner test passing because nothing was drawn at all."""
         with Image.open(self.base) as src:
             orig = src.convert("RGB")
-        out = thumbtext.render(self.base, self.dir / "drawn.jpg", "The real cost", "band")
+        out = thumbtext.render(self.base, self.dir / "drawn.jpg", "The real cost", "punch")
         with Image.open(out) as v:
             self.assertGreater(max_delta(orig, v.convert("RGB")), 100)
 
     def test_empty_text_is_refused(self):
         with self.assertRaises(ValueError):
-            thumbtext.render(self.base, self.dir / "x.jpg", "   ", "band")
+            thumbtext.render(self.base, self.dir / "x.jpg", "   ", "punch")
+
+    def test_text_stays_at_the_top_or_in_the_middle(self):
+        """The bottom of a thumbnail belongs to the duration badge and the presenter's corner."""
+        for size in (SIZE, (720, 1280), (1080, 1080)):
+            b = self.dir / f"flat_{size[0]}x{size[1]}.jpg"
+            Image.new("RGB", size, (50, 60, 90)).save(b, "JPEG", quality=92)
+            with Image.open(b) as src:
+                orig = src.convert("RGB")
+            H = size[1]
+            for layout in thumbtext.LAYOUTS:
+                out = thumbtext.render(b, self.dir / f"bottom_{layout}.jpg", "A very long line that wraps", layout)
+                with Image.open(out) as v:
+                    low = (0, int(0.72 * H), size[0], H)
+                    self.assertLess(max_delta(orig.crop(low), v.convert("RGB").crop(low)), 30,
+                                    f"{layout} drew into the bottom of a {size} thumbnail")
 
     def test_portrait_and_square_bases_render(self):
         for size in ((720, 1280), (1080, 1080)):
@@ -218,11 +233,17 @@ class Variants(unittest.TestCase):
 
     def test_a_failing_layout_never_costs_the_others(self):
         # _DRAW binds the function objects at import, so the dict entry is what has to be patched
-        broken = dict(thumbtext._DRAW, stack=mock.Mock(side_effect=RuntimeError("boom")))
+        broken = dict(thumbtext._DRAW, burst=mock.Mock(side_effect=RuntimeError("boom")))
         with mock.patch.object(thumbtext, "_DRAW", broken):
             recs = thumbtext.variants(self.base, self.dir, ["One", "Two", "Three"])
         self.assertEqual(len(recs), 2)
-        self.assertNotIn("stack", [r["layout"] for r in recs])
+        self.assertNotIn("burst", [r["layout"] for r in recs])
+
+    def test_a_presenter_base_only_gets_top_layouts(self):
+        recs = thumbtext.variants(self.base, self.dir, ["One", "Two", "Three"],
+                                  layouts=thumbtext.TOP_LAYOUTS)
+        self.assertEqual(len(recs), 3)
+        self.assertTrue({r["layout"] for r in recs} <= set(thumbtext.TOP_LAYOUTS))
 
     def test_no_texts_gives_no_variants(self):
         self.assertEqual(thumbtext.variants(self.base, self.dir, []), [])

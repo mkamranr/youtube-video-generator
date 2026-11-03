@@ -1,4 +1,4 @@
-"""Story board card layouts: eight templates in four families, and the rules that pick one.
+"""Story board card layouts: twelve templates in four families, and the rules that pick one.
 
 services/storyboard.py owns everything shared - fonts, wrapping, shadows, rounded images, the
 asset lifecycle and the overlay schedule. This module owns only the look: one small function per
@@ -541,14 +541,201 @@ def _tpl_quote_slab(card: dict, ctx: CardCtx, image=None) -> None:
     _place(ctx, panel, (panel_x, panel_y), blur=ctx.px(10), offset=ctx.px(6))
 
 
+# ---- the bold set ----------------------------------------------------------
+# Louder layouts that read as a creator talking rather than a broadcast graphic: a slapped-on
+# sticker, a marker-highlighted line, a taped polaroid, a speech bubble. Same contract as the rest -
+# inside the safe box, readable with image=None - and the rotated ones record their ROTATED bounds.
+INK_BODY = (44, 46, 56, 255)
+PAPER = (250, 249, 245, 255)
+
+
+def _tpl_sticker(card: dict, ctx: CardCtx, image=None) -> None:
+    """The card as a tilted accent sticker with a white die-cut border, low-left. Dark ink on the
+    accent, no panel, no badge."""
+    fonts = _fonts(ctx, head=27.0 if ctx.portrait else 29.0, body=17.0)
+    border = max(2, ctx.px(4))
+    w = int(0.92 * ctx.safe_w) if ctx.portrait else int((0.6 if ctx.square else 0.5) * ctx.W)
+    text_w = w - 2 * (ctx.pad + border)
+    kicker, head_lines, body_lines, used = _measure(ctx, card, fonts, text_w, max_body=2)
+    h = used + 2 * (ctx.pad + border)
+    slab = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(slab)
+    sd.rounded_rectangle((0, 0, w - 1, h - 1), radius=ctx.radius, fill=PAPER)
+    sd.rounded_rectangle((border, border, w - 1 - border, h - 1 - border),
+                         radius=max(0, ctx.radius - border), fill=ctx.accent)
+    _text_block(sd, ctx, ctx.pad + border, ctx.pad + border, kicker, head_lines, body_lines, fonts,
+                text_w, kicker_fill=DARK_TEXT, head_fill=DARK_TEXT, body_fill=INK_BODY)
+    slab = slab.rotate(2.5, resample=Image.BICUBIC, expand=True)
+    _place(ctx, slab, (ctx.m, ctx.floor - slab.height), blur=ctx.px(10), offset=ctx.px(7),
+           opacity=170)
+
+
+def _tpl_highlighter(card: dict, ctx: CardCtx, image=None) -> None:
+    """A statement in the middle of the frame, each headline line on its own slanted marker
+    stroke in the accent, the body in white under it over a soft scrim. No panel at all."""
+    fonts = _fonts(ctx, head=32.0 if ctx.portrait else 36.0, body=18.0)
+    f_kick, f_head, f_body, _ = fonts
+    text_w = int(0.8 * ctx.safe_w)
+    kicker, head_lines, body_lines, _used = _measure(ctx, card, fonts, text_w, max_body=2)
+    lh = int(f_head.size * 1.45)                 # room between strokes
+    padx = ctx.px(12)
+    block_h = len(head_lines) * lh
+    if kicker:
+        block_h += int(f_kick.size * 1.3) + ctx.px(10)
+    if body_lines:
+        block_h += ctx.px(12) + int(f_body.size * 1.35) * len(body_lines)
+    scrim_h = min(block_h + 4 * ctx.pad, ctx.safe_h)
+    scrim_y = ctx.top_safe + (ctx.safe_h - scrim_h) // 2
+    ctx.canvas.alpha_composite(_scrim((ctx.W, scrim_h), [0, 190, 190, 0]), (0, scrim_y))
+    ctx.boxes.append((0, scrim_y, ctx.W, scrim_y + scrim_h))
+
+    pd = ctx.draw
+    y = scrim_y + (scrim_h - block_h) // 2
+    top = y
+    if kicker:
+        kw = _spaced_width(pd, kicker, f_kick, 1.6 * ctx.s)
+        storyboard._spaced(pd, ((ctx.W - kw) // 2, y), kicker, f_kick, HEAD_FILL, 1.6 * ctx.s)
+        y += int(f_kick.size * 1.3) + ctx.px(10)
+    skew = ctx.px(6)
+    for i, ln in enumerate(head_lines):
+        tw = int(pd.textlength(ln, font=f_head))
+        tx, ty = (ctx.W - tw) // 2, y + ctx.px(6)
+        _l, bt, _r, bb = pd.textbbox((tx, ty), ln, font=f_head)   # the inked extent, not the em box
+        x0, x1 = tx - padx, tx + tw + padx
+        y0, y1 = bt - ctx.px(7), bb + ctx.px(7)
+        lean = skew if i % 2 == 0 else -skew     # alternate the slant so it looks hand-drawn
+        pd.polygon([(x0 + lean, y0), (x1 + lean // 2, y0 + ctx.px(2)), (x1 - lean, y1),
+                    (x0 - lean // 2, y1 - ctx.px(2))], fill=ctx.accent)
+        pd.text((tx, ty), ln, font=f_head, fill=DARK_TEXT)
+        y += lh
+    if body_lines:
+        y += ctx.px(12)
+        for ln in body_lines:
+            pd.text(((ctx.W - pd.textlength(ln, font=f_body)) // 2, y), ln, font=f_body,
+                    fill=HEAD_FILL)
+            y += int(f_body.size * 1.35)
+    x = (ctx.W - text_w) // 2 - padx - skew
+    ctx.boxes.append((x, top, ctx.W - x, y))
+
+
+def _polaroid(ctx: CardCtx, image, photo_w: int, headline: str, angle: float) -> Image.Image:
+    """A white-framed print of `image` with the headline written in its deep bottom margin and a
+    strip of accent tape across the top edge, rotated by `angle`."""
+    b = max(4, int(0.05 * photo_w))
+    photo_h = max(1, int(photo_w / ctx.img_ratio))
+    f = storyboard.load_font(max(10, 0.075 * photo_w), bold=True)
+    probe = ctx.draw
+    lines = storyboard._wrap(probe, headline, f, photo_w, 2) if headline else []
+    foot = max(3 * b, int(f.size * 1.2) * len(lines) + 2 * b)
+    tape_w, tape_h = int(0.34 * photo_w), max(6, int(0.07 * photo_w))
+    W, H = photo_w + 2 * b, photo_h + b + foot
+    layer = Image.new("RGBA", (W, H + tape_h // 2), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    oy = tape_h // 2
+    ld.rectangle((0, oy, W - 1, oy + H - 1), fill=PAPER)
+    layer.alpha_composite(storyboard._rounded_image(image, (photo_w, photo_h), radius=0, border=0),
+                          (b, oy + b))
+    y = oy + b + photo_h + b
+    for ln in lines:
+        ld.text(((W - ld.textlength(ln, font=f)) // 2, y), ln, font=f, fill=DARK_TEXT)
+        y += int(f.size * 1.2)
+    tape = Image.new("RGBA", (tape_w, tape_h), ctx.accent[:3] + (200,))
+    layer.alpha_composite(tape.rotate(-3, expand=True, resample=Image.BICUBIC),
+                          ((W - tape_w) // 2, 0))
+    return layer.rotate(angle, resample=Image.BICUBIC, expand=True)
+
+
+def _tpl_polaroid(card: dict, ctx: CardCtx, image=None) -> None:
+    """The still as a tilted, taped polaroid with the headline written under the photo; the
+    kicker and body ride in a small panel beside it (under it in portrait)."""
+    if image is None:
+        return _tpl_sticker(card, ctx, None)
+    fonts = _fonts(ctx, head=24.0, body=17.0)
+    headline = str(card.get("headline") or "")
+    rest = dict(card, headline="")
+    if ctx.portrait:
+        panel_w = ctx.safe_w
+        photo_w = int(0.62 * ctx.W)
+    else:
+        panel_w = int((0.42 if ctx.square else 0.40) * ctx.W)
+        photo_w = int((0.36 if ctx.square else 0.30) * ctx.W)
+    text_w = panel_w - 2 * ctx.pad - ctx.bar_w - ctx.px(12)
+    kicker, _h, body_lines, used = _measure(ctx, rest, fonts, text_w, max_body=4)
+    panel_h = used + 2 * ctx.pad if (kicker or body_lines) else 0
+
+    room = ctx.safe_h - ((panel_h + ctx.gap) if ctx.portrait and panel_h else 0)
+    pol = _polaroid(ctx, image, photo_w, headline, -4)
+    while pol.height > room and photo_w > ctx.px(60):     # shrink rather than overflow the frame
+        photo_w = int(photo_w * 0.88)
+        pol = _polaroid(ctx, image, photo_w, headline, -4)
+
+    if ctx.portrait:
+        panel_y = ctx.floor - panel_h
+        pol_pos = ((ctx.W - pol.width) // 2, (panel_y - ctx.gap if panel_h else ctx.floor) - pol.height)
+        panel_pos = (ctx.m, panel_y)
+    else:
+        pol_pos = (ctx.m, ctx.floor - pol.height)
+        panel_pos = (min(ctx.m + pol.width + ctx.gap, ctx.W - ctx.m - panel_w), ctx.floor - panel_h)
+    _place(ctx, pol, pol_pos, blur=ctx.px(12), offset=ctx.px(8), opacity=180)
+    if panel_h:
+        panel = _panel((panel_w, panel_h), ctx.radius)
+        pd = ImageDraw.Draw(panel)
+        pd.rounded_rectangle((ctx.pad, ctx.pad, ctx.pad + ctx.bar_w, panel_h - ctx.pad),
+                             radius=ctx.bar_w // 2, fill=ctx.accent)
+        _text_block(pd, ctx, ctx.pad + ctx.bar_w + ctx.px(12), ctx.pad, kicker, [], body_lines,
+                    fonts, text_w, badge=_badge(ctx))
+        _place(ctx, panel, panel_pos, blur=ctx.px(10), offset=ctx.px(6))
+
+
+def _tpl_callout(card: dict, ctx: CardCtx, image=None) -> None:
+    """A white speech bubble with a tail, the figure huge in ink over an accent underline, the
+    rest of the card under it - a number said out loud rather than a number on a chart."""
+    fonts = _fonts(ctx, head=22.0, body=17.0)
+    found = _pull_number(card)
+    number = found[0] if found else (str(card.get("headline") or "").split() or ["!"])[0]
+    rest = found[1] if found else str(card.get("headline") or "")
+    side = dict(card, headline=rest or card.get("headline", ""))
+    w = ctx.safe_w if ctx.portrait else int((0.62 if ctx.square else 0.5) * ctx.W)
+    text_w = w - 2 * ctx.pad
+    f_big = _fit_font(ctx.draw, number, text_w, 60 * ctx.s, 24 * ctx.s)
+    num_h = int(f_big.size * 1.15)
+    rule_h = max(3, ctx.px(5))
+    kicker, head_lines, body_lines, used = _measure(ctx, side, fonts, text_w, max_body=2)
+    bub_h = num_h + rule_h + ctx.px(10) + used + 2 * ctx.pad
+    tail = ctx.px(26)
+    layer = Image.new("RGBA", (w, bub_h + tail), (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    ld.rounded_rectangle((0, 0, w - 1, bub_h - 1), radius=ctx.radius * 2, fill=PAPER)
+    tx = ctx.px(36)
+    ld.polygon([(tx, bub_h - 2), (tx + int(1.3 * tail), bub_h - 2), (tx - ctx.px(6), bub_h + tail - 1)],
+               fill=PAPER)
+    ld.text((ctx.pad, ctx.pad), number, font=f_big, fill=DARK_TEXT)
+    ry = ctx.pad + num_h
+    nw = min(text_w, int(ld.textlength(number, font=f_big)))
+    ld.rectangle((ctx.pad, ry, ctx.pad + nw, ry + rule_h), fill=ctx.accent)
+    _text_block(ld, ctx, ctx.pad, ry + rule_h + ctx.px(10), kicker, head_lines, body_lines, fonts,
+                text_w, kicker_fill=INK_BODY, head_fill=DARK_TEXT, body_fill=INK_BODY,
+                badge=_badge(ctx))
+    _place(ctx, layer, (ctx.m, ctx.floor - layer.height), blur=ctx.px(10), offset=ctx.px(6),
+           opacity=160)
+
+    if image is not None and not ctx.portrait:
+        iw = int(0.22 * ctx.W)
+        ih = int(iw / ctx.img_ratio)
+        if ctx.m + w + ctx.gap + iw <= ctx.W - ctx.m:
+            _place(ctx, _fit_image(ctx, image, (iw, ih)),
+                   (ctx.W - ctx.m - iw, ctx.floor - ih), blur=ctx.px(12), offset=ctx.px(8),
+                   opacity=180)
+
+
 # ---- the registry ----------------------------------------------------------
 # Order is the RNG's domain and must stay stable: a set anywhere in the pick would silently
 # destroy reproducibility across processes.
 FAMILIES = {
-    "classic": ("lower_third", "ribbon"),
-    "stat": ("big_stat", "stat_chip"),
-    "visual": ("split", "photo_stack"),
-    "banner": ("full_bleed", "quote_slab"),
+    "classic": ("lower_third", "ribbon", "sticker"),
+    "stat": ("big_stat", "stat_chip", "callout"),
+    "visual": ("split", "photo_stack", "polaroid"),
+    "banner": ("full_bleed", "quote_slab", "highlighter"),
 }
 TEMPLATES = {
     "lower_third": _tpl_lower_third,
@@ -559,6 +746,10 @@ TEMPLATES = {
     "photo_stack": _tpl_photo_stack,
     "full_bleed": _tpl_full_bleed,
     "quote_slab": _tpl_quote_slab,
+    "sticker": _tpl_sticker,
+    "callout": _tpl_callout,
+    "polaroid": _tpl_polaroid,
+    "highlighter": _tpl_highlighter,
 }
 DEFAULT_TEMPLATE = "lower_third"
 
@@ -570,6 +761,8 @@ KICKER_FAMILY = {
     "WHY IT MATTERS": "banner", "THE POINT": "banner",
     "KEY FACT": "classic", "DID YOU KNOW": "classic", "HOW IT WORKS": "classic",
     "PRO TIP": "classic", "WHAT'S NEW": "classic",
+    "MYTH VS FACT": "banner", "THE CATCH": "banner", "REAL TALK": "banner",
+    "PLOT TWIST": "classic", "WAIT, WHAT?": "classic",
 }
 
 # template -> (axis, direction, fraction of the frame dimension it travels)
@@ -582,6 +775,10 @@ MOTION = {
     "photo_stack": ("y", 1, 0.05),
     "full_bleed": None,                # a full-width scrim that slides reads as a glitch
     "quote_slab": ("y", 1, 0.06),
+    "sticker": ("y", 1, 0.06),
+    "callout": ("x", -1, 0.08),
+    "polaroid": ("y", 1, 0.06),
+    "highlighter": ("x", -1, 0.06),
 }
 
 

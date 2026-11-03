@@ -1016,10 +1016,15 @@ Rules:
 - The FIRST clip is the intro: its card (if any) names the topic. The LAST clip usually gets a
   short takeaway or call-to-action card.
 - Text is READ ON SCREEN, so keep it short and punchy: "headline" max 8 words, "body" one
-  sentence of max 18 words. Facts must be true and match the narration; no hype, no emojis.
+  sentence of max 18 words. Write it conversational and surprising, like a sharp creator talking
+  to camera - but facts must be true and match the narration; no emojis.
+- Vary the cards: mix a striking figure, a myth busted, a twist, a quick tip and a takeaway rather
+  than five cards that all read the same.
 Return JSON: {{"cards": [{{"start_clip": 1, "end_clip": 1, "kicker": "...", "headline": "...", "body": "...", "image_prompt": "..."}}, ...]}} where:
-- "kicker": a 1-3 word uppercase label such as KEY FACT, DID YOU KNOW, HOW IT WORKS, BY THE NUMBERS, PRO TIP, TAKEAWAY.
-- "headline": the card's main line.
+- "kicker": a 1-3 word uppercase label such as KEY FACT, DID YOU KNOW, WAIT, WHAT?, PLOT TWIST,
+  MYTH VS FACT, THE CATCH, REAL TALK, HOW IT WORKS, BY THE NUMBERS, PRO TIP, TAKEAWAY.
+- "headline": the card's main line - a hook: a question, a contrast, a striking figure or a bold
+  claim the body then backs up.
 - "body": the supporting sentence (may be "" when the headline says it all).
 {img_rule}
 Never mention real people's names or brands."""
@@ -1501,20 +1506,31 @@ def write_thumbnail(title: str, narration: str, style: str, channel: dict | None
 Its story: \"\"\"{narration[:1500]}\"\"\"
 Its visual style: {style}{wish}
 
-Design ONE eye-catching YouTube thumbnail image for it. A viewer glancing for half a second
-must INSTANTLY understand what the video is about. Return JSON with key:
+Design ONE scroll-stopping YouTube thumbnail image for it - the kind a viewer cannot resist
+tapping. In half a second they must understand what the video is about AND feel they are missing
+something. Return JSON with key:
 - "thumbnail_prompt": a prompt for an image generator describing a single dramatic scene that
-  SHOWS THE VIDEO'S SUBJECT: {subject}, front and
-  center, caught mid-action with {emotion}. Bold composition, exaggerated
-  scale, vivid saturated colors, strong contrast and lighting, simple readable background.
-{_THUMB_KIDS_RULE if kids else ""}  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
-  Same world/style as the video.
+  SHOWS THE VIDEO'S SUBJECT: {subject}, caught mid-action with {emotion}.
+  Build it on ONE proven click hook - pick whichever fits this story best: an extreme close-up
+  reaction (wide eyes, open mouth, looking at the viewer or at the key object); a stark
+  before/after or "this vs that" contrast split across the frame; an impossible scale (something
+  tiny made huge, or huge made tiny); a mystery (the key object half-revealed, glowing, about to
+  open); or the split second before something goes wrong. It must create a curiosity gap - hint at
+  the payoff, never show the whole story.
+  ONE big subject, filling the frame, rim-lit so it pops off a simple, saturated background in a
+  complementary colour; strong contrast, vivid colours, no clutter.
+  Put the subject in the LOWER TWO THIRDS of the frame, slightly off-centre, and keep the TOP THIRD
+  simple and uncluttered (sky, wall, soft gradient) - a headline is drawn there afterwards.
+  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
+{_THUMB_KIDS_RULE if kids else ""}  Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
 - "thumbnail_texts": 2-3 alternative overlay lines for this same picture, each at most
   {max_words} words and under {max_chars} characters, no full stops, no quotation marks. Each must be
-  readable at thumbnail size on a phone and must say something the picture alone cannot - the
-  stake, the number, the surprise. Best first. They are drawn over the picture afterwards, so the
-  picture itself still contains no letters of any kind.
+  readable at thumbnail size on a phone and must open a curiosity gap the picture alone cannot -
+  a question, a shocking number, a bold claim, a "nobody tells you" twist, a strong verb. Give each
+  line a DIFFERENT angle. Never a lie: the video must deliver what the line promises. Best first.
+  They are drawn over the picture afterwards, so the picture itself still contains no
+  letters of any kind.
 Never mention real people's names or brands."""
     out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     tp = str(out.get("thumbnail_prompt", "")).strip()

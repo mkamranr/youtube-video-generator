@@ -342,5 +342,38 @@ class UserDeletion(unittest.TestCase):
         self.assertEqual(clients["admin2"].delete(f"/api/channels/{ch['id']}").status_code, 200)
 
 
+class BundleThumbnails(unittest.TestCase):
+    """Every thumbnail a job offers goes into the publish ZIP - the pure listing helper the
+    bundle route writes from."""
+
+    def setUp(self):
+        self.dir = TMP / "bundle" / self.id().rsplit(".", 1)[-1]
+        self.dir.mkdir(parents=True, exist_ok=True)
+        for name in ("thumb_base.jpg", "thumb_var_01.jpg", "thumb_var_02.jpg", "thumb_var_03.jpg",
+                     "thumb_base_presenter.jpg"):
+            (self.dir / name).write_bytes(b"jpg")
+        self.plan = {"thumbnail_variants": [
+            {"file": "thumb_var_01.jpg", "layout": "punch"},
+            {"file": "thumb_var_02.jpg", "layout": "burst"},
+            {"file": "thumb_var_03.jpg", "layout": "sticker"},
+            {"file": "thumb_base_presenter.jpg", "layout": "presenter", "presenter": True},
+        ]}
+
+    def test_every_variant_and_the_clean_render_are_listed(self):
+        names = [n for _f, n in app._bundle_thumbnails(self.dir, self.plan, 2)]
+        self.assertEqual(names, ["clean", "01 punch", "02 burst (active)", "03 sticker", "presenter"])
+
+    def test_the_clean_render_can_be_the_active_one(self):
+        names = [n for _f, n in app._bundle_thumbnails(self.dir, self.plan, 0)]
+        self.assertEqual(names[0], "clean (active)")
+        self.assertEqual(sum(n.endswith("(active)") for n in names), 1)
+
+    def test_a_missing_file_is_skipped(self):
+        (self.dir / "thumb_var_03.jpg").unlink()
+        names = [n for _f, n in app._bundle_thumbnails(self.dir, self.plan, 1)]
+        self.assertNotIn("03 sticker", names)
+        self.assertEqual(len(names), 4)
+
+
 if __name__ == "__main__":
     unittest.main()

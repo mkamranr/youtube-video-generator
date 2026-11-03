@@ -921,7 +921,8 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
         # thumbnail the next time its variants are built. job.thumb_text is this video's choice.
         if config.THUMB_TEXT_ENABLED and job.thumb_text and config.THUMB_TEXT_VARIANTS > 0:
             try:
-                for r in thumbtext.variants(src, d, texts, offset=len(recs)):
+                layouts = thumbtext.TOP_LAYOUTS if is_pres else thumbtext.LAYOUTS
+                for r in thumbtext.variants(src, d, texts, offset=len(recs), layouts=layouts):
                     recs.append({**r, "presenter": is_pres})
             except Exception as e:  # noqa: BLE001
                 job.add_log(f"thumbnail text failed ({e}); the plain thumbnail is kept")

@@ -527,6 +527,22 @@ def _safe_filename(title: str, fallback: str) -> str:
     return name[:120] or fallback
 
 
+def _bundle_thumbnails(d, plan: dict, active: int) -> list:
+    """[(file, name)] of every thumbnail the job offers: the clean render, then each text variant
+    in the job page's order, the one the video ships with marked active (0 = the clean render)."""
+    out = []
+    base = d / "thumb_base.jpg"
+    if base.exists():
+        out.append((base, "clean (active)" if active == 0 else "clean"))
+    for k, rec in enumerate(plan.get("thumbnail_variants") or [], 1):
+        f = d / str(rec.get("file") or "")
+        if not rec.get("file") or not f.exists():
+            continue
+        name = "presenter" if rec.get("layout") == "presenter" else f"{k:02d} {rec.get('layout', '')}".strip()
+        out.append((f, f"{name} (active)" if k == active else name))
+    return out
+
+
 @app.get("/jobs/{job_id}/download/{kind}")
 def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
     """Downloads named after the video title: video, video-<short>p (an upscaled version),
@@ -566,6 +582,8 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
                     z.write(d / up["file"], f"{title} - {_upscale_tag(up)}.mp4")
             if (d / "thumbnail.jpg").exists():
                 z.write(d / "thumbnail.jpg", f"{title}.jpg")
+            for src, name in _bundle_thumbnails(d, plan, job.thumb_variant):
+                z.write(src, f"Thumbnails/{title} - {name}.jpg")
             if (d / "music.mp3").exists():
                 z.write(d / "music.mp3", f"{title} - music.mp3")
             if (d / "narration.wav").exists():

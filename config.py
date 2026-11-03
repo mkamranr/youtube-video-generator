@@ -790,7 +790,7 @@ EDITABLE_SETTINGS = {
                           "Hex colour of the story board cards' accent (kicker label and side bar), e.g. #e9a13b"),
     "STORYBOARD_TEMPLATE_SET": (str, lambda v: v in STORYBOARD_TEMPLATE_SETS,
                                 "Story board: card layouts",
-                                "Which card layouts new videos draw from. Mixed uses all eight: the card's own "
+                                "Which card layouts new videos draw from. Mixed uses all twelve, including the bold sticker, highlighter, polaroid and callout layouts: the card's own "
                                 "content picks the family (a figure, a picture, a closing takeaway) and a "
                                 "per-video seed picks the variant, never the same layout twice in a row. "
                                 "Classic uses only the lower-third panel. Applies to newly planned story "
