@@ -327,6 +327,42 @@ class TrimScheduleAroundThePresenter(unittest.TestCase):
         self.assertEqual(self.trim([lyr], [(0.0, 30.0, self.presenter)]), [])
 
 
+class ClearOfTheCaptions(unittest.TestCase):
+    """Captions always sit at the bottom, so the cards are what moves - and never away."""
+    PORTRAIT = (1080, 1920)
+
+    def setUp(self):
+        from services import captions
+        self.band = captions.band(self.PORTRAIT, 0.10)
+        self.low = (64, 1373, 1016, 1652)        # lower_third on a 1080x1920 frame
+        self.high = (64, 300, 1016, 600)
+
+    def layer(self, rect):
+        return {"png": "x.png", "start": 5.0, "end": 25.0, "x": 0, "y": 0, "rect": rect}
+
+    def test_a_card_on_the_caption_strip_rises_clear_of_it(self):
+        got = storyboard.clear_band([self.layer(self.low)], self.band, self.PORTRAIT)
+        self.assertGreater(got[0]["lifted"], 0)
+        self.assertLessEqual(got[0]["rect"][3], self.band[1])
+        self.assertGreaterEqual(got[0]["rect"][1], 0)
+        self.assertEqual((got[0]["start"], got[0]["end"]), (5.0, 25.0))
+
+    def test_a_card_clear_of_the_strip_is_identical(self):
+        lyr = self.layer(self.high)
+        self.assertEqual(storyboard.clear_band([lyr], self.band, self.PORTRAIT), [lyr])
+
+    def test_a_card_with_nowhere_to_rise_is_kept_where_it_is(self):
+        """Unlike the presenter trim, the caption strip never costs a card its window."""
+        for lyr in (self.layer((0, 0) + self.PORTRAIT), self.layer(None)):
+            self.assertEqual(storyboard.clear_band([lyr], self.band, self.PORTRAIT), [lyr])
+
+    def test_an_already_lifted_card_adds_to_its_lift(self):
+        first = storyboard.trim_schedule([self.layer(self.low)], [], size=self.PORTRAIT)
+        first = [storyboard._lifted(first[0], 10)]
+        got = storyboard.clear_band(first, self.band, self.PORTRAIT)
+        self.assertEqual(got[0]["rect"][3], self.low[3] - got[0]["lifted"])
+
+
 class Sfx(unittest.TestCase):
 
     def test_hits_closer_than_half_a_second_collapse(self):

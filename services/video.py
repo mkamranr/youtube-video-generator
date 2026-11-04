@@ -451,8 +451,8 @@ def avatar_box(size: tuple, style: str = "", size_pct=None, cutout_pct=None,
         # A bubble is inset from the edge; a cut-out is anchored TO it, so the torso runs off
         # frame - a floating head with a cut neck is the thing that looks wrong. The caption
         # reserve therefore applies only to the bubble: lifting a cut-out off the bottom is
-        # exactly the mistake it is meant to prevent, so the captions move instead (the
-        # pipeline feeds this rect to captions.lift_spans, like a story-board card).
+        # exactly the mistake it is meant to prevent, so the captions (always at the bottom)
+        # read on top of the torso instead.
         y = (H - bh - margin - reserve) if style == "bubble" else (H - bh)
     else:
         y = margin if style == "bubble" else 0

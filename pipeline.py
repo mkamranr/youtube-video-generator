@@ -1495,7 +1495,13 @@ def _avatar_overlay(job: Job, plan: dict, size: tuple, total: float) -> list:
         return []
 
 
-def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float):
+def _burns_captions(job: Job, plan: dict) -> bool:
+    """Whether this assembly will burn a caption track - the gate _caption_track logs through."""
+    return bool(job.captions and config.CAPTIONS_ENABLED
+                and (plan.get("caption_words") or {}).get("words"))
+
+
+def _caption_track(job: Job, plan: dict, size: tuple, total: float):
     """Write captions.ass for this frame size, or None. Redone on every assembly, so a settings
     change applies on reassembly and the track always matches the final resolution."""
     # config.CAPTIONS_ENABLED is a MASTER switch, checked here rather than when the job was
@@ -1520,15 +1526,12 @@ def _caption_track(job: Job, plan: dict, size: tuple, cards: list, total: float)
         if not phrases:
             job.add_log(f"captions: no on-screen groups from {len(words)} words; none burned in")
             return None
-        # a card owns the lower third for whole clips at a time, so the caption moves above it
-        # for that window rather than being suppressed
-        lifts = captions.lift_spans(
-            [(c["start"], c["end"], c.get("rect")) for c in cards], size)
+        # always at the bottom: the cards are moved clear of the caption strip, not the reverse
         family, _fdir = captions.font_family(bold=True)
         ass = captions.write_ass(phrases, size, job.dir / "captions.ass",
                                  accent=config.CAPTION_ACCENT, font=family,
                                  bottom_margin=config.CAPTION_BOTTOM_MARGIN,
-                                 highlight=config.CAPTION_HIGHLIGHT, lifts=lifts)
+                                 highlight=config.CAPTION_HIGHLIGHT)
         if not video.subtitles_ok(ass):
             job.add_log("this ffmpeg build cannot burn subtitles; assembling without captions")
             return None
@@ -1613,6 +1616,15 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
             # a fact card must never share the screen with the hook or the end card
             cards = storyboard.trim_schedule(cards, hook_win, size=size)
             cards = storyboard.trim_schedule(cards, end_win, size=size)
+            if _burns_captions(job, plan):
+                # captions always sit at the bottom, so a card on their strip rises clear of it
+                # where it can (and is never dropped for it) - see storyboard.clear_band
+                cards = storyboard.clear_band(
+                    cards, captions.band(size, config.CAPTION_BOTTOM_MARGIN), size)
+                moved = sum(1 for c in cards if c.get("lifted"))
+                if moved:
+                    job.add_log(f"captions: {moved} of {len(cards)} story board cards lifted "
+                                "clear of the caption strip")
             if av_win:
                 # a rect per window, so a card clear of the presenter keeps its whole window and
                 # one that is not rises above it - see storyboard.trim_schedule
@@ -1669,7 +1681,7 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     layers += polish
     layers += _avatar_overlay(job, plan, size, total)
     hits += [c["start"] for c in cards]
-    ass = _caption_track(job, plan, size, cards, total)
+    ass = _caption_track(job, plan, size, total)
     source = joined
     if layers or ass is not None:
         job.set("assembling", f"overlaying {len(layers)} layers"

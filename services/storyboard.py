@@ -344,8 +344,7 @@ def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0
                          it is raised above it rather than dropped. Only a card with nowhere to
                          rise into falls back to losing its window.
 
-    Moving beats dropping here for the same reason captions.lift_spans moves a caption above a
-    card instead of hiding it: reserving the whole frame for a corner overlay took every card off
+    Moving beats dropping here: reserving the whole frame for a corner overlay took every card off
     a video the presenter never leaves, which is precisely the video the cards are there for.
 
     Applied after the cards are drawn (the PNGs are already on disk and cost nothing to keep) but
@@ -379,6 +378,24 @@ def trim_schedule(layers: list, busy: list, min_dur: float = 1.0, pad: float = 0
             end = min(end, bs) if be >= end else end
         if end - start >= min_dur:
             out.append(_retimed(lyr, round(start, 3), round(end, 3), size, lift))
+    return out
+
+
+def clear_band(layers: list, band, size: tuple) -> list:
+    """Raise every card that sits on the caption strip `band` = (x0, y0, x1, y1) clear of it.
+
+    Captions always stay at the bottom, so the cards move instead - but only where there is frame
+    to rise into. Unlike trim_schedule this never trims or drops a card: one with no room keeps
+    its place and the captions, composited last, read on top of its bottom edge."""
+    out = []
+    for lyr in layers:
+        # rect is where the card is now (_lifted moves it), so the clearance is measured from there
+        room = _clearance(lyr.get("rect"), band, size)
+        if room:
+            before = int(lyr.get("lifted") or 0)
+            lyr = _lifted(lyr, room)
+            lyr["lifted"] = before + room
+        out.append(lyr)
     return out
 
 
@@ -430,8 +447,8 @@ def _lifted(lyr: dict, lift: int) -> dict:
     and the transparent remainder hangs off the top where overlay clips it for free. `y` is either
     a plain number or one of motion_xy's per-frame ease-out expressions, and video._pos takes a
     negative number as happily as a string, so both forms simply lose `lift` - subtracting an
-    integer cannot introduce the ':' or brackets _pos forbids. `rect` travels with it: the
-    captions read it to place themselves above the card (captions.lift_spans)."""
+    integer cannot introduce the ':' or brackets _pos forbids. `rect` travels with it, so a later
+    clearance test (trim_schedule, clear_band) sees the card where it now is."""
     out = dict(lyr)
     y = lyr.get("y", 0)
     out["y"] = f"{y}-{lift}" if isinstance(y, str) else int(y) - lift
@@ -479,8 +496,8 @@ def render_all(job_dir: Path, plan: dict, clips: list, size: tuple,
 def _union(boxes: list):
     """The rectangle a card actually occupies, from what its template placed.
 
-    Free here (the card has just been drawn) and the captions need it: they move above a card
-    rather than being hidden while one is up, and only the template knows where it put things."""
+    Free here (the card has just been drawn) and the clearance tests need it: a card is moved
+    clear of the caption strip and the presenter, and only the template knows where it put things."""
     if not boxes:
         return None
     return (min(b[0] for b in boxes), min(b[1] for b in boxes),

@@ -165,47 +165,27 @@ def _escape(text: str) -> str:
             .replace("\n", " ").strip())
 
 
-def lift_spans(rects, size: tuple, gap: int = 0) -> list:
-    """[(start, end, margin_v)] windows where a caption must sit higher than usual.
-
-    A story board card owns the lower third for whole clips at a time, so suppressing captions
-    while one is up would gut the feature on exactly the videos it matters most for. Instead the
-    caption moves above the card for that window."""
-    H = int(size[1])
-    gap = gap or int(0.02 * H)
-    out = []
-    for start, end, rect in rects or []:
-        if not rect:
-            continue
-        _x0, y0, _x1, _y1 = rect
-        margin = max(0, H - int(y0) + gap)
-        if margin > 0:
-            out.append((float(start), float(end), margin))
-    return out
+def _metrics(size: tuple, bottom_margin: float = 0.0, font_px: int = 0) -> tuple:
+    """(bottom margin px, font px, outline px) - shared by write_ass and band so the strip the
+    cards are kept clear of is the strip the captions are actually drawn in."""
+    W, H = int(size[0]), int(size[1])
+    margin = bottom_margin or config.CAPTION_BOTTOM_MARGIN
+    if H > W * 1.05:                  # portrait: never below the Shorts UI, whatever the setting says
+        margin = max(SHORTS_SAFE, margin)
+    size_px = int(font_px or round(H * 0.052 * config.CAPTION_FONT_SCALE))
+    return int(margin * H), size_px, max(2, round(size_px * 0.08))
 
 
-def _margin_at(t: float, lifts, default: int) -> int:
-    for start, end, margin in lifts or []:
-        if start <= t < end:
-            return margin
-    return default
+def band(size: tuple, bottom_margin: float = 0.0, font_px: int = 0) -> tuple:
+    """(x0, y0, x1, y1): the strip at the bottom that up to two wrapped caption lines occupy.
 
-
-def _split_on_lifts(phrases, lifts) -> list:
-    """Split any phrase that straddles a lift boundary, so each piece has one placement."""
-    edges = sorted({e for span in (lifts or []) for e in span[:2]})
-    out = []
-    for p in phrases:
-        cuts = [c for c in edges if p["start"] < c < p["end"]]
-        if not cuts:
-            out.append(p)
-            continue
-        at = p["start"]
-        for c in cuts + [p["end"]]:
-            words = [w for w in p["words"] if w["start"] < c and w["end"] > at] or p["words"]
-            out.append(dict(p, start=at, end=c, words=words))
-            at = c
-    return out
+    Captions always sit at the bottom - a caption that hops above whatever card is up ends up
+    near the top of a portrait frame - so it is the cards that move clear of this strip
+    (storyboard.clear_band), not the captions."""
+    W, H = int(size[0]), int(size[1])
+    mv, size_px, outline = _metrics(size, bottom_margin, font_px)
+    tall = 2 * int(round(size_px * 1.25)) + 2 * outline
+    return (0, max(0, H - mv - tall), W, H)
 
 
 ASS_HEADER = """[Script Info]
@@ -213,7 +193,7 @@ ScriptType: v4.00+
 PlayResX: {W}
 PlayResY: {H}
 ScaledBorderAndShadow: yes
-WrapStyle: 2
+WrapStyle: 0
 
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
@@ -225,30 +205,23 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 
 
 def write_ass(phrases, size: tuple, out_ass, accent: str = "", font: str = "",
-              font_px: int = 0, bottom_margin: float = 0.0, highlight: str = "word",
-              lifts=()) -> Path:
+              font_px: int = 0, bottom_margin: float = 0.0, highlight: str = "word") -> Path:
     """Write the caption track. Returns the path.
 
     Word highlight is done by emitting one event per word-state, each carrying the WHOLE phrase
     with a single word recoloured. Colour only, never size or weight: changing a word's metrics
-    reflows the centred line and makes it jump on every single word."""
+    reflows the centred line and makes it jump on every single word - and it is also what keeps
+    libass's smart wrap (WrapStyle 0) breaking every word-state of a phrase at the same place."""
     W, H = int(size[0]), int(size[1])
-    portrait = H > W * 1.05
-    margin = bottom_margin or config.CAPTION_BOTTOM_MARGIN
-    if portrait:                      # never below the Shorts UI, whatever the setting says
-        margin = max(SHORTS_SAFE, margin)
-    size_px = int(font_px or round(H * 0.052 * config.CAPTION_FONT_SCALE))
+    mv, size_px, outline = _metrics(size, bottom_margin, font_px)
     hi = ass_colour(accent or config.CAPTION_ACCENT)
     white = "&H00FFFFFF"
     head = ASS_HEADER.format(W=W, H=H, font=font or "Arial", size=size_px,
-                             outline=max(2, round(size_px * 0.08)),
-                             shadow=max(1, round(size_px * 0.04)),
-                             mx=int(0.06 * W), mv=int(margin * H))
-    default_mv = int(margin * H)
+                             outline=outline, shadow=max(1, round(size_px * 0.04)),
+                             mx=int(0.06 * W), mv=mv)
     lines = []
-    for p in _split_on_lifts(clamp(phrases, float("inf")), lifts):
-        mv = _margin_at(p["start"], lifts, default_mv)
-        over = f",,0,0,{mv if mv != default_mv else 0},,"
+    for p in clamp(phrases, float("inf")):
+        over = ",,0,0,0,,"
         text = _escape(p.get("text") or " ".join(w["word"] for w in p["words"]))
         if highlight != "word" or len(p["words"]) < 2:
             lines.append(f"Dialogue: 0,{ass_time(p['start'])},{ass_time(p['end'])},Cap{over}"
