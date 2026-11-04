@@ -426,6 +426,7 @@ def video_length_clip_seconds(name: str) -> float:
 
 # Thumbnail dimensions per aspect ratio (long side <= 1280)
 THUMB_SEED_SECONDS = 3.0   # thumbnail render length when it is seeded from a cast portrait (last frame is kept)
+OPENING_LEAD_SECONDS = 3.0  # "reference only" portraits: the discarded lead-in whose last frame starts clip 1
 THUMB_SIZES = {
     "16:9 (Widescreen)": (1280, 720),
     "9:16 (Portrait Widescreen)": (720, 1280),

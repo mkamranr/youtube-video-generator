@@ -573,6 +573,63 @@ def _clip_on_disk(path: Path) -> bool:
     return path.exists() and path.stat().st_size > 10000
 
 
+OPENING_LEAD_MP4 = "opening_lead.mp4"
+OPENING_LEAD_JPG = "opening_lead.jpg"
+
+
+def _opening(plan: dict, d: Path):
+    """plan["opening"] when its portrait is on disk, else None."""
+    return plan.get("opening") if (d / "cast_opening.jpg").exists() else None
+
+
+def _reference_only(plan: dict) -> bool:
+    """The portrait carries the look into clip 1 but is never on screen itself."""
+    return (plan.get("opening") or {}).get("mode") == "reference"
+
+
+def _opening_lead(job: Job, client, i2v, plan: dict) -> Path:
+    """The first frame of clip 1 in "reference only" mode: the LAST frame of a short render that
+    starts on the portrait and moves into scene 1's opening moment. The render itself is thrown away.
+
+    The same trick _render_thumbnail uses. The portrait is only a reference for the look, so it must
+    not be clip 1's first frame - but a clip built from text alone loses the likeness, and every later
+    clip continues from clip 1. A frame that is already in scene 1 and still carries the portrait's
+    face, body and outfit gives both. Kept on disk, so a resumed job does not render it again."""
+    d = job.dir
+    jpg = d / OPENING_LEAD_JPG
+    if jpg.exists() and jpg.stat().st_size > 1000:
+        return jpg
+    name = plan["opening"]["name"]
+    prompt = "\n\n".join(p.strip() for p in (
+        plan.get("style", ""), cast.looks_prefix(job.channel, plan.get("cast_used")),
+        plan["scenes"][0],
+        f"The shot starts from the provided reference image of {name}. {name} moves straight into the "
+        "opening moment of the scene described above - its setting, camera angle and pose - keeping "
+        f"{name}'s exact face, hair, body and outfit. End on that opening moment, held still.") if p and p.strip())
+    upload = client.upload_image(d / "cast_opening.jpg", f"videogen_{job.id}_cast.jpg")
+    job.set("clips", f"clip 1: rendering the lead-in from {name}'s portrait")
+    for attempt in range(config.CLIP_RETRIES + 1):
+        _gpu_gate(job)
+        try:
+            wf = client.build(i2v, prompt, f"videogen/{job.id}/opening_lead", first_frame=upload,
+                              seconds=config.OPENING_LEAD_SECONDS, aspect_ratio=job.aspect_ratio,
+                              megapixels=job.megapixels, model=job.video_model,
+                              negative=config.ltx_negative((job.channel or {}).get("video_type", "")))
+            client.run(wf, d / OPENING_LEAD_MP4, should_stop=lambda: job.cancel_requested,
+                       cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
+            break
+        except comfy.ComfyError as e:
+            _check_cancel(job)
+            job.add_log(f"opening lead-in attempt {attempt + 1} failed: {e}")
+            if attempt >= config.CLIP_RETRIES:
+                raise
+    if config.COMFY_CLEANUP:
+        client.scrub_file("input", "", upload)
+    video.last_frame(d / OPENING_LEAD_MP4, jpg)
+    job.add_log(f"clip 1 starts from a lead-in out of {name}'s portrait (portrait not shown)")
+    return jpg
+
+
 def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, label: str):
     """Render clip i from its scene prompt; i > 1 is seeded with clip i-1's last frame."""
     d = job.dir
@@ -580,9 +637,12 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     # cast characters named in the scene get their canonical look prepended (deterministic branding)
     prompt = f"{plan['style']}\n\n{cast.with_prefix(job.channel, scene, only=plan.get('cast_used'))}".strip()
     first_frame = None
-    opening = plan.get("opening") if i == 1 else None
-    if i > 1:
-        frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
+    opening = _opening(plan, d) if i == 1 else None
+    if i > 1 or (opening and _reference_only(plan)):
+        if i > 1:
+            frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
+        else:
+            frame = _opening_lead(job, client, i2v, plan)
         first_frame = client.upload_image(frame, f"videogen_{job.id}_frame_{i - 1:02d}.jpg")
         # steer the I2V model to treat the seeded frame as an in-progress moment, not a fresh shot
         prompt += ("\n\nThe video starts exactly at the provided first frame, mid-action: continue that "
@@ -620,8 +680,17 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
             job.add_log(f"clip {i} attempt {attempt + 1} failed: {e}")
             if attempt >= config.CLIP_RETRIES:
                 raise
-    if first_frame is not None and config.COMFY_CLEANUP:
-        client.scrub_file("input", "", first_frame)
+    if first_frame is not None:
+        if config.COMFY_CLEANUP:
+            client.scrub_file("input", "", first_frame)
+        # a seeded clip that holds its first frame for a moment and then cuts to the angle its
+        # scene asked for would flash the old shot at the seam: start it at the cut instead
+        try:
+            dropped = video.trim_lead_cut(dest)
+            if dropped:
+                job.add_log(f"clip {i}: dropped {dropped:.2f}s before a cut at its start")
+        except Exception as e:  # noqa: BLE001 - an untrimmed clip is still a clip
+            job.add_log(f"clip {i}: could not check its start for a cut ({e})")
 
 
 def _load_plan(job: Job) -> dict:
@@ -1895,6 +1964,9 @@ def _run_maintenance(job: Job):
                 _check_cancel(job)
                 i = job.regen_queue[0]
                 job.set("clips", f"regenerating clip {i} ({done_count + 1}/{total})")
+                if i == 1:
+                    # scene 1 may have been edited: its lead-in has to be rendered for the new one
+                    (d / OPENING_LEAD_JPG).unlink(missing_ok=True)
                 _generate_clip(job, client, t2v, i2v, plan, i, d / f"clip_{i:02d}.mp4",
                                f"regenerating clip {i}")
                 job.regen_queue.pop(0)
@@ -2245,8 +2317,10 @@ def _run(job: Job):
             try:
                 ow, oh = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
                 video.fit_image(channels.portrait_path(job.channel_id, oc["id"]), d / "cast_opening.jpg", ow, oh)
-                plan["opening"] = {"name": oc["name"], "look": oc.get("look", "")}
-                job.add_log(f"opening frame: {oc['name']}'s portrait")
+                mode = channels.cast_portrait(job.channel)
+                plan["opening"] = {"name": oc["name"], "look": oc.get("look", ""), "mode": mode}
+                job.add_log(f"opening frame: {oc['name']}'s portrait" if mode == "opening" else
+                            f"{oc['name']}'s portrait is the reference for clip 1 (never shown)")
             except Exception as e:  # noqa: BLE001 - fall back to text-to-video for clip 1
                 job.add_log(f"cast portrait unusable ({e}); clip 1 starts from text")
     # scenes are written for these exact clip lengths; a legacy plan (no clip_seconds) keeps its scenes
@@ -2275,7 +2349,7 @@ def _run(job: Job):
                                           on_progress=scene_progress, on_review_issue=review_issue,
                                           on_review_failed=review_failed, on_scene=keep, done=have,
                                           channel=job.channel, used=plan.get("cast_used"),
-                                          opening=plan.get("opening") if (d / "cast_opening.jpg").exists() else None,
+                                          opening=_opening(plan, d) if not _reference_only(plan) else None,
                                           timelines=timelines, clip_secs=durs, aligned=aligned,
                                           beats=beats, model=job.video_model)
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
@@ -2379,7 +2453,8 @@ def _run(job: Job):
         prev_clip = dest
         job.clips.append(dest.name)
         job.set(clips_done=i)
-        how = ("first-frame (cast portrait)" if i == 1 and plan.get("opening") and (d / "cast_opening.jpg").exists()
+        how = ("first-frame (portrait lead-in)" if i == 1 and _reference_only(plan) and _opening(plan, d)
+               else "first-frame (cast portrait)" if i == 1 and _opening(plan, d)
                else "text-to-video" if i == 1 else "first-frame")
         job.add_log(f"clip {i}/{n} done ({how})")
 

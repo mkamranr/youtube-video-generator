@@ -232,7 +232,10 @@ CONTINUITY CONTRACT (the video model renders each clip starting from the LAST FR
 - End every scene on a stable, held end-state (subjects clearly in frame, motion settling) - never mid
   whip-pan, mid-blur or mid-cut - because the next clip is seeded from that exact ending frame.
 People on screen are absorbed in what they are doing: their eyes follow the movement, the task or each
-other, and they never look into the lens unless the words heard have them address the viewer.
+other, and they never look into the lens unless the words heard have them address the viewer. Say where
+each person's eyes are in EVERY storyboard beat ("eyes on her working arm", "gaze fixed on the floor
+ahead") - the video model ignores a ban on looking at the camera but follows a stated gaze. On a close-up
+or profile angle the person stays turned toward the movement, never toward the camera.
 The camera, phone or tripod recording the shot is never visible in it - "filmed from a tripod" describes
 the framing, not a prop in the scene.
 Never mention real people's names or brands."""

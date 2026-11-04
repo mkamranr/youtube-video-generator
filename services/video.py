@@ -119,6 +119,53 @@ def last_frame(video: Path, out_jpg: Path) -> Path:
     return out_jpg
 
 
+LEAD_CUT_WINDOW = 1.0      # a hard cut this close to a seeded clip's start is an artifact
+LEAD_CUT_THRESHOLD = 0.4   # ffmpeg scene score; a real cut scores well above motion
+
+
+def first_cut(video: Path, window: float = LEAD_CUT_WINDOW,
+              threshold: float = LEAD_CUT_THRESHOLD) -> float:
+    """Time of the first hard cut in the clip's first `window` seconds, or 0.0 for none."""
+    r = subprocess.run([ffmpeg(), "-v", "info", "-t", f"{window:.3f}", "-i", str(video),
+                        "-an", "-vf", f"select='gt(scene,{threshold})',showinfo",
+                        "-f", "null", "-"], capture_output=True, text=True)
+    for line in r.stderr.splitlines():
+        if "Parsed_showinfo" in line and "pts_time:" in line:
+            try:
+                t = float(line.split("pts_time:")[1].split()[0])
+            except (IndexError, ValueError):
+                continue
+            if t > 0:
+                return t
+    return 0.0
+
+
+def trim_lead_cut(video: Path, window: float = LEAD_CUT_WINDOW,
+                  threshold: float = LEAD_CUT_THRESHOLD) -> float:
+    """Drop the stub before a hard cut at the very start of a clip, in place. Returns the seconds
+    dropped (0.0 when there was no cut).
+
+    A clip seeded from the previous clip's last frame holds that frame for a few frames and then
+    cuts when its prompt asks for another camera angle - a ~0.2 s flash of the old shot at every
+    seam. Cutting at the cut instead makes it a clean angle change. The length is kept exactly
+    (the last frame and silence pad the end), because the clips are laid against the narration."""
+    video = Path(video)
+    cut = first_cut(video, window, threshold)
+    if cut <= 0:
+        return 0.0
+    total = duration(video)
+    tmp = video.with_name(video.stem + "_trim" + video.suffix)
+    cmd = [ffmpeg(), "-y", "-v", "error", "-ss", f"{cut:.3f}", "-i", str(video),
+           "-vf", f"tpad=stop_mode=clone:stop_duration={cut + 0.1:.3f}",
+           "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
+    if has_audio(video):
+        cmd += ["-af", "apad", "-c:a", "aac", "-b:a", "128k"]
+    cmd += ["-t", f"{total:.3f}", str(tmp)]
+    _run(cmd)
+    tmp.replace(video)
+    return round(cut, 3)
+
+
 def fit_image(src: Path, out_jpg: Path, width: int, height: int) -> Path:
     """Cover-scale and centre-crop a still image to width x height, saved as JPG
     (used to fit a cast portrait to the job's aspect before seeding clip 1)."""

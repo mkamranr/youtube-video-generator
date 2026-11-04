@@ -35,6 +35,10 @@ CAST_ROLES = ("main", "supporting")   # look / personality have no length cap: d
 # both be `main`, and on this channel they were. The ranking is entered by hand, because the app's
 # YouTube scope is upload-only and cannot read the analytics that would tell it.
 CAST_PRIORITIES = ("lead", "normal", "resting")
+# How a character's approved portrait is used for the clips: as clip 1's first frame, only as a
+# reference for the look (a discarded lead-in render carries it into clip 1, so the portrait itself
+# is never on screen), or not at all.
+CAST_PORTRAIT_MODES = ("opening", "reference", "off")
 DEFAULT_CAST_PRIORITY = "normal"
 
 MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
@@ -75,6 +79,7 @@ def _read_index() -> dict:
                     c["defaults"].setdefault("avatar_coverage", config.DEFAULT_AVATAR_COVERAGE)
                     c.setdefault("avatars", [])
                     c.setdefault("cast_opening", True)
+                    c.setdefault("cast_portrait", cast_portrait(c))
                     c.setdefault("characters_enabled", bool(c.get("cast")))
                     c.setdefault("rules", "")
                     c.setdefault("owner", "")   # user id; assigned by services.ownership when empty
@@ -82,6 +87,16 @@ def _read_index() -> dict:
     except Exception:  # noqa: BLE001  (missing or corrupt index -> empty store)
         pass
     return {"channels": []}
+
+
+def cast_portrait(rec: dict | None) -> str:
+    """The channel's portrait mode. Records from before the mode existed only had the cast_opening
+    switch: on meant open on the portrait, off meant do not use it."""
+    rec = rec or {}
+    mode = rec.get("cast_portrait")
+    if mode in CAST_PORTRAIT_MODES:
+        return mode
+    return "opening" if rec.get("cast_opening", True) else "off"
 
 
 def default_song_voice(audience) -> str:
@@ -180,6 +195,7 @@ def snapshot(rec: dict) -> dict:
             # at synthesis time, long after the channel record is out of reach
             "character_voice": str((rec.get("defaults") or {}).get("character_voice") or ""),
             "cast_opening": bool(rec.get("cast_opening", True)),
+            "cast_portrait": cast_portrait(rec),
             "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast")))),
             # the avatar roster travels with the job so a planned video can still resolve the
             # presenter it was set up with, even if the channel is edited before it runs
@@ -276,7 +292,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     """Merge data over base (or built-in defaults) and validate every field."""
     rec = {"name": "", "purpose": "", "rules": "", "audience": "general", "video_type": "animated",
            "made_for_kids": False, "cast": [], "avatars": [], "cast_opening": True,
-           "characters_enabled": False,
+           "cast_portrait": "opening", "characters_enabled": False,
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
@@ -286,9 +302,10 @@ def _validate(data: dict, base: dict | None = None) -> dict:
                         "avatar_coverage": config.DEFAULT_AVATAR_COVERAGE}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
-                  "avatars", "cast_opening", "characters_enabled"):
+                  "avatars", "cast_opening", "cast_portrait", "characters_enabled"):
             if k in base:
                 rec[k] = base[k]
+        rec["cast_portrait"] = cast_portrait(base)     # a legacy base only has cast_opening
         rec["defaults"].update(base.get("defaults") or {})
     # the owner is server-assigned (add_channel / ownership migration) and never taken from a request
     rec["owner"] = str((base or {}).get("owner") or "")
@@ -299,6 +316,14 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         rec["made_for_kids"] = bool(data["made_for_kids"])
     if "cast_opening" in data:
         rec["cast_opening"] = bool(data["cast_opening"])
+        rec["cast_portrait"] = "opening" if rec["cast_opening"] else "off"
+    if "cast_portrait" in data:
+        mode = str(data["cast_portrait"] or "")
+        if mode not in CAST_PORTRAIT_MODES:
+            raise ValueError(f"cast_portrait must be one of {', '.join(CAST_PORTRAIT_MODES)}")
+        rec["cast_portrait"] = mode
+    # cast_opening stays the "is the portrait used at all" switch every older check reads
+    rec["cast_opening"] = cast_portrait(rec) != "off"
     if "cast" in data:
         rec["cast"] = _validate_cast(data["cast"], (base or {}).get("cast") or [])
     if "avatars" in data:

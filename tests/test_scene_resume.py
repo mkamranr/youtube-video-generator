@@ -109,6 +109,8 @@ class SceneRules(unittest.TestCase):
 
     def test_people_watch_the_work_not_the_lens(self):
         self.assertIn("never look into the lens", llm.SCENE_RULES)
+        # a ban alone was ignored on a close-up: the scene has to say where the eyes are
+        self.assertIn("eyes are in EVERY storyboard beat", llm.SCENE_RULES)
 
     def test_the_recording_device_is_never_in_shot(self):
         self.assertIn("tripod", llm.SCENE_RULES)
