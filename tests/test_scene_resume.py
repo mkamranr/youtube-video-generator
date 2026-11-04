@@ -71,6 +71,49 @@ class ResumeFromWhatIsWritten(unittest.TestCase):
         self.assertEqual(seen[0], ["one"])        # not mutated into the final list afterwards
 
 
+class TheOpeningPortraitReachesTheFirstScene(unittest.TestCase):
+    """Clip 1 is rendered FROM the cast portrait, so the writer of scene 1 has to know that. The
+    resume counter once reused the name of the opening instruction, and scene 1 was briefed with a
+    bare "0" instead: the clip then cut away from the portrait about a second in."""
+    OPENING = {"name": "Mia", "look": "black two-piece workout set, white sneakers"}
+
+    def test_the_first_scene_is_told_it_starts_from_the_portrait(self):
+        calls, fake = _chat_returning(["one", "two"])
+        with mock.patch.object(llm, "_chat", fake), \
+                mock.patch.object(config, "SCRIPT_REVIEW", False):
+            llm.write_scenes("a b", "style", 2, opening=self.OPENING)
+        self.assertIn("fixed reference image of Mia", calls[0])
+        self.assertIn("white sneakers", calls[0])
+        self.assertNotIn("\n0\n", calls[0])
+
+    def test_the_writer_is_not_told_what_the_portrait_setting_is(self):
+        """It cannot see the image, so it must not be handed a setting the portrait may not
+        have - "a simple soft setting" was wrong for a portrait shot in a gym."""
+        calls, fake = _chat_returning(["one"])
+        with mock.patch.object(llm, "_chat", fake), \
+                mock.patch.object(config, "SCRIPT_REVIEW", False):
+            llm.write_scenes("a", "style", 1, opening=self.OPENING)
+        self.assertNotIn("simple soft setting", calls[0])
+        self.assertNotIn("facing the viewer", calls[0])
+
+    def test_a_resumed_run_continues_the_last_scene_not_the_portrait(self):
+        calls, fake = _chat_returning(["two"])
+        with mock.patch.object(llm, "_chat", fake), \
+                mock.patch.object(config, "SCRIPT_REVIEW", False):
+            llm.write_scenes("a b", "style", 2, done=["one"], opening=self.OPENING)
+        self.assertIn('The previous clip\'s scene was:\n"one"', calls[0])
+        self.assertNotIn("fixed reference image", calls[0])
+
+
+class SceneRules(unittest.TestCase):
+
+    def test_people_watch_the_work_not_the_lens(self):
+        self.assertIn("never look into the lens", llm.SCENE_RULES)
+
+    def test_the_recording_device_is_never_in_shot(self):
+        self.assertIn("tripod", llm.SCENE_RULES)
+
+
 class AReviewThatFailsCostsOnlyTheReview(unittest.TestCase):
     """SCRIPT_REVIEW is a polish pass over a scene that already exists. Losing the LLM during it
     must not lose the scene, and certainly not the twenty scenes before it."""

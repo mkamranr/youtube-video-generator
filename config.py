@@ -460,7 +460,8 @@ DEFAULT_VIDEO_MODEL = "MiniMax H3"   # which VIDEO_MODELS entry renders the clip
 # live-action channel and actively fight an animated one, so the two are kept apart.
 LTX_NEGATIVE_ANIMATED = ("blurry, low quality, distorted, deformed, watermark, text, subtitles, "
                          "logo, black frames, static image")
-LTX_NEGATIVE_REAL = LTX_NEGATIVE_ANIMATED + ", cartoon, anime, childish, video game, overly CG look"
+LTX_NEGATIVE_REAL = (LTX_NEGATIVE_ANIMATED + ", cartoon, anime, childish, video game, overly CG look"
+                     ", looking at the camera, staring into the lens, camera or tripod visible in frame")
 DEFAULT_MEGAPIXELS = 0.4        # clip resolution in megapixels; per-video override in the New Video dialog (thumbnails: 1.0)
 DEFAULT_RESOLUTION = "Native (clip size)"   # final-video upscale target (OUTPUT_RESOLUTIONS); per-video override
 CLIP_SECONDS = 5                # length of each generated clip

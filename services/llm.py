@@ -231,6 +231,10 @@ CONTINUITY CONTRACT (the video model renders each clip starting from the LAST FR
   new elements by having them enter the frame or be revealed by that motion.
 - End every scene on a stable, held end-state (subjects clearly in frame, motion settling) - never mid
   whip-pan, mid-blur or mid-cut - because the next clip is seeded from that exact ending frame.
+People on screen are absorbed in what they are doing: their eyes follow the movement, the task or each
+other, and they never look into the lens unless the words heard have them address the viewer.
+The camera, phone or tripod recording the shot is never visible in it - "filmed from a tripod" describes
+the framing, not a prop in the scene.
 Never mention real people's names or brands."""
 
 
@@ -720,13 +724,17 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     first = ("This is the FIRST clip of the video: establish the world." if cast.enabled(channel)
              else "This is the FIRST clip of the video: establish the subject and the setting.")
     if opening:
+        # The writer cannot see the portrait, so it is told nothing about the setting except that it
+        # is the portrait's: naming any other place is what made clip 1 cut away from it.
         first = (f"This is the FIRST clip of the video. Its first frame is a fixed reference image of "
-                 f"{opening['name']} alone, standing centered and facing the viewer in a simple soft "
-                 f"setting ({opening.get('look', '').strip()}). Start EXACTLY from that image: {opening['name']} "
-                 "comes alive, and the story begins around them - do not open with a different shot.")
-    first = len(scenes)          # everything before this came back from an earlier run
+                 f"{opening['name']} ({opening.get('look', '').strip()}). Start EXACTLY from that image: "
+                 f"{opening['name']} comes alive from that pose and turns to what this clip is about. The "
+                 "setting is whatever that image shows - you cannot see it, so do not name or describe a "
+                 "different place; call it \"the same space as the opening frame\". Do not open with a "
+                 "different shot, and change place only through continuous motion, never a cut.")
+    start = len(scenes)          # everything before this came back from an earlier run
     for i, seg in enumerate(segments):
-        if i < first:
+        if i < start:
             continue
         if on_progress:
             on_progress(f"scene {i + 1}/{n}")
