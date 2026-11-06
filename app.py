@@ -582,8 +582,10 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
                     z.write(d / up["file"], f"{title} - {_upscale_tag(up)}.mp4")
             if (d / "thumbnail.jpg").exists():
                 z.write(d / "thumbnail.jpg", f"{title}.jpg")
+            # short names: the title is already the ZIP's folder, and repeating it one level deeper
+            # pushed long-titled entries past Windows' 260-char path limit, so Explorer skipped them
             for src, name in _bundle_thumbnails(d, plan, job.thumb_variant):
-                z.write(src, f"Thumbnails/{title} - {name}.jpg")
+                z.write(src, f"Thumbnails/{name}.jpg")
             if (d / "music.mp3").exists():
                 z.write(d / "music.mp3", f"{title} - music.mp3")
             if (d / "narration.wav").exists():
