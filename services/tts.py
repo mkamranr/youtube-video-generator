@@ -31,6 +31,16 @@ def audio_duration(path) -> float:
     return float(out.stdout.strip())
 
 
+def change_tempo(path, factor: float) -> float:
+    """Speed a narration file up (factor > 1) or down in place, pitch kept; returns its new length."""
+    path = Path(path)
+    tmp = path.with_name(path.stem + ".tempo" + path.suffix)
+    subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(path), "-filter:a", f"atempo={factor:.3f}",
+                    str(tmp)], check=True)
+    tmp.replace(path)
+    return audio_duration(path)
+
+
 def split_chunks(text: str, limit: int = 0) -> list:
     limit = limit or config.TTS_CHUNK_CHARS
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())

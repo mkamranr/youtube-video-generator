@@ -782,6 +782,7 @@ def options(user: dict = Depends(auth.require_user)):
             "video_modes": config.VIDEO_MODES, "default_video_mode": config.DEFAULT_VIDEO_MODE,
             "video_mode_labels": VIDEO_MODE_LABELS,
             "realistic_video_types": list(config.REALISTIC_VIDEO_TYPES),
+            "diy_defaults": config.DIY_DEFAULTS,
             "avatar_models": list(config.AVATAR_MODELS),
             "default_avatar_model": config.DEFAULT_AVATAR_MODEL,
             "avatar_coverages": config.AVATAR_COVERAGES,

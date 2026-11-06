@@ -304,7 +304,13 @@ def _length_params(job: Job):
         return None, None, None, None
     lo, hi = rng
     mid = (lo + hi) / 2.0
-    return int(mid * 2.5), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
+    wps = 2.5 * (float(config.DIY_NARRATION_TEMPO) if _is_diy(job) else 1.0)
+    return int(mid * wps), mid, min(360.0, hi * 1.5 + 20), (lo, hi)
+
+
+def _is_diy(job) -> bool:
+    """A DIY build short: fast cuts, a sped-up voiceover and the clips' work sounds kept."""
+    return (getattr(job, "channel", None) or {}).get("video_type") == "diy"
 
 
 def _clip_seconds(job: Job, duration: float | None = None) -> float:
@@ -316,6 +322,8 @@ def _clip_seconds(job: Job, duration: float | None = None) -> float:
     (story.clip_durations): a target preset can only ever lengthen a clip, never shorten it, so
     asking for 10 s clips gets 10 s clips on a 30-45 second video instead of the rung's 5 s."""
     secs = duration or float(getattr(job, "music_seconds", 0.0) or 0.0)
+    if _is_diy(job) and not (getattr(job, "lyrics", "") or getattr(job, "music_upload", "")):
+        return float(config.DIY_CLIP_SECONDS)     # the format's fast cutting: no CLIP_SECONDS floor
     if (getattr(job, "lyrics", "") or getattr(job, "music_upload", "")) and secs:
         rung = config.clip_seconds_for_duration(secs)
     else:
@@ -1782,7 +1790,8 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
                                music_volume=1.0, clip_volume=0, **fx)
     if mode == "narration+music":
         # the clips' own sound is dropped by default: voice + music + per-clip effects clash
-        clip_vol = config.CLIP_AUDIO_VOLUME if config.CLIP_AUDIO_WITH_MUSIC else 0
+        # (a DIY build short keeps them: its work sounds are part of the format)
+        clip_vol = config.CLIP_AUDIO_VOLUME if (config.CLIP_AUDIO_WITH_MUSIC or _is_diy(job)) else 0
         return video.mix_audio(source, d / "final.mp4", narration=narration_file,
                                music=music_file, clip_volume=clip_vol, clip_boundaries=bounds, **fx)
     return video.mix_audio(source, d / "final.mp4", narration=narration_file,
@@ -2299,6 +2308,10 @@ def _run(job: Job):
             duration = tts.synthesize(plan["narration"], narration_file,
                                       on_progress=_progress(job, "tts"),
                                       ref_audio=ref_audio, ref_text=ref_text, keep_voice=keep_voice)
+            tempo = float(config.DIY_NARRATION_TEMPO) if _is_diy(job) else 1.0
+            if abs(tempo - 1.0) > 1e-3:
+                duration = tts.change_tempo(narration_file, tempo)
+                job.add_log(f"narration sped up x{tempo:g} for the build-short pace")
             job.add_log(f"narration: {duration:.1f}s")
         durs = config.clip_durations(duration, _clip_seconds(job), job.video_model)
         n = len(durs)
@@ -2392,6 +2405,10 @@ def _run(job: Job):
             music_plan = llm.write_music(plan.get("title", ""), plan["narration"], text,
                                          channel=job.channel, used=plan.get("cast_used"))
             music_plan["lyrics"] = "[Instrumental]"  # background bed: never sing over the narration
+            if _is_diy(job):    # a build short sits on a light bed, under the voice and the work sounds
+                music_plan["caption"] = ("Light, upbeat, unobtrusive instrumental background music, soft "
+                                         "acoustic guitar and gentle percussion. "
+                                         + str(music_plan.get("caption", "")))
             plan["music"] = music_plan
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
@@ -2612,6 +2629,10 @@ class JobManager:
         for tech channels)."""
         ch = channel or {}
         defaults = ch.get("defaults") or {}
+        # a DIY build channel renders on LTX 2.5 unless the request picks a model: its clips carry
+        # the work sounds (a new channel's record already holds the rest of DIY_DEFAULTS)
+        if ch.get("video_type") == "diy":
+            defaults = {**defaults, "video_model": config.DIY_DEFAULTS["video_model"]}
 
         def _flag(given, key):
             if given is None:
@@ -2647,7 +2668,7 @@ class JobManager:
         resolution = resolution or config.DEFAULT_RESOLUTION
         if resolution not in config.OUTPUT_RESOLUTIONS:
             raise ValueError(f"unsupported output resolution: {resolution}")
-        video_model = video_model or config.DEFAULT_VIDEO_MODEL
+        video_model = video_model or defaults.get("video_model") or config.DEFAULT_VIDEO_MODEL
         if video_model not in config.VIDEO_MODELS:
             raise ValueError(f"unsupported video model: {video_model}")
         if ch.get("video_type") in config.REALISTIC_VIDEO_TYPES:

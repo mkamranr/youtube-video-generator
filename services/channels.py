@@ -314,6 +314,13 @@ def _validate(data: dict, base: dict | None = None) -> dict:
             rec[k] = str(data[k] or "").strip()
     if "made_for_kids" in data:
         rec["made_for_kids"] = bool(data["made_for_kids"])
+    if base is None and rec["video_type"] == "diy":
+        # a new DIY build channel starts from the build-short format (vertical, voiceover + music,
+        # a short length) and uses its builder's portrait as a likeness reference, never on screen;
+        # anything the request sets below still wins
+        for k in ("audio_mode", "aspect_ratio", "video_length"):
+            rec["defaults"][k] = config.DIY_DEFAULTS[k]
+        rec["cast_portrait"] = "reference"
     if "cast_opening" in data:
         rec["cast_opening"] = bool(data["cast_opening"])
         rec["cast_portrait"] = "opening" if rec["cast_opening"] else "off"

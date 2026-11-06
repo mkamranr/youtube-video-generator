@@ -46,12 +46,58 @@ VIDEO_KIND = {
     "animated": "animated",
     "real": "realistic, live-action-style",
     "tech": "realistic, live-action-style technology explainer",
+    "diy": "realistic, smartphone-filmed DIY build / transformation short",
 }
 
 TECH_RULES = ("This is a TECH channel: be concrete and technically accurate - name the actual "
               "technologies, mechanisms, numbers and trade-offs instead of vague hype; explain like a "
               "knowledgeable, friendly tech presenter. Visuals favour devices, screens and interfaces, "
               "code, data centres, chips, robots, dashboards and clean abstract data visualisations. ")
+
+# A DIY build short (the format of a viral "watch him build it" clip): one recurring builder makes one
+# thing, start to finish, in one place; a fast third-person voiceover narrates it over light music
+# and the clips' own work sounds; nothing is written on screen.
+DIY_RULES = ("This is a DIY BUILD channel: every video is a fast vertical short in which the channel's "
+             "builder makes ONE practical project from bare materials to the finished result, in ONE "
+             "fixed location (a backyard, patio, garage or workshop). The voiceover is a quick, "
+             "conversational THIRD-PERSON play-by-play: the first sentence is a curiosity hook - a "
+             "question about the odd-looking start ('Why would anyone put PVC pipes on a post?') - "
+             "and a short promise ('There's a reason, and it's genius.'); then each build step in the "
+             "present tense, chained with commas and 'then' ('He straps a metal band around it, fills "
+             "every cup with soil, sets a seedling in each one...'); the last sentence is the payoff - "
+             "WHY it is clever or what it achieves. No greeting, no 'in this video', no sign-off, no "
+             "call to subscribe, no measurements lecture. Visuals: the same builder and the same "
+             "location in every shot; the project only ever moves FORWARD (each shot shows it at "
+             "least as far along as the one before); shots alternate between wide views of the "
+             "builder at work and close-ups of hands, tools and materials; the final shot is the "
+             "finished project (a time skip to the grown, filled or in-use result is allowed). "
+             "The builder is absorbed in the work and never looks at the camera. ")
+
+# The continuity contract for DIY shorts: a cut to a new angle at a clip boundary is the format (the
+# seeded clip's held lead-in frames are trimmed by video.trim_lead_cut), a cut to a new PLACE is not.
+DIY_CONTINUITY = """CONTINUITY CONTRACT (each clip is rendered from the LAST FRAME of the previous clip, then cut):
+- This is a fast-cut build short: a scene MAY open on a NEW camera angle of the same moment - wide shot
+  of the builder at work, or a close-up of hands, tool and material - and should alternate between them.
+- Everything else carries over EXACTLY: the same single location (describe it with the same words every
+  time), the same builder in the same clothes, the same lighting and time of day, and the project in the
+  state the previous scene left it in or one step further. Never undo progress, never move to another place.
+- Within the clip keep ONE steady handheld shot; no whip-pans or mid-clip cuts.
+- End every scene on a clear, held frame of the work (subjects in frame, motion settling).
+- In the Audio line name the concrete WORK SOUNDS of this shot (drill whirring, screws biting, soil
+  pouring, water splashing, saw rasping, hammer taps) - quiet, natural, no voices.
+"""
+
+
+def _scene_rules(channel: dict | None, secs) -> str:
+    """SCENE_RULES with the channel's continuity contract: one unbroken take everywhere except a DIY
+    build short, which cuts between angles of the same place."""
+    rules = SCENE_RULES.format(secs=secs)
+    if _channel(channel)["video_type"] != "diy":
+        return rules
+    head, _, rest = rules.partition("CONTINUITY CONTRACT")
+    # the generic storyboard example assumes a clip of 5 s or more ("[4s-3s]" on a 3 s clip)
+    head = head.replace(f'"[0s-2s] ... [2s-4s] ... [4s-{secs}s] ..."', f'"[0s-1s] ... [1s-{secs}s] ..."')
+    return head + DIY_CONTINUITY + rest[rest.index("People on screen"):]
 
 
 SPOKEN_OVERRIDE = ("The channel rules and the character sheet above describe how the characters are DRAWN: "
@@ -145,6 +191,7 @@ def _system(channel: dict | None = None, used: list | None = None, rules: bool =
     return (opening
             + AUDIENCE_RULES[ch["audience"]]
             + (TECH_RULES if ch["video_type"] == "tech" else "")
+            + (DIY_RULES if ch["video_type"] == "diy" else "")
             + purpose
             + f'The videos are published on the YouTube channel "{ch["name"]}": if the '
             "source content mentions any other channel, brand, show or creator name, NEVER use it - "
@@ -196,13 +243,17 @@ def _chosen(channel: dict | None, value) -> list:
 
 STYLE_EXAMPLE = ("Realistic live-action cinematic look, practical film photography style, anamorphic lens, "
                  "shallow depth of field, film grain, restrained grading for a premium feel, natural movement.")
+DIY_STYLE_EXAMPLE = ("Unpolished vertical smartphone footage: real backyard or workshop in natural overcast "
+                     "daylight, true-to-life colours, slight handheld sway, everything sharp, no cinematic "
+                     "grading, no shallow depth-of-field effects - it looks like a real person filmed it.")
 TECH_STYLE_EXAMPLE = ("Sleek modern tech-documentary look: real studios, labs and offices, devices and glowing "
                       "screens, cool blue-and-graphite palette with warm accent lights, crisp shallow depth of "
                       "field, smooth gimbal and slider camera moves, premium product-film polish.")
 
 
 def _style_example(channel: dict | None) -> str:
-    return TECH_STYLE_EXAMPLE if _channel(channel)["video_type"] == "tech" else STYLE_EXAMPLE
+    vt = _channel(channel)["video_type"]
+    return {"tech": TECH_STYLE_EXAMPLE, "diy": DIY_STYLE_EXAMPLE}.get(vt, STYLE_EXAMPLE)
 
 
 def _style_rule(art_style: str, channel: dict | None) -> str:
@@ -735,19 +786,29 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  "setting is whatever that image shows - you cannot see it, so do not name or describe a "
                  "different place; call it \"the same space as the opening frame\". Do not open with a "
                  "different shot, and change place only through continuous motion, never a cut.")
+    diy = _channel(channel)["video_type"] == "diy"
     start = len(scenes)          # everything before this came back from an earlier run
     for i, seg in enumerate(segments):
         if i < start:
             continue
         if on_progress:
             on_progress(f"scene {i + 1}/{n}")
-        prev = (f'The previous clip\'s scene was:\n"{scenes[-1]}"\n'
-                "MANDATORY: this clip's [0s] beat continues EXACTLY from that scene's ending frame - same "
-                "camera angle, same characters in the same positions, same setting and lighting. Do not cut "
-                "to a new shot or angle at the start; evolve the action from that frozen moment.") if scenes \
-            else first
+        if scenes and diy:
+            prev = (f'The previous clip\'s scene was:\n"{scenes[-1]}"\n'
+                    "MANDATORY: same location, same builder in the same clothes, same light, and the project "
+                    "exactly as that scene left it (or one step further). Open on a DIFFERENT angle than it "
+                    "ended on - wide after a close-up, close-up after a wide.")
+        elif scenes:
+            prev = (f'The previous clip\'s scene was:\n"{scenes[-1]}"\n'
+                    "MANDATORY: this clip's [0s] beat continues EXACTLY from that scene's ending frame - same "
+                    "camera angle, same characters in the same positions, same setting and lighting. Do not cut "
+                    "to a new shot or angle at the start; evolve the action from that frozen moment.")
+        else:
+            prev = first
         nxt = (f'For flow only, the next segment will be: "{segments[i + 1]}"') if i + 1 < n \
-            else "This is the FINAL clip: give it a conclusive ending."
+            else ("This is the FINAL clip: the REVEAL - the finished project, complete and at its best, "
+                  "with the builder stepping back to look at it." if diy
+                  else "This is the FINAL clip: give it a conclusive ending.")
         secs = _secs(clip_secs[i])
         if beats[i]:
             b = beats[i]
@@ -807,7 +868,7 @@ The soundtrack is a {kind}.
 {prev}
 {nxt}
 {heard}
-{SCENE_RULES.format(secs=secs)}{cast_rule}
+{_scene_rules(channel, secs)}{cast_rule}
 Return JSON: {{"scene": "the scene prompt string"}}"""
         out = _chat([{"role": "system", "content": _system(channel, used=used)},
                      {"role": "user", "content": user}])
@@ -897,7 +958,12 @@ def review_scene(scene: str, segment: str, style: str, i: int, n: int,
                   "on-screen text or subtitles, and never invent a singer, band, microphone or stage.")
     continuity = ""
     if prev_scene.strip():
-        continuity = f"""6. SEAMLESS CONTINUITY: this clip is rendered starting from the LAST frame of the previous clip.
+        continuity = f"""6. BUILD CONTINUITY: the previous clip's scene was:
+\"\"\"{prev_scene}\"\"\"
+This scene must keep the same single location, the same builder in the same clothes, the same light, and
+the project in the state that scene left it or one step further - never undoing progress. Opening on a
+NEW camera angle of that same moment is correct for this channel and must NOT be "fixed".""" \
+            if _channel(channel)["video_type"] == "diy" else f"""6. SEAMLESS CONTINUITY: this clip is rendered starting from the LAST frame of the previous clip.
 The previous clip's scene was:
 \"\"\"{prev_scene}\"\"\"
 This scene's [0s] beat must directly continue that scene's ending (same camera angle, same characters in

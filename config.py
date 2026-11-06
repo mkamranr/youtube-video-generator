@@ -388,9 +388,16 @@ CHANNEL_NAME = "My YouTube Channel"    # legacy fallback (channels are managed i
 # YouTube made-for-kids flag); the video type decides animated vs realistic look.
 AUDIENCES = ["kids", "family", "general"]
 # animated = art-style driven; real = built-in live-action look; tech = live-action tech
-# explainer look with the story-board text/image overlay switched on by default.
-VIDEO_TYPES = ["animated", "real", "tech"]
-REALISTIC_VIDEO_TYPES = ("real", "tech")     # no art-style picker, built-in realistic look
+# explainer look with the story-board text/image overlay switched on by default; diy = a fast,
+# vertical, phone-filmed build/transformation short: one recurring builder in one location, a
+# hook-question voiceover over light music and the clips' own work sounds, no text on screen.
+VIDEO_TYPES = ["animated", "real", "tech", "diy"]
+REALISTIC_VIDEO_TYPES = ("real", "tech", "diy")     # no art-style picker, built-in realistic look
+# What a DIY channel's videos default to wherever neither the request nor the channel chose.
+DIY_DEFAULTS = {"video_model": "LTX 2.5", "audio_mode": "narration+music",
+                "video_length": "30-45 seconds", "aspect_ratio": "9:16 (Portrait Widescreen)"}
+DIY_CLIP_SECONDS = 3            # DIY shorts cut fast: clip length, NOT floored by CLIP_SECONDS
+DIY_NARRATION_TEMPO = 1.15      # the voiceover is sped up this much (ffmpeg atempo, pitch kept)
 
 # Per-job soft target length presets (None = Auto, use the global settings).
 # (low_seconds, high_seconds, clip_seconds): longer videos render longer clips, so the clip
@@ -548,7 +555,7 @@ YT_CATEGORIES = {"1": "Film & Animation", "10": "Music", "17": "Sport", "20": "G
                  "22": "People & Blogs", "23": "Comedy", "24": "Entertainment",
                  "26": "Howto & Style", "27": "Education", "28": "Science & Technology"}
 YT_CATEGORY_ID = "24"
-YT_CATEGORY_BY_TYPE = {"tech": "28"}
+YT_CATEGORY_BY_TYPE = {"tech": "28", "diy": "26"}
 YT_MAX_TAGS = 20                # how many SEO keywords are uploaded as video tags (0 = none)
 YT_CHAPTERS = True              # add a timestamp list to the description
 YT_CHAPTER_MIN_SECONDS = 20.0   # shortest chapter; YouTube's own floor is 10 s
@@ -720,6 +727,12 @@ EDITABLE_SETTINGS = {
     "CLIP_AUDIO_WITH_MUSIC": (bool, lambda v: True, "Keep clip ambience under music",
                               "Voiceover + music videos also mix in the clips' own generated sound. Off (default) = "
                               "narration + music bed only, which avoids the three-layer clash"),
+    "DIY_CLIP_SECONDS": (float, lambda v: 1 <= v <= 10, "DIY clip length (s)",
+                         "Clip length on DIY build channels. Short clips give their fast cutting; unlike the "
+                         "clip length above, this is not raised to a minimum"),
+    "DIY_NARRATION_TEMPO": (float, lambda v: 0.8 <= v <= 1.5, "DIY narration speed",
+                            "DIY build channels speed their voiceover up by this factor (1 = as spoken), "
+                            "for the quick, punchy delivery of build shorts"),
     "LIGHTNING_LORA": (bool, lambda v: True, "Lightning LoRA (fast preview)",
                        "8-step turbo sampling: ~3x faster, lower quality. MiniMax H3 only - "
                        "LTX 2.5 is already a distilled model and has no such switch"),

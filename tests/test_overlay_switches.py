@@ -32,7 +32,7 @@ class ChannelDefaults(unittest.TestCase):
     """The per-channel layer: four flags now, and they do not all mean the same thing."""
 
     def test_the_overlays_default_on_for_tech_channels_only(self):
-        for vt, want in (("tech", True), ("animated", False), ("real", False)):
+        for vt, want in (("tech", True), ("animated", False), ("real", False), ("diy", False)):
             rec = channels._validate({"name": "C", "video_type": vt})
             for key in ("storyboard", "captions", "polish"):
                 self.assertEqual(rec["defaults"][key], want, f"{key} on {vt}")
@@ -40,7 +40,7 @@ class ChannelDefaults(unittest.TestCase):
     def test_thumbnail_text_defaults_on_for_every_channel(self):
         """It is drawn on the thumbnail IMAGE, not the video, and always has been on every
         channel - deriving it from video_type would silently switch it off for most of them."""
-        for vt in ("tech", "animated", "real"):
+        for vt in ("tech", "animated", "real", "diy"):
             rec = channels._validate({"name": "C", "video_type": vt})
             self.assertTrue(rec["defaults"]["thumb_text"], vt)
 

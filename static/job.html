@@ -1030,7 +1030,7 @@ async function fillSetup(j) {
   $("#suThumb").checked = j.thumb_text !== false;
   // the channel may have been deleted since the plan was made: use the job's frozen snapshot
   const vt = (j.channel && j.channel.video_type) || "";
-  $("#suStyleBlock").hidden = (o.realistic_video_types || ["real", "tech"]).includes(vt);
+  $("#suStyleBlock").hidden = (o.realistic_video_types || ["real", "tech", "diy"]).includes(vt);
   if (j.art_style) $("#suStyle").value = j.art_style;
   try { stylePreviews = (await api("/api/style-previews")).previews; } catch (e) { stylePreviews = {}; }
   suStylePreview();

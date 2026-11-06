@@ -68,6 +68,7 @@
               <option value="animated">Animated videos</option>
               <option value="real">Real videos</option>
               <option value="tech">Tech videos</option>
+              <option value="diy">DIY build shorts</option>
             </select>
           </div>
         </div>
@@ -393,6 +394,16 @@
           <label class="switch"><input type="checkbox" id="CLIP_AUDIO_WITH_MUSIC"><span class="track"></span>
             Keep clip ambience under music</label>
           <div class="hint">Voiceover + music videos also mix in the clips' own generated sound. Off (default) = narration + music bed only, which avoids the three-layer clash</div>
+        </div>
+        <div class="field">
+          <label for="DIY_CLIP_SECONDS">DIY clip length (s)</label>
+          <input type="number" id="DIY_CLIP_SECONDS" min="1" max="10" step="0.5">
+          <div class="hint">Clip length on DIY build channels. Short clips give their fast cutting; unlike the clip length above, this is not raised to a minimum</div>
+        </div>
+        <div class="field">
+          <label for="DIY_NARRATION_TEMPO">DIY narration speed</label>
+          <input type="number" id="DIY_NARRATION_TEMPO" min="0.8" max="1.5" step="0.05">
+          <div class="hint">DIY build channels speed their voiceover up by this factor (1 = as spoken), for the quick, punchy delivery of build shorts</div>
         </div>
         <div class="field">
           <label for="STORYBOARD_MAX_IMAGES">Story board: max images</label>
@@ -734,7 +745,7 @@ const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "LLM_TIMEOUT"
                 "NARRATION_WORDS", "CLIP_SECONDS", "DEFAULT_VIDEO_MODEL",
                 "LTX_NEGATIVE_ANIMATED", "LTX_NEGATIVE_REAL", "DEFAULT_MEGAPIXELS", "DEFAULT_RESOLUTION", "CLIP_AUDIO_VOLUME", "CLIP_RETRIES", "LIGHTNING_LORA", "MUSIC_VOLUME", "TARGET_VIDEO_SECONDS", "MIN_TRANSCRIPT_WORDS", "MIN_TRANSCRIPT_WPM", "COMFY_CLEANUP", "SCRIPT_REVIEW", "YT_PRIVACY", "YT_CATEGORY_ID", "YT_MAX_TAGS", "YT_CHAPTERS", "YT_CHAPTER_MIN_SECONDS",
                 "WHISPER_MODEL", "KIDS_SONG_BPM", "KIDS_SONG_WPS",
-                "CLIP_AUDIO_WITH_MUSIC", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT",
+                "CLIP_AUDIO_WITH_MUSIC", "DIY_CLIP_SECONDS", "DIY_NARRATION_TEMPO", "STORYBOARD_MAX_IMAGES", "STORYBOARD_ACCENT",
                 "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION", "PAGE_SCROLL_SPEED",
                 "CAPTIONS_ENABLED", "CAPTION_MAX_WORDS", "CAPTION_MAX_CHARS", "CAPTION_HIGHLIGHT",
                 "CAPTION_ACCENT", "CAPTION_FONT_SCALE", "CAPTION_BOTTOM_MARGIN",
@@ -872,7 +883,7 @@ async function refreshChannels() {
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
         <b style="min-width:140px">${esc(c.name)}</b>${admin ? ownerBadge(c.owner_name) : ""}
         ${c.characters_enabled ? (c.cast || []).filter(x => x.has_portrait).map(x => `<img class="cast-mini" src="/api/channels/${esc(c.id)}/cast/${esc(x.id)}/portrait?v=${Date.now()}" alt="" title="${esc(x.name)}">`).join("") : ""}
-        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${!c.characters_enabled ? " " + chBadge("no characters") : (c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : c.video_type === "diy" ? "DIY build shorts" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${!c.characters_enabled ? " " + chBadge("no characters") : (c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
         <div class="spacer"></div>
         ${(c.has_secret || chData.secret) ? (c.yt_connected
@@ -886,7 +897,7 @@ async function refreshChannels() {
 }
 $("#chOwnerFilter").onchange = refreshChannels;
 
-const CH_REAL_TYPES = ["real", "tech"];
+const CH_REAL_TYPES = ["real", "tech", "diy"];
 function chApplyType() { $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value); }
 function chApplyCharacters() { $("#chCastBody").hidden = !$("#chCharacters").checked; }
 function chTypeChanged() {
@@ -897,6 +908,14 @@ function chTypeChanged() {
   $("#chThumbText").checked = true;
   // a new channel follows its type (tech = informative explainers); an edited one keeps its choice
   if (!chEditing) { $("#chCharacters").checked = $("#chVideoType").value !== "tech"; chApplyCharacters(); }
+  // a new DIY channel starts from the build-short format: a recurring builder whose portrait is
+  // only a likeness reference, voiceover + music, vertical
+  if (!chEditing && $("#chVideoType").value === "diy") {
+    $("#chCastPortrait").value = "reference";
+    $("#chAudio").value = "narration+music"; chApplyAudio();
+    $("#chAspect").value = "9:16 (Portrait Widescreen)";
+    $("#chVlen").value = "30-45 seconds";
+  }
 }
 function chApplyAudio() { $("#chVoiceField").hidden = $("#chAudio").value === "music"; }
 function chDefaultSongVoice() { return $("#chAudience").value === "kids" ? "child" : "auto"; }

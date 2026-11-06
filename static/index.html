@@ -379,7 +379,7 @@ function applyVideoMode() {
 let channelsList = [];
 let opts = {};   // the last /options payload, for the pickers that read it lazily
 let admin = false;                  // admins see every user's channels and jobs, tagged with the owner
-let realTypes = ["real", "tech"];   // channel video types without an art-style picker
+let realTypes = ["real", "tech", "diy"];   // channel video types without an art-style picker
 function currentChannel() { return channelsList.find(c => c.id === $("#channel").value); }
 function isRealistic(ch) { return !!ch && realTypes.includes(ch.video_type); }
 
@@ -425,9 +425,13 @@ function applyChannel() {
   const ch = currentChannel();
   if (!ch) return;
   const d = ch.defaults || {};
-  if (d.aspect_ratio) $("#ar").value = d.aspect_ratio;
-  if (d.video_length) $("#vlen").value = d.video_length;
-  $("#audio").value = (d.audio_mode || "music") === "music" ? "music" : "narration+music";
+  // a DIY build channel falls back to the build-short format (vertical, LTX 2.5 for its work
+  // sounds, voiceover + music) wherever the channel itself chose nothing
+  const diy = ch.video_type === "diy" ? (opts.diy_defaults || {}) : {};
+  if (d.aspect_ratio || diy.aspect_ratio) $("#ar").value = d.aspect_ratio || diy.aspect_ratio;
+  if (d.video_length || diy.video_length) $("#vlen").value = d.video_length || diy.video_length;
+  if (opts.default_video_model) $("#vmodel").value = diy.video_model || opts.default_video_model;
+  $("#audio").value = (d.audio_mode || diy.audio_mode || "music") === "music" ? "music" : "narration+music";
   $("#vmode").value = d.video_mode || "song";
   loadVoices().then(() => { if (d.voice_id) selectVoice($("#voice"), d.voice_id); });
   const real = isRealistic(ch);
