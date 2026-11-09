@@ -583,6 +583,10 @@ def _clip_on_disk(path: Path) -> bool:
 
 OPENING_LEAD_MP4 = "opening_lead.mp4"
 OPENING_LEAD_JPG = "opening_lead.jpg"
+OPENING_LEAD_HELD = "opening_lead.held"   # marker: the lead-in never left the portrait, clip 1 is from text
+# below this image_difference the lead-in's last frame is still the portrait (a held portrait
+# measures under ~5, a new shot of the same place 25+)
+OPENING_LEAD_MIN_CHANGE = 12.0
 
 
 def _opening(plan: dict, d: Path):
@@ -595,18 +599,49 @@ def _reference_only(plan: dict) -> bool:
     return (plan.get("opening") or {}).get("mode") == "reference"
 
 
-def _opening_lead(job: Job, client, i2v, plan: dict) -> Path:
+def _opening_lead(job: Job, client, i2v, plan: dict) -> Path | None:
     """The first frame of clip 1 in "reference only" mode: the LAST frame of a short render that
     starts on the portrait and moves into scene 1's opening moment. The render itself is thrown away.
 
     The same trick _render_thumbnail uses. The portrait is only a reference for the look, so it must
     not be clip 1's first frame - but a clip built from text alone loses the likeness, and every later
     clip continues from clip 1. A frame that is already in scene 1 and still carries the portrait's
-    face, body and outfit gives both. Kept on disk, so a resumed job does not render it again."""
+    face, body and outfit gives both. Kept on disk, so a resumed job does not render it again.
+
+    The video model may just hold the portrait for the whole lead-in: its last frame is then the
+    portrait itself, and clip 1 opens on it (the portrait's place and pose on screen for seconds).
+    That is checked; one fresh render is tried, and if it holds too, None - clip 1 is rendered from
+    its text, which carries the look."""
     d = job.dir
     jpg = d / OPENING_LEAD_JPG
+    if (d / OPENING_LEAD_HELD).exists():
+        return None
     if jpg.exists() and jpg.stat().st_size > 1000:
         return jpg
+    for take in (1, 2):
+        _render_opening_lead(job, client, i2v, plan)
+        video.last_frame(d / OPENING_LEAD_MP4, jpg)
+        try:
+            change = video.image_difference(jpg, d / "cast_opening.jpg")
+        except Exception as e:  # noqa: BLE001 - an unmeasured lead-in is used as it is
+            job.add_log(f"opening lead-in: could not compare it to the portrait ({e})")
+            break
+        if change >= OPENING_LEAD_MIN_CHANGE:
+            break
+        job.add_log(f"opening lead-in {take} stayed on the portrait (change {change:.1f} < "
+                    f"{OPENING_LEAD_MIN_CHANGE:g})" + ("; rendering it again" if take == 1 else ""))
+        if take == 2:
+            jpg.unlink(missing_ok=True)
+            (d / OPENING_LEAD_HELD).write_text("held", encoding="utf-8")
+            job.add_log("clip 1 is rendered from its text instead (the look still carries the builder)")
+            return None
+    job.add_log(f"clip 1 starts from a lead-in out of {plan['opening']['name']}'s portrait (portrait not shown)")
+    return jpg
+
+
+def _render_opening_lead(job: Job, client, i2v, plan: dict):
+    """One lead-in render, from the portrait into scene 1, to d/OPENING_LEAD_MP4."""
+    d = job.dir
     name = plan["opening"]["name"]
     prompt = "\n\n".join(p.strip() for p in (
         plan.get("style", ""), cast.looks_prefix(job.channel, plan.get("cast_used")),
@@ -636,9 +671,6 @@ def _opening_lead(job: Job, client, i2v, plan: dict) -> Path:
                 raise
     if config.COMFY_CLEANUP:
         client.scrub_file("input", "", upload)
-    video.last_frame(d / OPENING_LEAD_MP4, jpg)
-    job.add_log(f"clip 1 starts from a lead-in out of {name}'s portrait (portrait not shown)")
-    return jpg
 
 
 def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, label: str):
@@ -656,17 +688,20 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     prompt = f"{plan['style']}\n\n{body}".strip()
     first_frame = None
     opening = _opening(plan, d) if i == 1 else None
-    if i > 1 or (opening and _reference_only(plan)):
+    lead = None
+    if i == 1 and opening and _reference_only(plan):
+        lead = _opening_lead(job, client, i2v, plan)   # None: it held the portrait, clip 1 from text
+    if i > 1 or lead is not None:
         if i > 1:
             frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
         else:
-            frame = _opening_lead(job, client, i2v, plan)
+            frame = lead
         first_frame = client.upload_image(frame, f"videogen_{job.id}_frame_{i - 1:02d}.jpg")
         # steer the I2V model to treat the seeded frame as an in-progress moment, not a fresh shot
         prompt += ("\n\nThe video starts exactly at the provided first frame, mid-action: continue that "
                    "ongoing motion smoothly in one unbroken shot - no cut, no scene change, no camera "
                    "jump at the start.")
-    elif opening and (d / "cast_opening.jpg").exists():
+    elif opening and not _reference_only(plan) and (d / "cast_opening.jpg").exists():
         # clip 1 opens on the channel's main character: its approved portrait is the first frame
         first_frame = client.upload_image(d / "cast_opening.jpg", f"videogen_{job.id}_cast.jpg")
         prompt += (f"\n\nThe video starts exactly at the provided first frame, which shows {opening['name']} "
@@ -737,10 +772,17 @@ def _story_blob(plan: dict) -> str:
 
 def _cast_random_builder(job: Job):
     """A DIY channel set to a random builder: invent this video's builder once (kept on the job's
-    channel snapshot, so a resume or a regenerated clip shows the same person)."""
+    channel snapshot, so a resume or a regenerated clip shows the same person).
+
+    Any DIY job: the snapshot's looks keep only who the builder is. A look written from the portrait
+    ("standing in a cornfield, facing the camera") is pasted into every clip prompt and copied into
+    every scene, so each clip that cut to a new angle cut back to the portrait's place."""
     b = cast.cast_random_builder(job.channel, job.id)
     if b:
         job.add_log(f"random builder for this video: {b['name']} - {b['look']}")
+    for name, _old in cast.diy_identity_looks(job.channel):
+        look = next(c["look"] for c in cast.all_characters(job.channel) if c["name"] == name)
+        job.add_log(f"{name}'s look: place, pose and light removed for this build short - now: {look}")
 
 
 def _set_cast_used(job: Job, plan: dict, *extra: str) -> list:
@@ -1997,6 +2039,7 @@ def _run_maintenance(job: Job):
                 if i == 1:
                     # scene 1 may have been edited: its lead-in has to be rendered for the new one
                     (d / OPENING_LEAD_JPG).unlink(missing_ok=True)
+                    (d / OPENING_LEAD_HELD).unlink(missing_ok=True)
                 _generate_clip(job, client, t2v, i2v, plan, i, d / f"clip_{i:02d}.mp4",
                                f"regenerating clip {i}")
                 job.regen_queue.pop(0)
@@ -2496,7 +2539,8 @@ def _run(job: Job):
         prev_clip = dest
         job.clips.append(dest.name)
         job.set(clips_done=i)
-        how = ("first-frame (portrait lead-in)" if i == 1 and _reference_only(plan) and _opening(plan, d)
+        how = ("text-to-video (the lead-in held the portrait)" if i == 1 and (d / OPENING_LEAD_HELD).exists()
+               else "first-frame (portrait lead-in)" if i == 1 and _reference_only(plan) and _opening(plan, d)
                else "first-frame (cast portrait)" if i == 1 and _opening(plan, d)
                else "text-to-video" if i == 1 else "first-frame")
         job.add_log(f"clip {i}/{n} done ({how})")

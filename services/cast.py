@@ -330,6 +330,63 @@ def cast_random_builder(channel: dict | None, seed: str) -> dict | None:
     return b
 
 
+# Words that place or pose a character rather than describe them. A look written from a portrait
+# ("standing in a cornfield at sunset, facing the camera") carries the portrait's place into every
+# prompt it is pasted into. The (?!-) keeps compound colours ("sky-blue", "grass-green") as clothes.
+_SCENERY = (r"corn ?fields?|fields?|corn|crops?|farm(?:land|yard)?s?|barns?|meadows?|pastures?|prairies?|"
+            r"countryside|rural|landscapes?|scenery|backgrounds?|backdrops?|settings?|surroundings?|"
+            r"environment|skies|sky|sunsets?|sunrises?|golden hour|dusk|dawn|horizon|trees?|forests?|"
+            r"woods|grass|lawn|outdoors?|studio|lighting|sunlight|sunlit|backlit|daylight")
+_POSE = (r"stand(?:s|ing)?|pos(?:e|es|ed|ing)|facing (?:the )?(?:camera|viewer)|"
+         r"look(?:s|ing)? (?:straight |directly )?(?:at|into) the (?:camera|viewer|lens)|"
+         r"arms (?:at|by) (?:his|her|their) sides?|portrait|photo(?:graph)?")
+_PLACE_WORD = re.compile(rf"\b(?:{_SCENERY}|{_POSE})\b(?!-)", re.I)
+# "a man in overalls in a cornfield": the place phrase alone goes, the clothes stay
+_FILLER = r"(?!(?:in|on|at|with|and|wearing)\b)[\w'-]+\s+"   # an adjective, never the next phrase
+_PLACE_PHRASE = re.compile(
+    rf"\s*\b(?:in|on|at|amid|among|against|before|behind|under|surrounded by|out in)\s+"
+    rf"(?:(?:a|an|the|his|her|their)\s+)?(?:{_FILLER}){{0,3}}?(?:{_SCENERY})\b(?!-)"
+    rf"(?:\s+(?:at|in|under|during)\s+(?:(?:a|an|the)\s+)?(?:{_FILLER}){{0,2}}?(?:{_SCENERY})\b(?!-))?", re.I)
+
+
+def identity_look(look: str) -> str:
+    """The look with only who the character IS - face, hair, body, clothes - and no place, pose
+    or light. Place phrases are cut out of a clause; a clause that still names a place or pose
+    after that is dropped whole. Falls back to the original when nothing would be left."""
+    text = str(look or "").strip()
+    if not text or not _PLACE_WORD.search(text):
+        return text
+    out = []
+    for sentence in re.split(r"(?<=[.;!])\s+|\n+", text):
+        kept = []
+        for clause in re.split(r",\s*", _PLACE_PHRASE.sub("", sentence)):
+            if clause.strip() and not _PLACE_WORD.search(clause):
+                kept.append(clause.strip())
+        s = ", ".join(kept).strip(" ,")
+        if s and re.search(r"\w", s):
+            out.append(s if s[-1] in ".;!:" else s + ".")
+    cleaned = " ".join(out).strip()
+    return cleaned or text
+
+
+def diy_identity_looks(channel: dict | None) -> list:
+    """A DIY build short happens at its own build site: strip every place, pose and light from the
+    looks on the job's channel snapshot, in place, so the script writer's sheet, each scene, every
+    clip prompt and the portrait lead-in all carry identity only. Returns (name, removed) pairs
+    for the looks that changed; nothing for any other video type."""
+    ch = channel if channel is not None else {}
+    if ch.get("video_type") != "diy":
+        return []
+    changed = []
+    for c in all_characters(ch):
+        old = str(c.get("look") or "")
+        new = identity_look(old)
+        if new != old.strip():
+            c["look"] = new
+            changed.append((c["name"], old))
+    return changed
+
+
 def random_builder_name(channel: dict | None) -> str:
     """The name of the job's random builder, "" when it has none."""
     for c in all_characters(channel):

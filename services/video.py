@@ -166,6 +166,17 @@ def trim_lead_cut(video: Path, window: float = LEAD_CUT_WINDOW,
     return round(cut, 3)
 
 
+def image_difference(a: Path, b: Path) -> float:
+    """How different two stills are as whole pictures: the mean absolute grey-level difference
+    (0-255) after shrinking both to 48x64. A clip that only breathes on its first frame measures
+    under ~5; a new shot, even of the same place, 25 or more."""
+    from PIL import Image, ImageChops, ImageStat
+
+    def small(p):
+        return Image.open(p).convert("L").resize((48, 64), Image.BILINEAR)
+    return float(ImageStat.Stat(ImageChops.difference(small(a), small(b))).mean[0])
+
+
 def fit_image(src: Path, out_jpg: Path, width: int, height: int) -> Path:
     """Cover-scale and centre-crop a still image to width x height, saved as JPG
     (used to fit a cast portrait to the job's aspect before seeding clip 1)."""

@@ -90,8 +90,9 @@ class PortraitMode(unittest.TestCase):
 class FakeClient:
     """Records what clip 1 was seeded with; every render is a tiny real mp4."""
 
-    def __init__(self):
+    def __init__(self, color="white"):
         self.uploads, self.builds = [], []
+        self.color = color          # what every render shows; the portrait is red
 
     def upload_image(self, path, name):
         self.uploads.append(Path(path).name)
@@ -103,7 +104,7 @@ class FakeClient:
         return {}
 
     def run(self, wf, dest, **kw):
-        lavfi(Path(dest), "color=c=green:s=64x64:r=24:d=1", 1.0)
+        lavfi(Path(dest), f"color=c={self.color}:s=64x64:r=24:d=1", 1.0)
         return dest
 
     def scrub_file(self, *a):
@@ -169,6 +170,29 @@ class ClipOneSeed(unittest.TestCase):
         self.assertEqual(len(self.client.builds), 1)
         self.assertEqual(self.client.uploads, [pipeline.OPENING_LEAD_JPG])
 
+    def test_a_lead_in_that_holds_the_portrait_is_rendered_once_more(self):
+        """The video model held a cornfield portrait for the whole lead-in: clip 1 opened on it."""
+        self.client.color = "red"                       # every render is still the portrait
+        self.render(self.plan("reference"))
+        leads = [b for b in self.client.builds if b["prefix"].endswith("opening_lead")]
+        self.assertEqual(len(leads), 2)
+        clip = self.client.builds[-1]
+        self.assertIsNone(clip["first_frame"])          # clip 1 is rendered from its text
+        self.assertNotIn(pipeline.OPENING_LEAD_JPG, self.client.uploads)
+        self.assertTrue((self.dir / pipeline.OPENING_LEAD_HELD).exists())
+
+    def test_a_held_lead_in_is_not_tried_again_on_resume(self):
+        (self.dir / pipeline.OPENING_LEAD_HELD).write_text("held")
+        self.render(self.plan("reference"))
+        self.assertEqual(len(self.client.builds), 1)
+        self.assertIsNone(self.client.builds[0]["first_frame"])
+        self.assertEqual(self.client.uploads, [])
+
+    def test_a_lead_in_that_moves_on_is_kept_first_time(self):
+        self.render(self.plan("reference"))
+        self.assertEqual(len(self.client.builds), 2)    # one lead-in, one clip
+        self.assertFalse((self.dir / pipeline.OPENING_LEAD_HELD).exists())
+
 
 @unittest.skipUnless(ffmpeg_works(), "no usable ffmpeg/libx264 on this machine")
 class DiyBuilderLook(unittest.TestCase):
@@ -198,6 +222,49 @@ class DiyBuilderLook(unittest.TestCase):
 
     def test_other_types_only_get_a_look_when_the_scene_names_the_character(self):
         self.assertNotIn("denim overalls", self.render("real"))
+
+
+class DiyIdentityLook(unittest.TestCase):
+    """The look is pasted into every DIY clip prompt and copied into every scene: a look written
+    from a cornfield portrait sent clips that cut to a new angle back to the cornfield."""
+
+    def test_place_pose_and_light_go_and_the_clothes_stay(self):
+        from services import cast
+        look = ("A rugged man in his early 30s with tousled light-brown hair and a short beard; wearing "
+                "faded denim overalls over a plain white t-shirt. He stands in a golden cornfield at "
+                "sunset, facing the camera.")
+        out = cast.identity_look(look)
+        for kept in ("light-brown hair", "short beard", "denim overalls", "white t-shirt"):
+            self.assertIn(kept, out)
+        for gone in ("corn", "sunset", "stands", "camera"):
+            self.assertNotIn(gone, out)
+
+    def test_a_place_phrase_inside_a_clause_goes_alone(self):
+        from services import cast
+        self.assertEqual(cast.identity_look("A man in overalls in a cornfield, white t-shirt"),
+                         "A man in overalls, white t-shirt.")
+
+    def test_labelled_background_and_lighting_lines_go(self):
+        from services import cast
+        out = cast.identity_look("Tall man with a fade haircut. Background: tall corn under a cloudy "
+                                 "sky. Lighting: soft evening light.")
+        self.assertEqual(out, "Tall man with a fade haircut.")
+
+    def test_colour_words_are_not_places(self):
+        from services import cast
+        look = "sky-blue eyes, grass-green work gloves, a light grey cap"
+        self.assertEqual(cast.identity_look(look), look)
+
+    def test_only_a_diy_snapshot_is_cleaned(self):
+        from services import cast
+        look = "denim overalls, standing in a cornfield"
+        diy = {"video_type": "diy", "cast": [{"name": "Jake", "look": look}]}
+        self.assertEqual(cast.diy_identity_looks(diy), [("Jake", look)])
+        self.assertEqual(diy["cast"][0]["look"], "denim overalls.")
+        self.assertEqual(cast.diy_identity_looks(diy), [])          # idempotent on resume
+        story = {"video_type": "story", "cast": [{"name": "Jake", "look": look}]}
+        self.assertEqual(cast.diy_identity_looks(story), [])
+        self.assertEqual(story["cast"][0]["look"], look)
 
 
 class DiyPortraitIsAReference(unittest.TestCase):
