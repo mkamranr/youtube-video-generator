@@ -18,7 +18,7 @@ config.OUTPUT_DIR = TMP / "output"
 config.CHANNELS_DIR = TMP / "channels"
 config.CHANNELS_INDEX = config.CHANNELS_DIR / "channels.json"
 
-from services import channels, llm, tts  # noqa: E402
+from services import cast, channels, llm, tts  # noqa: E402
 from services.ffbin import ffmpeg  # noqa: E402
 import pipeline  # noqa: E402
 
@@ -129,6 +129,67 @@ class Prompts(unittest.TestCase):
 
     def test_the_style_example_is_phone_footage(self):
         self.assertIn("smartphone", llm._style_example({"video_type": "diy"}))
+
+
+class RandomBuilder(unittest.TestCase):
+    """A DIY channel can cast a new person per video instead of a saved character: one description,
+    invented once, that every clip of that video carries."""
+    SAVED = [{"id": "a1", "name": "Hank", "look": "denim overalls in a cornfield", "role": "main"}]
+
+    def snap(self, builder="random", video_type="diy"):
+        rec = channels._validate({"name": "B", "video_type": video_type, "diy_builder": builder,
+                                  "characters_enabled": True,
+                                  "cast": [dict(c) for c in self.SAVED]})
+        return channels.snapshot(rec)
+
+    def test_the_channel_setting_validates_and_travels_with_the_job(self):
+        self.assertEqual(channels._validate({"name": "B", "video_type": "diy"})["diy_builder"], "cast")
+        self.assertEqual(self.snap()["diy_builder"], "random")
+        with self.assertRaises(ValueError):
+            channels._validate({"name": "B", "diy_builder": "sometimes"})
+
+    def test_editing_keeps_the_choice(self):
+        rec = channels._validate({"name": "B", "video_type": "diy", "diy_builder": "random"})
+        self.assertEqual(channels._validate({"name": "C"}, base=rec)["diy_builder"], "random")
+
+    def test_the_same_job_always_gets_the_same_person(self):
+        self.assertEqual(cast.random_builder("job-1"), cast.random_builder("job-1"))
+
+    def test_different_jobs_get_different_people(self):
+        looks = {cast.random_builder(f"job-{i}")["look"] for i in range(20)}
+        self.assertGreater(len(looks), 15)
+
+    def test_the_look_is_a_person_and_never_a_place(self):
+        for i in range(50):
+            look = cast.random_builder(f"j{i}")["look"]
+            self.assertIn("wearing", look)
+            for place in ("field", "farm", "backyard", "garage", "workshop"):
+                self.assertNotIn(place, look)
+
+    def test_the_random_builder_replaces_the_saved_cast(self):
+        ch = self.snap()
+        b = cast.cast_random_builder(ch, "job-1")
+        self.assertEqual(cast.names(cast.active(ch)), [b["name"]])
+        self.assertIsNone(cast.cast_random_builder(ch, "job-1"))     # once per job
+        self.assertEqual(cast.random_builder_name(ch), b["name"])
+
+    def test_saved_cast_mode_and_other_types_are_untouched(self):
+        for ch in (self.snap(builder="cast"), self.snap(video_type="real")):
+            self.assertIsNone(cast.cast_random_builder(ch, "job-1"))
+            self.assertEqual(cast.names(cast.active(ch)), ["Hank"])
+
+    def test_the_builder_is_in_the_video_even_when_the_script_never_names_them(self):
+        ch = self.snap()
+        b = cast.cast_random_builder(ch, "job-1")
+        job = SimpleNamespace(channel=ch, source="prompt")
+        plan = {"title": "Pallet planter", "narration": "He drills the slats, then fills them."}
+        self.assertEqual(pipeline._set_cast_used(job, plan), [b["name"]])
+        self.assertIn(b["look"], cast.looks_prefix(ch, plan["cast_used"]))
+
+    def test_no_portrait_is_looked_up_for_the_random_builder(self):
+        ch = self.snap()
+        cast.cast_random_builder(ch, "job-1")
+        self.assertIsNone(cast.opening_character(ch, "c1", used=cast.names(cast.active(ch))))
 
 
 if __name__ == "__main__":

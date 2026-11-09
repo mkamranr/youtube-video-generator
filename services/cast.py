@@ -265,6 +265,79 @@ def opening_character(channel: dict | None, channel_id: str, used: list | None =
     return None
 
 
+# ---- a random builder per video (DIY channels) ----------------------------
+# A DIY channel can cast a new person for every video instead of a saved character. The person is
+# built from these parts rather than asked of the LLM: it cannot fail, costs nothing, and every
+# part is something the video model draws the same way each time (a face is the one thing text
+# cannot pin down, so the clothes and hair carry the identity across cuts).
+RANDOM_BUILDER_ID = "random-builder"
+_B_NAMES = {"man": ["Jake", "Marco", "Dev", "Sam", "Luis", "Owen", "Tariq", "Ben", "Kofi", "Ryan"],
+            "woman": ["Maya", "Lena", "Priya", "Rosa", "Tess", "Nadia", "Jo", "Amara", "Kate", "Ines"]}
+_B_AGES = ["late 20s", "early 30s", "mid 30s", "early 40s", "late 40s", "mid 50s"]
+_B_BUILDS = ["lean", "stocky", "broad-shouldered", "tall and wiry", "average-build"]
+_B_SKIN = ["fair skin", "lightly tanned skin", "olive skin", "light brown skin", "medium brown skin",
+           "dark brown skin"]
+_B_HAIR = {"man": ["short dark brown hair", "buzz-cut black hair", "shaggy sandy-blond hair",
+                   "short curly black hair", "neatly trimmed salt-and-pepper hair", "a shaved head"],
+           "woman": ["dark hair in a low ponytail", "auburn hair tied in a bun", "short curly black hair",
+                     "blonde hair in a side braid", "shoulder-length brown hair under a bandana"]}
+_B_FACE = {"man": ["a full trimmed beard", "light stubble", "clean-shaven", "a short goatee",
+                   "a thick moustache"],
+           "woman": [""]}
+_B_TOPS = ["a faded olive-green t-shirt", "a navy henley with the sleeves pushed up",
+           "a red-and-black flannel shirt over a grey tee", "a plain white t-shirt",
+           "a charcoal hoodie with the sleeves pushed up", "a mustard-yellow work shirt",
+           "a light-blue chambray shirt with rolled sleeves"]
+_B_BOTTOMS = ["tan canvas work pants", "dark blue jeans", "black cargo pants", "grey work shorts"]
+_B_EXTRAS = ["a brown leather tool belt", "a backwards black cap", "safety glasses pushed up on the head",
+             "a knit beanie", ""]
+_B_SHOES = ["brown leather work boots", "worn grey sneakers", "black work boots"]
+
+
+def random_builder(seed: str) -> dict:
+    """One made-up builder as a cast character: the same seed (the job id) always gives the same
+    person, so a resumed or regenerated job keeps them."""
+    r = random.Random(f"builder:{seed}")
+    sex = r.choice(("man", "woman"))
+    pos = "his" if sex == "man" else "her"
+    face = r.choice(_B_FACE[sex])
+    extra = r.choice(_B_EXTRAS)
+    build = r.choice(_B_BUILDS)
+    look = (f"{'an' if build[0] in 'aeiou' else 'a'} {build} {sex} in {pos} {r.choice(_B_AGES)} with {r.choice(_B_SKIN)}, "
+            f"{r.choice(_B_HAIR[sex])}{', ' + face if face else ''}; wearing {r.choice(_B_TOPS)}, "
+            f"{r.choice(_B_BOTTOMS)} and {r.choice(_B_SHOES)}{', with ' + extra if extra else ''}")
+    return {"id": RANDOM_BUILDER_ID, "name": r.choice(_B_NAMES[sex]), "kind": "the builder",
+            "role": "main", "priority": "lead", "look": look, "personality": "focused, practical",
+            "voice_id": ""}
+
+
+def cast_random_builder(channel: dict | None, seed: str) -> dict | None:
+    """Give a DIY job's channel snapshot its own random builder, once.
+
+    Only for a DIY channel set to builder "random". The snapshot's saved cast is replaced by this
+    one person and characters are switched on, so every existing cast path - the script writer's
+    sheet, each scene and every clip prompt - carries the same description through the video. No
+    portrait exists for them, so clip 1 is built from the text like every other clip. Returns the
+    builder when it was added now, None when there was nothing to do."""
+    ch = channel if channel is not None else {}
+    if ch.get("video_type") != "diy" or ch.get("diy_builder") != "random":
+        return None
+    if any(c.get("id") == RANDOM_BUILDER_ID for c in all_characters(ch)):
+        return None
+    b = random_builder(seed)
+    ch["cast"] = [b]
+    ch["characters_enabled"] = True
+    return b
+
+
+def random_builder_name(channel: dict | None) -> str:
+    """The name of the job's random builder, "" when it has none."""
+    for c in all_characters(channel):
+        if c.get("id") == RANDOM_BUILDER_ID:
+            return c["name"]
+    return ""
+
+
 # ---- portrait candidate generation ----------------------------------------
 _state: dict = {}          # (cid, char_id) -> {"generating", "waiting", "done", "total", "errors"}
 _lock = threading.Lock()

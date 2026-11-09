@@ -39,6 +39,8 @@ CAST_PRIORITIES = ("lead", "normal", "resting")
 # reference for the look (a discarded lead-in render carries it into clip 1, so the portrait itself
 # is never on screen), or not at all.
 CAST_PORTRAIT_MODES = ("opening", "reference", "off")
+# who builds in a DIY channel's videos: one of its saved characters, or a new random person per video
+DIY_BUILDERS = ("cast", "random")
 DEFAULT_CAST_PRIORITY = "normal"
 
 MAX_CAST_VOICE_CHARS = 40     # a reference-voice id from services/voices.py
@@ -196,6 +198,7 @@ def snapshot(rec: dict) -> dict:
             "character_voice": str((rec.get("defaults") or {}).get("character_voice") or ""),
             "cast_opening": bool(rec.get("cast_opening", True)),
             "cast_portrait": cast_portrait(rec),
+            "diy_builder": str(rec.get("diy_builder") or "cast"),
             "characters_enabled": bool(rec.get("characters_enabled", bool(rec.get("cast")))),
             # the avatar roster travels with the job so a planned video can still resolve the
             # presenter it was set up with, even if the channel is edited before it runs
@@ -292,7 +295,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
     """Merge data over base (or built-in defaults) and validate every field."""
     rec = {"name": "", "purpose": "", "rules": "", "audience": "general", "video_type": "animated",
            "made_for_kids": False, "cast": [], "avatars": [], "cast_opening": True,
-           "cast_portrait": "opening", "characters_enabled": False,
+           "cast_portrait": "opening", "characters_enabled": False, "diy_builder": "cast",
            "defaults": {"art_style": "", "audio_mode": config.AUDIO_MODE, "voice_id": "",
                         "aspect_ratio": config.DEFAULT_ASPECT_RATIO,
                         "video_length": config.DEFAULT_VIDEO_LENGTH, "storyboard": None,
@@ -302,7 +305,7 @@ def _validate(data: dict, base: dict | None = None) -> dict:
                         "avatar_coverage": config.DEFAULT_AVATAR_COVERAGE}}
     if base:
         for k in ("name", "purpose", "rules", "audience", "video_type", "made_for_kids", "cast",
-                  "avatars", "cast_opening", "cast_portrait", "characters_enabled"):
+                  "avatars", "cast_opening", "cast_portrait", "characters_enabled", "diy_builder"):
             if k in base:
                 rec[k] = base[k]
         rec["cast_portrait"] = cast_portrait(base)     # a legacy base only has cast_opening
@@ -331,6 +334,10 @@ def _validate(data: dict, base: dict | None = None) -> dict:
         rec["cast_portrait"] = mode
     # cast_opening stays the "is the portrait used at all" switch every older check reads
     rec["cast_opening"] = cast_portrait(rec) != "off"
+    if "diy_builder" in data:
+        rec["diy_builder"] = str(data["diy_builder"] or "cast")
+    if rec["diy_builder"] not in DIY_BUILDERS:
+        raise ValueError(f"diy_builder must be one of {', '.join(DIY_BUILDERS)}")
     if "cast" in data:
         rec["cast"] = _validate_cast(data["cast"], (base or {}).get("cast") or [])
     if "avatars" in data:

@@ -611,9 +611,12 @@ def _opening_lead(job: Job, client, i2v, plan: dict) -> Path:
     prompt = "\n\n".join(p.strip() for p in (
         plan.get("style", ""), cast.looks_prefix(job.channel, plan.get("cast_used")),
         plan["scenes"][0],
-        f"The shot starts from the provided reference image of {name}. {name} moves straight into the "
-        "opening moment of the scene described above - its setting, camera angle and pose - keeping "
-        f"{name}'s exact face, hair, body and outfit. End on that opening moment, held still.") if p and p.strip())
+        f"The shot starts from the provided reference image of {name}. Only {name}'s face, hair, body "
+        "and clothing come from that image; its background, ground, sky and lighting do not carry over. "
+        f"{name} moves straight into the opening moment of the scene described above - its setting, "
+        f"camera angle and pose - keeping {name}'s exact face, hair, body and outfit. The shot ends fully "
+        "inside that scene's setting, with nothing of the reference image's surroundings left. "
+        "End on that opening moment, held still.") if p and p.strip())
     upload = client.upload_image(d / "cast_opening.jpg", f"videogen_{job.id}_cast.jpg")
     job.set("clips", f"clip 1: rendering the lead-in from {name}'s portrait")
     for attempt in range(config.CLIP_RETRIES + 1):
@@ -642,8 +645,15 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     """Render clip i from its scene prompt; i > 1 is seeded with clip i-1's last frame."""
     d = job.dir
     scene = plan['scenes'][i - 1]
-    # cast characters named in the scene get their canonical look prepended (deterministic branding)
-    prompt = f"{plan['style']}\n\n{cast.with_prefix(job.channel, scene, only=plan.get('cast_used'))}".strip()
+    # cast characters named in the scene get their canonical look prepended (deterministic branding).
+    # A DIY build short has its builder in every shot, but a close-up or a "he drills..." line does
+    # not name him - without his look that clip would invent a different man - so DIY always gets it.
+    if _is_diy(job):
+        looks = cast.looks_prefix(job.channel, plan.get("cast_used"))
+        body = f"{looks}\n\n{scene}" if looks else scene
+    else:
+        body = cast.with_prefix(job.channel, scene, only=plan.get("cast_used"))
+    prompt = f"{plan['style']}\n\n{body}".strip()
     first_frame = None
     opening = _opening(plan, d) if i == 1 else None
     if i > 1 or (opening and _reference_only(plan)):
@@ -725,6 +735,14 @@ def _story_blob(plan: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _cast_random_builder(job: Job):
+    """A DIY channel set to a random builder: invent this video's builder once (kept on the job's
+    channel snapshot, so a resume or a regenerated clip shows the same person)."""
+    b = cast.cast_random_builder(job.channel, job.id)
+    if b:
+        job.add_log(f"random builder for this video: {b['name']} - {b['look']}")
+
+
 def _set_cast_used(job: Job, plan: dict, *extra: str) -> list:
     """plan["cast_used"]: the channel characters that are in this video, in first-mention order.
 
@@ -740,6 +758,9 @@ def _set_cast_used(job: Job, plan: dict, *extra: str) -> list:
         for n in plan.get("cast_chosen") or []:
             if n not in used:
                 used.append(n)
+    builder = cast.random_builder_name(job.channel)
+    if builder and builder not in used:   # in every shot, whether or not the narration names them
+        used.insert(0, builder)
     plan["cast_used"] = used
     return used
 
@@ -2002,6 +2023,7 @@ def _run(job: Job):
     d = job.dir
     d.mkdir(parents=True, exist_ok=True)
     mode = job.audio_mode or "narration+music"
+    _cast_random_builder(job)   # a job that skipped drafting (a URL source) gets its builder here
 
     # 1. source text: transcript for YouTube jobs, the user's prompt otherwise
     tfile = d / "transcript.txt"
@@ -2331,6 +2353,10 @@ def _run(job: Job):
                 ow, oh = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
                 video.fit_image(channels.portrait_path(job.channel_id, oc["id"]), d / "cast_opening.jpg", ow, oh)
                 mode = channels.cast_portrait(job.channel)
+                if mode == "opening" and _is_diy(job):
+                    # a build short happens at its own build site: opening ON the portrait would make
+                    # the portrait's background the location, so it only lends the face and clothes
+                    mode = "reference"
                 plan["opening"] = {"name": oc["name"], "look": oc.get("look", ""), "mode": mode}
                 job.add_log(f"opening frame: {oc['name']}'s portrait" if mode == "opening" else
                             f"{oc['name']}'s portrait is the reference for clip 1 (never shown)")
@@ -3169,6 +3195,7 @@ class JobManager:
             if _is_story(job):
                 self._draft_story(job, feedback)
                 return
+            _cast_random_builder(job)   # before the script, so the writer knows who builds
             job.set("drafting", "writing script with the LLM")
             previous = None
             pfile = job.dir / "plan.json"

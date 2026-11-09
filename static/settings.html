@@ -152,6 +152,16 @@
             <button class="btn secondary sm" id="chAvatarAdd" type="button">Add avatar</button>
           </div>
         </div>
+        <div id="chBuilderField" hidden style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+          <div style="max-width:340px">
+            <label for="chDiyBuilder">Who builds in each video</label>
+            <select id="chDiyBuilder">
+              <option value="cast">One of the saved cast characters</option>
+              <option value="random">A random person, new for every video</option>
+            </select>
+          </div>
+          <div class="hint" style="margin:4px 0 0">Random = each video invents its own builder (face, hair, build and outfit) and keeps that same person in every shot of that video. The saved cast and portraits are not used.</div>
+        </div>
         <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
           <label style="font-weight:600">Cast <span class="hint" style="font-weight:400">— recurring characters that appear across this channel's videos</span></label>
           <label class="switch" style="margin-top:8px"><input type="checkbox" id="chCharacters"><span class="track"></span>
@@ -898,7 +908,10 @@ async function refreshChannels() {
 $("#chOwnerFilter").onchange = refreshChannels;
 
 const CH_REAL_TYPES = ["real", "tech", "diy"];
-function chApplyType() { $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value); }
+function chApplyType() {
+  $("#chStyleField").hidden = CH_REAL_TYPES.includes($("#chVideoType").value);
+  $("#chBuilderField").hidden = $("#chVideoType").value !== "diy";
+}
 function chApplyCharacters() { $("#chCastBody").hidden = !$("#chCharacters").checked; }
 function chTypeChanged() {
   chApplyType();
@@ -1017,6 +1030,7 @@ async function chOpen(c) {
   $("#chAvatarModel").onchange = chAvatarCost;
   chAvatarRender();
   $("#chCastPortrait").value = c ? (c.cast_portrait || (c.cast_opening === false ? "off" : "opening")) : "opening";
+  $("#chDiyBuilder").value = (c && c.diy_builder) || "cast";
   // the server always sends the key (services/channels.py back-fills it), so trust it exactly
   $("#chCharacters").checked = c ? !!c.characters_enabled : $("#chVideoType").value !== "tech";
   // await: chCastRender draws a voice picker per character, so the library must be loaded first
@@ -1299,6 +1313,7 @@ function chBody() {
     video_type: $("#chVideoType").value,
     made_for_kids: $("#chKids").checked,
     cast_portrait: $("#chCastPortrait").value,
+    diy_builder: $("#chDiyBuilder").value,
     characters_enabled: $("#chCharacters").checked,
     cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role,
                              priority: c.priority || "normal", look: c.look,

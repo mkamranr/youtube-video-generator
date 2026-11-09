@@ -71,7 +71,10 @@ DIY_RULES = ("This is a DIY BUILD channel: every video is a fast vertical short 
              "least as far along as the one before); shots alternate between wide views of the "
              "builder at work and close-ups of hands, tools and materials; the final shot is the "
              "finished project (a time skip to the grown, filled or in-use result is allowed). "
-             "The builder is absorbed in the work and never looks at the camera. ")
+             "The builder is absorbed in the work and never looks at the camera. "
+             "The builder's cast look is their IDENTITY only - face, hair, body and clothes: ignore any "
+             "place, field, farm or scenery that look or their portrait suggests; the location is this "
+             "video's build site, described with the same words in every scene. ")
 
 # The continuity contract for DIY shorts: a cut to a new angle at a clip boundary is the format (the
 # seeded clip's held lead-in frames are trimmed by video.trim_lead_cut), a cut to a new PLACE is not.

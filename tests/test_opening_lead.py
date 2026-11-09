@@ -155,12 +155,57 @@ class ClipOneSeed(unittest.TestCase):
         self.render(plan)
         self.assertEqual(len(self.client.builds), 1)
 
+    def test_the_lead_in_takes_the_likeness_but_not_the_portrait_background(self):
+        """A builder's portrait shot in a cornfield put the cornfield into a backyard build."""
+        self.render(self.plan("reference"))
+        lead = self.client.builds[0]["prompt"]
+        self.assertIn("background, ground, sky and lighting do not carry over", lead)
+        self.assertIn("nothing of the reference image's surroundings left", lead)
+
     def test_a_lead_in_already_on_disk_is_not_rendered_again(self):
         video.last_frame(self.dir / "portrait.mp4", self.dir / pipeline.OPENING_LEAD_JPG)
         (self.dir / pipeline.OPENING_LEAD_JPG).write_bytes(b"x" * 2000)
         self.render(self.plan("reference"))
         self.assertEqual(len(self.client.builds), 1)
         self.assertEqual(self.client.uploads, [pipeline.OPENING_LEAD_JPG])
+
+
+@unittest.skipUnless(ffmpeg_works(), "no usable ffmpeg/libx264 on this machine")
+class DiyBuilderLook(unittest.TestCase):
+    """A DIY short shows its builder in every shot, but close-ups and "he drills..." lines do not
+    name him. Those clips used to get no look at all and invented a different man."""
+    CAST = [{"name": "Jake", "look": "denim overalls over a white tee, short brown hair"}]
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(dir=TMP))
+        lavfi(self.dir / "clip_01.mp4", "color=c=red:s=64x64:r=24:d=1", 1.0)
+        self.client = FakeClient()
+
+    def render(self, video_type):
+        job = mock.MagicMock(dir=self.dir, id="j2", cancel_requested=False,
+                             channel={"video_type": video_type, "cast": self.CAST},
+                             aspect_ratio="9:16 (Portrait Widescreen)", megapixels=0.4, video_model="")
+        plan = {"style": "phone footage", "cast_used": ["Jake"],
+                "scenes": ["Jake carries a pallet.", "Close-up: his hands drive a screw into the slat."]}
+        with mock.patch.object(pipeline, "_gpu_gate"), \
+                mock.patch.object(config, "COMFY_CLEANUP", False):
+            pipeline._generate_clip(job, self.client, "t2v", "i2v", plan, 2,
+                                    self.dir / "clip_02.mp4", "clip 2/2")
+        return self.client.builds[-1]["prompt"]
+
+    def test_an_unnamed_diy_shot_still_carries_the_builder_look(self):
+        self.assertIn("Jake: denim overalls", self.render("diy"))
+
+    def test_other_types_only_get_a_look_when_the_scene_names_the_character(self):
+        self.assertNotIn("denim overalls", self.render("real"))
+
+
+class DiyPortraitIsAReference(unittest.TestCase):
+
+    def test_the_writer_is_told_the_look_is_identity_not_a_place(self):
+        from services import llm
+        self.assertIn("IDENTITY only", llm.DIY_RULES)
+        self.assertIn("build site", llm.DIY_RULES)
 
 
 @unittest.skipUnless(ffmpeg_works(), "no usable ffmpeg/libx264 on this machine")
