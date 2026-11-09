@@ -319,8 +319,8 @@ def drop_stale(job_dir, keep: int):
     """Delete variant files past `keep`, left by a pass that produced more of them.
 
     Generous upper bound rather than a glob: every layout, for both the clean and the presenter
-    base, plus room for the presenter's own text-free entry."""
-    for stale in range(keep + 1, 2 * len(LAYOUTS) + 4):
+    base, plus room for the presenter's own text-free entry and the reel cover."""
+    for stale in range(keep + 1, 2 * len(LAYOUTS) + 5):     # +1 for the reel cover
         variant_path(job_dir, stale).unlink(missing_ok=True)
 
 

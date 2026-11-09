@@ -527,6 +527,12 @@
           <div class="hint">Hex colour of the thumbnail text highlight; empty = use the story board accent colour</div>
         </div>
         <div class="field">
+          <label>&nbsp;</label>
+          <label class="switch"><input type="checkbox" id="THUMB_COVER_ENABLED"><span class="track"></span>
+            Thumbnail: reel cover</label>
+          <div class="hint">9:16 videos also get a poster-style cover (headline, highlighter strip, figure badge, checklist, handwritten tag), offered first. Needs Thumbnail text on; applies to videos planned after it is switched on</div>
+        </div>
+        <div class="field">
           <label for="STORYBOARD_TEMPLATE_SET">Story board: card layouts</label>
           <select id="STORYBOARD_TEMPLATE_SET"></select>
           <div class="hint">Which card layouts new videos draw from. Mixed uses all eight: the card's own content picks the family (a figure, a picture, a closing takeaway) and a per-video seed picks the variant, so one video shows several different cards and never the same layout twice in a row. Applies to newly planned story boards; regenerate a job's story board to restyle it</div>
@@ -759,7 +765,7 @@ const FIELDS = ["COMFY_URL", "FISH_URL", "VLLM_URL", "VLLM_MODEL", "LLM_TIMEOUT"
                 "STORYBOARD_TEMPLATE_SET", "STORYBOARD_MOTION", "PAGE_SCROLL_SPEED",
                 "CAPTIONS_ENABLED", "CAPTION_MAX_WORDS", "CAPTION_MAX_CHARS", "CAPTION_HIGHLIGHT",
                 "CAPTION_ACCENT", "CAPTION_FONT_SCALE", "CAPTION_BOTTOM_MARGIN",
-                "THUMB_TEXT_ENABLED", "THUMB_TEXT_VARIANTS", "THUMB_TEXT_ACCENT",
+                "THUMB_TEXT_ENABLED", "THUMB_TEXT_VARIANTS", "THUMB_TEXT_ACCENT", "THUMB_COVER_ENABLED",
                 "POLISH", "HOOK_CARD_SECONDS", "END_CARD_SECONDS", "END_CARD_TEXT",
                 "PROGRESS_BAR_HEIGHT", "SFX_VOLUME", "SFX_FILE", "LOUDNESS_LUFS",
                 "PUBLIC_BASE_URL",

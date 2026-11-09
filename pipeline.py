@@ -14,7 +14,7 @@ from pathlib import Path
 import config
 from services import (avatar, browser, captions, cast, chapters, channels, comfy, compilation,
                       gpu, llm, lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
-                      thumbtext, transcript, tts, video, voices)
+                      thumbcover, thumbtext, transcript, tts, video, voices)
 from services import cardtemplates
 
 
@@ -1027,6 +1027,15 @@ def _story_audio(job: Job, plan: dict) -> tuple:
     return narration_file, durs, line_seconds
 
 
+def _cover_wanted(job: Job) -> bool:
+    """Whether this video's thumbnail should get the reel cover (services/thumbcover.py): a
+    9:16 video, cover switched on, and not a kids channel - a toddler's parent scans a picture,
+    not a poster of copy. Read at plan time to ask the LLM for the copy and compose the picture
+    for it; the drawing itself re-checks the switches on every pass, like the other variants."""
+    return (config.THUMB_COVER_ENABLED and thumbcover.eligible_aspect(job.aspect_ratio)
+            and str((job.channel or {}).get("audience") or "") != "kids")
+
+
 def _thumb_variants(job: Job, plan: dict, select=None) -> int:
     """Draw the thumbnail text variants from thumb_base.jpg and make one of them active.
 
@@ -1059,7 +1068,20 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
         # Same master-switch rule as the captions: THUMB_TEXT_ENABLED is read here, not frozen
         # into the job, so turning it off in Settings strips the text from an existing video's
         # thumbnail the next time its variants are built. job.thumb_text is this video's choice.
-        if config.THUMB_TEXT_ENABLED and job.thumb_text and config.THUMB_TEXT_VARIANTS > 0:
+        text_on = config.THUMB_TEXT_ENABLED and job.thumb_text
+        # The reel cover goes FIRST on the clean base, so a video planned with one ships it unless
+        # someone picks another. Not on the presenter base: the cover fills the corners the
+        # presenter stands in.
+        if text_on and not is_pres and config.THUMB_COVER_ENABLED and plan.get("thumbnail_cover"):
+            try:
+                k = len(recs) + 1
+                path = thumbcover.render(src, thumbtext.variant_path(d, k), plan["thumbnail_cover"],
+                                         logo=_logo_for(job))
+                recs.append({"file": path.name, "text": thumbcover.summary(plan["thumbnail_cover"]),
+                             "layout": "cover", "presenter": False})
+            except Exception as e:  # noqa: BLE001 - the other variants still stand
+                job.add_log(f"reel cover skipped ({e})")
+        if text_on and config.THUMB_TEXT_VARIANTS > 0:
             try:
                 layouts = thumbtext.TOP_LAYOUTS if is_pres else thumbtext.LAYOUTS
                 for r in thumbtext.variants(src, d, texts, offset=len(recs), layouts=layouts):
@@ -2451,7 +2473,8 @@ def _run(job: Job):
             if not plan.get("thumbnail_prompt"):
                 plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
                                                 channel=job.channel, used=plan.get("cast_used"),
-                                                idea=plan.get("thumbnail_idea", "")))
+                                                idea=plan.get("thumbnail_idea", ""),
+                                                cover=_cover_wanted(job)))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
@@ -3450,7 +3473,8 @@ class JobManager:
             plan.update(llm.write_thumbnail(plan.get("title", ""), plan.get("narration", ""),
                                             plan.get("style", ""), channel=job.channel,
                                             used=plan.get("cast_used"),
-                                            idea=plan.get("thumbnail_idea", "")))
+                                            idea=plan.get("thumbnail_idea", ""),
+                                            cover=_cover_wanted(job)))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             gpu.wait_until_free(job.id, on_wait=lambda h: job.set(

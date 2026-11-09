@@ -1558,13 +1558,46 @@ _THUMB_KIDS_RULE = (
     "  or a simple sky) - no scenery, no crowd, no small details, nothing in the distance.\n")
 
 
+_THUMB_TOP_FRAME = (
+    "  Put the subject in the LOWER TWO THIRDS of the frame, slightly off-centre, and keep the TOP THIRD\n"
+    "  simple and uncluttered (sky, wall, soft gradient) - a headline is drawn there afterwards.\n")
+
+_THUMB_COVER_FRAME = (
+    "  This is a TALL 9:16 frame. Put the subject in the MIDDLE BAND (roughly 35%-75% of the height),\n"
+    "  and keep the TOP 35% and the BOTTOM 25% simple and dark-ish (a soft gradient, a desk, a wall):\n"
+    "  stacks of headline text are drawn there afterwards.\n")
+
+_THUMB_COVER_KEY = """- "thumbnail_cover": the copy for a poster-style reel cover drawn over this picture, an object:
+  "headline": 1-3 words, at most 22 characters - the product, tool or topic name. Wrap the one
+    word or part to highlight in asterisks, e.g. "Xiaomi-*OCR-0*".
+  "strip": 2-4 words, at most 20 characters - the hook, printed black on a yellow highlighter
+    strip, e.g. "The 0.8B Model".
+  "lines": 1-2 lines of at most 3 words / 18 characters that finish the sentence the strip
+    starts, the last one is the payoff, e.g. ["That Fixes Your", "Messy Documents"].
+  "badge": {"big": a figure from the story of at most 6 characters, "small": its unit or label of
+    at most 14 characters}, e.g. {"big": "0.8B", "small": "PARAMETERS"} - or null when the story
+    has no striking number. Never invent a figure.
+  "checks": 2-3 benefits of at most 3 words / 18 characters each, the strongest last.
+  "tag": a handwritten-style call-out of at most 6 words, e.g. "Run Locally on Your Laptop!".
+  Title Case everywhere. Every word must be true to the video.
+"""
+
+_THUMB_COVER_NAMES = (" - except in \"thumbnail_cover\", which may use the product or tool name the "
+                      "title itself uses")
+
+
 def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None,
-                    used: list | None = None, idea: str = "") -> dict:
+                    used: list | None = None, idea: str = "", cover: bool = False) -> dict:
     """A single-image prompt for an eye-catching YouTube thumbnail.
 
     idea: the thumbnail the weekly plan asked for (services/planner.py); the prompt then realises
-    that composition instead of inventing one. Empty for every other job."""
-    from services import thumbtext   # lazy: thumbtext pulls storyboard, which imports this module
+    that composition instead of inventing one. Empty for every other job.
+
+    cover: also write the copy for a reel cover (services/thumbcover.py) - a portrait video whose
+    thumbnail gets the dense poster layout. The picture is then composed for it: subject in the
+    middle band, quiet top and bottom where the cover's text stacks go."""
+    # lazy: thumbtext pulls storyboard, which imports this module
+    from services import thumbcover, thumbtext
 
     ch = _channel(channel)
     kids = ch["audience"] == "kids"
@@ -1599,9 +1632,7 @@ something. Return JSON with key:
   the payoff, never show the whole story.
   ONE big subject, filling the frame, rim-lit so it pops off a simple, saturated background in a
   complementary colour; strong contrast, vivid colours, no clutter.
-  Put the subject in the LOWER TWO THIRDS of the frame, slightly off-centre, and keep the TOP THIRD
-  simple and uncluttered (sky, wall, soft gradient) - a headline is drawn there afterwards.
-  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
+{_THUMB_COVER_FRAME if cover else _THUMB_TOP_FRAME}  Keep the TOP-RIGHT corner free of important elements (a channel logo is placed there).
 {_THUMB_KIDS_RULE if kids else ""}  Same world/style as the video.
   It must end with: "No text, subtitles, captions, letters as typography, logos or watermarks."
 - "thumbnail_texts": 2-3 alternative overlay lines for this same picture, each at most
@@ -1611,7 +1642,7 @@ something. Return JSON with key:
   line a DIFFERENT angle. Never a lie: the video must deliver what the line promises. Best first.
   They are drawn over the picture afterwards, so the picture itself still contains no
   letters of any kind.
-Never mention real people's names or brands."""
+{_THUMB_COVER_KEY if cover else ""}Never mention real people's names or brands{_THUMB_COVER_NAMES if cover else ""}."""
     out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
     tp = str(out.get("thumbnail_prompt", "")).strip()
     if not tp:
@@ -1627,7 +1658,8 @@ Never mention real people's names or brands."""
         if t and t.lower() not in seen:
             seen.add(t.lower())
             texts.append(t)
-    return {"thumbnail_prompt": tp, "thumbnail_texts": texts}
+    return {"thumbnail_prompt": tp, "thumbnail_texts": texts,
+            "thumbnail_cover": thumbcover.normalize(out.get("thumbnail_cover")) if cover else None}
 
 
 MUSIC_CAPTION_EXAMPLE = ("Global Metadata: Lo-fi hip-hop, chillhop. 78 BPM, D flat major. Laid-back and dreamy "

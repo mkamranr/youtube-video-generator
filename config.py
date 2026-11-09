@@ -519,6 +519,7 @@ STORYBOARD_MOTION = True        # cards ease into place instead of only fading i
 THUMB_TEXT_ENABLED = True       # master switch, like CAPTIONS_ENABLED; per channel and per video
 THUMB_TEXT_VARIANTS = 3         # text versions offered on the job page (0 = the clean render only)
 THUMB_TEXT_ACCENT = ""          # "" = use STORYBOARD_ACCENT
+THUMB_COVER_ENABLED = True      # 9:16 videos also get a poster-style reel cover (services/thumbcover.py)
 # Burned-in captions. The words come from the script itself: the narration is timed with whisper
 # and snapped back onto the written text, so captions show what was written, not what whisper
 # thought it heard. Story and music videos are already timed and pay nothing.
@@ -878,6 +879,12 @@ EDITABLE_SETTINGS = {
                           "Thumbnail: text accent colour",
                           "Hex colour of the thumbnail text's highlight; empty = use the story board "
                           "accent colour"),
+    "THUMB_COVER_ENABLED": (bool, lambda v: True, "Thumbnail: reel cover",
+                            "9:16 videos also get a poster-style reel cover: a headline with accent "
+                            "words, a highlighter strip, a figure badge, a short checklist and a "
+                            "handwritten tag, written by the LLM and drawn over the thumbnail picture. "
+                            "Offered first, so it ships unless another variant is picked. Needs "
+                            "Thumbnail text on; applies to videos planned after it is switched on"),
     "STORYBOARD_MOTION": (bool, lambda v: True, "Story board: card motion",
                           "Cards ease into place (a short slide or rise) instead of only fading in. Costs "
                           "nothing: the movement is a per-frame position in the overlay pass that already runs"),

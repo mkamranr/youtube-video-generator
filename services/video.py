@@ -211,16 +211,26 @@ def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 
         try:
             from PIL import Image
             base = Image.open(out_jpg).convert("RGB")
-            lg = Image.open(logo).convert("RGBA")
-            lw = max(1, int(base.width * 0.16))
-            lh = max(1, int(lg.height * lw / lg.width))
-            lg = lg.resize((lw, lh), Image.LANCZOS)
-            margin = max(8, int(base.width * 0.025))
-            base.paste(lg, (base.width - lw - margin, margin), lg)
+            overlay_logo(base, logo)
             base.save(out_jpg, "JPEG", quality=92)
         except Exception as e:  # noqa: BLE001 - logo overlay must never break the pipeline
             print(f"logo overlay failed: {e}")
     return out_jpg
+
+
+def overlay_logo(img, logo):
+    """Paste the channel logo top-right on a PIL image in place: 16% of the width, 2.5% margin.
+
+    Shared by make_thumbnail and the reel cover (services/thumbcover.py), which washes the
+    picture and so has to put the logo back on top at exactly the same place."""
+    from PIL import Image
+    lg = Image.open(logo).convert("RGBA")
+    lw = max(1, int(img.width * 0.16))
+    lh = max(1, int(lg.height * lw / lg.width))
+    lg = lg.resize((lw, lh), Image.LANCZOS)
+    margin = max(8, int(img.width * 0.025))
+    img.paste(lg, (img.width - lw - margin, margin), lg)
+    return img
 
 
 def concat_clips(clips: list, out_mp4: Path) -> Path:
