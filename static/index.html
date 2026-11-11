@@ -943,8 +943,9 @@ async function submitCompilation() {
   const ch = $("#cmpChannel").value;
   $("#cmpGo").disabled = true;
   try {
-    const job = await api("/api/compilations", "POST",
-                          { channel_id: ch, parts: cmpPicked, title: $("#cmpTitle").value.trim() });
+    const job = await api("/api/compilations", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_id: ch, parts: cmpPicked, title: $("#cmpTitle").value.trim() }) });
     closeCompile();
     $("#cmpTitle").value = "";
     toast(`Compilation of ${cmpPicked.length} videos started`);
