@@ -252,6 +252,7 @@
 
   <section class="card" id="thumbSec" hidden>
     <h2>Thumbnail <span class="count">(matches the video aspect, ready for YouTube)</span></h2>
+    <div class="hint" id="thumbNone" hidden>This video has no thumbnail — its render failed or was skipped. Generate one below.</div>
     <img id="thumbImg" alt="thumbnail" style="max-width:480px;width:100%;border-radius:8px;display:block">
     <div id="thumbVars" hidden style="margin-top:12px">
       <div class="hint" style="margin-bottom:6px">Pick the one that gets the click — same picture, different line. Switching is instant.</div>
@@ -757,7 +758,15 @@ function update(j) {
     $("#audioSec").hidden = false;
     $("#narrAudio").src = F("narration.wav");
   }
-  if ((j.files || []).includes("thumbnail.jpg")) {
+  const hasThumb = (j.files || []).includes("thumbnail.jpg");
+  // a finished video whose thumbnail render failed (e.g. GPU out of memory) still gets the
+  // section, so the generate button is reachable
+  $("#thumbSec").hidden = !hasThumb && j.status !== "done";
+  $("#thumbNone").hidden = hasThumb;
+  $("#thumbImg").hidden = !hasThumb;
+  $("#thumbDl").hidden = !hasThumb;
+  $("#thumbRegen").textContent = hasThumb ? "Regenerate thumbnail" : "Generate thumbnail";
+  if (hasThumb) {
     // re-rendered whenever the job changes, not once: switching variant rewrites thumbnail.jpg
     $("#thumbSec").hidden = false;
     if (!thumbShown || thumbShown !== j.updated) {
