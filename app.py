@@ -17,7 +17,7 @@ from pydantic import BaseModel
 import config
 from pipeline import JobManager, resolve_video_mode, upload_description
 from services import (auth, avatar, bible, browser, cast, channels, compilation, gpu, llm,
-                      music_upload, ownership, planner, schedule, users, video, voices)
+                      music_upload, ownership, planner, reel, schedule, users, video, voices)
 
 app = FastAPI(title="VideoGen")
 channels.ensure_default_channel()   # migrate the legacy single-channel setup on first start
@@ -285,6 +285,10 @@ class ApproveBody(BaseModel):
     reel: dict | None = None
 
 
+class SocialBody(BaseModel):
+    social: dict
+
+
 class PublishBody(BaseModel):
     approved: bool = True
 
@@ -405,6 +409,18 @@ def approve_publish(job_id: str, body: PublishBody, user: dict = Depends(auth.re
     _owned_job(job_id, user)
     try:
         return _job_json(manager.approve_publish(job_id, body.approved))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.put("/jobs/{job_id}/social")
+def update_social(job_id: str, body: SocialBody, user: dict = Depends(auth.require_user)):
+    """Edit the Instagram / Facebook / YouTube Shorts post copy of a reel."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.update_social(job_id, body.social))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:
@@ -671,6 +687,7 @@ def download(job_id: str, kind: str, user: dict = Depends(auth.require_user)):
             # user pastes by hand matches what one click would have published
             text = (f"Title: {plan.get('seo_title') or plan.get('title') or job.title}\r\n\r\n"
                     f"Description:\r\n{upload_description(plan)}\r\n")
+            text += reel.social_text(plan.get("social"))
             z.writestr(f"{title}.txt", text)
         return FileResponse(zpath, filename=f"{title}.zip", media_type="application/zip")
     raise HTTPException(404, "unknown download kind")

@@ -1428,6 +1428,49 @@ Never mention that the video is AI-generated unless the content is about AI. Nev
             "seo_description": _lowercase_hashtags(str(out.get("seo_description", "")).strip())}
 
 
+SOCIAL_PLATFORMS = ("instagram", "facebook", "youtube")
+
+
+def write_social_captions(title: str, narration: str, reel: dict, channel: dict | None = None) -> dict:
+    """Platform-specific post copy for a reel: Instagram, Facebook and YouTube Shorts each get
+    their own text instead of one caption pasted everywhere. Same facts, same single CTA."""
+    cta = (reel.get("cta") or {}).get("text", "")
+    user = f"""We produced a short vertical video (a Reel / Short) titled "{title}".
+Central message: "{reel.get('central_message', '')}"
+Viewer benefit: "{reel.get('audience_benefit', '')}"
+Its call to action: "{cta}"
+What it says:
+<<<{narration[:3000]}>>>
+
+Write the post copy for each platform. Only claims the narration makes - never add features,
+numbers, prices or availability. Use searchable terms (e.g. open-source AI, local LLM, AI tools,
+AI coding assistant, private AI, GPU inference, developer tools) ONLY where they truly describe
+this video, worked into sentences, never listed bare. Return JSON with keys:
+- "instagram": {{"caption": first line = the main benefit or curiosity hook; then 1-2 short lines on
+  what the viewer will learn; then the call to action; 60-120 words in total, at most 2 emoji,
+  "hashtags": 3-5 highly relevant lowercase hashtags without spaces}}
+- "facebook": {{"caption": 50-100 words, understandable to someone outside tech: open with the
+  practical value in plain words, explain any technical term, end with a natural share prompt}}
+- "youtube": {{"title": a clear searchable Shorts title with the key subject and benefit, at most
+  70 characters, "description": 2-3 sentences of context, then at most 3 relevant hashtags}}"""
+    out = _chat([{"role": "system", "content": _system(channel, rules=False)},
+                 {"role": "user", "content": user}])
+
+    def part(k):
+        v = out.get(k)
+        return v if isinstance(v, dict) else {}
+    ig, fb, yt = part("instagram"), part("facebook"), part("youtube")
+    tags = ig.get("hashtags") or []
+    if isinstance(tags, str):
+        tags = tags.split()
+    tags = [("#" + re.sub(r"[^0-9a-z_]", "", str(t).lower().lstrip("#")))
+            for t in tags if re.sub(r"[^0-9a-z_]", "", str(t).lower().lstrip("#"))][:5]
+    return {"instagram": {"caption": str(ig.get("caption") or "").strip(), "hashtags": tags},
+            "facebook": {"caption": str(fb.get("caption") or "").strip()},
+            "youtube": {"title": str(yt.get("title") or "").strip()[:100],
+                        "description": _lowercase_hashtags(str(yt.get("description") or "").strip())}}
+
+
 def write_compilation_seo(part_titles: list, length: str, channel: dict | None = None,
                           used: list | None = None) -> dict:
     """Title, description, keywords and thumbnail lines for a compilation of finished videos.
@@ -1702,8 +1745,12 @@ _THUMB_COVER_NAMES = (" - except in \"thumbnail_cover\", which may use the produ
 
 
 def write_thumbnail(title: str, narration: str, style: str, channel: dict | None = None,
-                    used: list | None = None, idea: str = "", cover: bool = False) -> dict:
+                    used: list | None = None, idea: str = "", cover: bool = False,
+                    reel: dict | None = None) -> dict:
     """A single-image prompt for an eye-catching YouTube thumbnail.
+
+    reel: the reel script (plan["reel"]) - the cover and its lines then sell exactly the hook the
+    video opens on, and a claim that needs context is asked as a question.
 
     idea: the thumbnail the weekly plan asked for (services/planner.py); the prompt then realises
     that composition instead of inventing one. Empty for every other job.
@@ -1720,6 +1767,15 @@ def write_thumbnail(title: str, narration: str, style: str, channel: dict | None
     emotion = "big expressive joyful emotion" if kids else "strong expressive emotion"
     wish = (f'\nThe thumbnail must show this, as planned for the video: "{idea.strip()}"'
             if idea.strip() else "")
+    if reel:
+        hooks = reel.get("hooks") or []
+        hook = hooks[reel["chosen"]]["text"] if 0 <= reel.get("chosen", -1) < len(hooks) else ""
+        wish += (f'\nThis is a REEL. It opens on: "{hook}". Its one message: '
+                 f'"{reel.get("central_message", "")}". The cover headline and every overlay line must '
+                 "sell exactly that promise and nothing the video does not prove. Short and punchy, "
+                 'e.g. "RUN AI LOCALLY", "PRIVATE AI. NO CLOUD.". When the line is a claim that needs '
+                 'context, ask it as a question ("744B AI MODEL?"). Never imply any laptop can run '
+                 "something that needs special hardware.")
     featured = cast.names(cast.main_characters(channel)) if used is None else list(used)
     subject = "the main character(s) and the key objects of the story"
     if not cast.enabled(channel):

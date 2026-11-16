@@ -2271,6 +2271,14 @@ def _run(job: Job):
             job.add_log(f"seo title: {plan.get('seo_title', '')}")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"seo metadata failed ({e}); continuing without it")
+    if _reel(job) and plan.get("reel") and not plan.get("social"):
+        job.set("planning", "writing the Instagram, Facebook and Shorts captions")
+        try:
+            plan["social"] = llm.write_social_captions(plan.get("title", ""), plan["narration"],
+                                                       plan["reel"], channel=job.channel)
+            job.add_log("platform captions written (Instagram, Facebook, YouTube Shorts)")
+        except Exception as e:  # noqa: BLE001 - the video does not need them to render
+            job.add_log(f"platform captions failed ({e}); continuing without them")
     # The video only owes the viewer something when the script promised it - decided from the final
     # narration, never from the channel or the topic. Key PRESENCE is the guard, not truthiness:
     # "promises nothing" is a legitimate falsy answer that must be remembered, or every resume
@@ -2626,7 +2634,8 @@ def _run(job: Job):
                 plan.update(llm.write_thumbnail(plan.get("title", ""), plan["narration"], plan["style"],
                                                 channel=job.channel, used=plan.get("cast_used"),
                                                 idea=plan.get("thumbnail_idea", ""),
-                                                cover=_cover_wanted(job)))
+                                                cover=_cover_wanted(job),
+                                                reel=plan.get("reel") if _reel(job) else None))
                 (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             _gpu_gate(job)
             job.set("thumbnail", "rendering the thumbnail frame")
@@ -3659,7 +3668,8 @@ class JobManager:
                                             plan.get("style", ""), channel=job.channel,
                                             used=plan.get("cast_used"),
                                             idea=plan.get("thumbnail_idea", ""),
-                                            cover=_cover_wanted(job)))
+                                            cover=_cover_wanted(job),
+                                            reel=plan.get("reel") if _reel(job) else None))
             (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
             schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
             gpu.wait_until_free(job.id, on_wait=lambda h: job.set(
@@ -3739,6 +3749,37 @@ class JobManager:
             if changed:
                 job.add_log(f"scene prompt{plural} edited for clip{plural} "
                             f"{', '.join(map(str, changed))}")
+        return job
+
+    def update_social(self, job_id: str, social: dict) -> Job:
+        """Save the user's edits to the platform captions (Instagram, Facebook, YouTube Shorts)."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            pfile = job.dir / "plan.json"
+            plan = json.loads(pfile.read_text(encoding="utf-8"))
+            cur = plan.get("social") or {}
+            fields = {"instagram": ("caption", "hashtags"), "facebook": ("caption",),
+                      "youtube": ("title", "description")}
+            for platform, keys in fields.items():
+                given = (social or {}).get(platform)
+                if not isinstance(given, dict):
+                    continue
+                dst = cur.setdefault(platform, {})
+                for k in keys:
+                    if k not in given:
+                        continue
+                    if k == "hashtags":
+                        v = given[k] if isinstance(given[k], list) else str(given[k] or "").split()
+                        dst[k] = ["#" + str(t).lstrip("#").strip() for t in v if str(t).strip("# ")][:10]
+                    else:
+                        dst[k] = str(given[k] or "").strip()[:5000]
+            plan["social"] = cur
+            pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            job.updated = time.time()
+            job.save()
+            job.add_log("platform captions edited")
         return job
 
     def approve_publish(self, job_id: str, approved: bool = True) -> Job:

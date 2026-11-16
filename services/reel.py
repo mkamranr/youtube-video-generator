@@ -335,3 +335,17 @@ def clip_hints(scenes: list, clip_scene: list) -> list:
             parts.append(f"On screen: {sc['visual']}")
         out.append(" ".join(p.strip() for p in parts if p.strip()))
     return out
+
+
+def social_text(social) -> str:
+    """The reel's platform captions as a plain-text block for the bundle ("" when none)."""
+    if not isinstance(social, dict) or not social:
+        return ""
+    ig, fb, yt = (social.get(k) or {} for k in ("instagram", "facebook", "youtube"))
+    out = "\r\n==== Instagram ====\r\n" + (ig.get("caption") or "")
+    if ig.get("hashtags"):
+        out += "\r\n\r\n" + " ".join(ig["hashtags"])
+    out += "\r\n\r\n==== Facebook ====\r\n" + (fb.get("caption") or "")
+    out += ("\r\n\r\n==== YouTube Shorts ====\r\nTitle: " + (yt.get("title") or "")
+            + "\r\n" + (yt.get("description") or "") + "\r\n")
+    return out

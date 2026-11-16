@@ -254,6 +254,24 @@
     <div id="reelScenesDone"></div>
   </section>
 
+  <section class="card" id="socialSec" hidden>
+    <h2>Post captions</h2>
+    <div class="hint" style="margin-bottom:8px">Written for each platform from the same script and the
+      same single call to action. Edit, save, and copy them when you post.</div>
+    <label for="soIg">Instagram</label>
+    <textarea id="soIg" style="min-height:110px"></textarea>
+    <input type="text" id="soIgTags" placeholder="#hashtags" style="margin-top:6px">
+    <div class="row" style="margin-top:6px"><button class="btn secondary sm" data-copy="ig">Copy Instagram</button></div>
+    <label for="soFb" style="margin-top:12px">Facebook</label>
+    <textarea id="soFb" style="min-height:90px"></textarea>
+    <div class="row" style="margin-top:6px"><button class="btn secondary sm" data-copy="fb">Copy Facebook</button></div>
+    <label for="soYtTitle" style="margin-top:12px">YouTube Shorts</label>
+    <input type="text" id="soYtTitle" maxlength="100" placeholder="Title">
+    <textarea id="soYtDesc" style="min-height:70px;margin-top:6px" placeholder="Description"></textarea>
+    <div class="row" style="margin-top:6px"><button class="btn secondary sm" data-copy="yt">Copy Shorts</button></div>
+    <div class="row" style="margin-top:12px"><button class="btn sm" id="soSave">Save captions</button></div>
+  </section>
+
   <section class="card" id="seoSec" hidden>
     <h2>Video title &amp; description <span class="count">(SEO, ready to publish)</span></h2>
     <div class="row" style="align-items:center;margin:0 0 6px">
@@ -479,6 +497,7 @@ async function loadDetails(j) {
   }
   if (d.plan) {
     renderQa(lastJob && lastJob.status === "done" ? d.plan.qa : null);
+    fillSocial(d.plan.social || null);
     const reelDone = d.plan.reel && lastJob && lastJob.status === "done";
     $("#reelSec").hidden = !reelDone;
     if (reelDone) { reelPlanScenes = d.plan.reel.scenes || []; renderReelDone(); }
@@ -1204,6 +1223,44 @@ $("#pubBtn").onclick = async () => {
     refresh();
   } catch (e) { toast(e.message, true); }
 };
+
+// ---- platform captions ----
+let socialLoaded = false;
+
+function fillSocial(so) {
+  $("#socialSec").hidden = !so;
+  if (!so || socialLoaded) return;   // never overwrite what the user is typing
+  socialLoaded = true;
+  const ig = so.instagram || {}, fb = so.facebook || {}, yt = so.youtube || {};
+  $("#soIg").value = ig.caption || "";
+  $("#soIgTags").value = (ig.hashtags || []).join(" ");
+  $("#soFb").value = fb.caption || "";
+  $("#soYtTitle").value = yt.title || "";
+  $("#soYtDesc").value = yt.description || "";
+}
+
+function socialBody() {
+  return { instagram: { caption: $("#soIg").value, hashtags: $("#soIgTags").value.split(/\s+/).filter(Boolean) },
+           facebook: { caption: $("#soFb").value },
+           youtube: { title: $("#soYtTitle").value, description: $("#soYtDesc").value } };
+}
+
+$("#soSave").onclick = async () => {
+  try {
+    await api(`/jobs/${jobId}/social`, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ social: socialBody() }) });
+    toast("Captions saved");
+  } catch (e) { toast(e.message, true); }
+};
+
+document.querySelectorAll("#socialSec [data-copy]").forEach(btn => btn.onclick = async () => {
+  const b = socialBody();
+  const text = btn.dataset.copy === "ig" ? b.instagram.caption + (b.instagram.hashtags.length ? "\n\n" + b.instagram.hashtags.join(" ") : "")
+             : btn.dataset.copy === "fb" ? b.facebook.caption
+             : b.youtube.title + "\n\n" + b.youtube.description;
+  try { await navigator.clipboard.writeText(text); toast("Copied"); }
+  catch (e) { toast("Copy failed - select the text and copy it by hand", true); }
+});
 
 function reelEdits() {
   reelSync();
