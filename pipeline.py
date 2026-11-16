@@ -15,7 +15,7 @@ import config
 from services import (avatar, browser, captions, cast, chapters, channels, comfy, compilation,
                       gpu, llm, lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
                       thumbcover, thumbtext, transcript, tts, video, voices)
-from services import cardtemplates
+from services import cardtemplates, reel
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -372,6 +372,47 @@ def _resolve_lyrics(lyrics: str, channel: dict | None, audio_mode: str) -> str:
         raise ValueError(f"song lyrics are too long ({words} sung words, "
                          f"at most {config.MAX_LYRIC_WORDS})")
     return text
+
+
+def _reel(job) -> bool:
+    """Reel format: a channel with the switch on, a vertical video, a spoken (non-story) script.
+    Checked at use rather than frozen at submit, because a planned job picks its aspect later."""
+    ch = getattr(job, "channel", None) or {}
+    return (bool(ch.get("reel_format")) and str(getattr(job, "aspect_ratio", "")).startswith("9:16")
+            and getattr(job, "video_mode", "") != "story" and getattr(job, "audio_mode", "") != "music"
+            and getattr(job, "source", "") in ("topic", "description", REPO_SOURCE))
+
+
+def _draft_reel(job: Job, source_text: str, words, feedback: str, previous_reel: dict | None) -> dict:
+    """The reel draft: candidates and scenes from the LLM, the hook picked and the script checked
+    here, and one rewrite when the check finds problems. plan["narration"] is the scenes joined."""
+    version = int((previous_reel or {}).get("script_version", 0)) + 1
+    raw = llm.write_reel_script(source_text, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
+                                words=words, feedback=feedback, previous=previous_reel,
+                                channel=job.channel, hook=job.hook)
+    rl = reel.build(raw, script_version=version)
+    issues = reel.validate(rl, words)
+    if issues:
+        job.add_log("reel script check: " + "; ".join(issues) + " - asking for a rewrite")
+        try:
+            fixed = reel.normalize_scenes(llm.tighten_reel_script(rl, issues, words, channel=job.channel))
+        except Exception as e:  # noqa: BLE001 - the first draft is still reviewable
+            job.add_log(f"reel rewrite failed ({e}); keeping the first draft")
+            fixed = []
+        if fixed:
+            rl["scenes"] = fixed
+            for sc in rl["scenes"]:
+                sc.pop("hook_text", None)
+            reel.apply_hook(rl)
+            issues = reel.validate(rl, words)
+    rl["issues"] = issues
+    chosen = rl["hooks"][rl["chosen"]]["text"] if rl["chosen"] >= 0 else "(none passed)"
+    job.add_log(f"reel script v{version}: {len(rl['scenes'])} scenes, {len(rl['hooks'])} hooks, "
+                f'chosen "{chosen}", CTA {rl["cta"]["type"]}'
+                + (f"; still flagged: {'; '.join(issues)}" if issues else ""))
+    plan = {"title": raw.get("title", ""), "style": raw.get("style", ""),
+            "cast_chosen": raw.get("cast_chosen"), "narration": reel.narration(rl), "reel": rl}
+    return plan
 
 
 def _is_story(job: Job) -> bool:
@@ -3283,13 +3324,23 @@ class JobManager:
                 if job.page_scroll:
                     content_y = _page_screenshot(job)
                 job.set("drafting", "writing script with the LLM")
-            plan = llm.write_script_from_prompt(
-                source_text, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
-                words=target_words, feedback=feedback, previous=previous,
-                channel=job.channel, hook=job.hook)
+            if _reel(job):
+                previous_reel = None
+                if feedback and pfile.exists():
+                    try:
+                        previous_reel = json.loads(pfile.read_text(encoding="utf-8")).get("reel")
+                    except Exception:  # noqa: BLE001
+                        previous_reel = None
+                plan = _draft_reel(job, source_text, target_words, feedback, previous_reel)
+            else:
+                plan = llm.write_script_from_prompt(
+                    source_text, job.source, art_style=config.ART_STYLES.get(job.art_style, ""),
+                    words=target_words, feedback=feedback, previous=previous,
+                    channel=job.channel, hook=job.hook)
             if _draft_dropped(job):   # the user cancelled while the writer was working
                 return
-            _fit_narration(job, plan, target_words)   # still pre-approval: the user reviews the result
+            if not plan.get("reel"):   # a reel is sized by its own check, never padded afterwards
+                _fit_narration(job, plan, target_words)   # still pre-approval: the user reviews the result
             plan["audio_mode"] = job.audio_mode
             plan["page_content_y"] = content_y   # where the README starts in page.png
             if job.thumb_idea:      # the thumbnail the weekly plan asked for (used at the thumbnail step)
@@ -3316,7 +3367,8 @@ class JobManager:
             job.set("failed", f"script drafting failed: {e}", error=str(e))
 
     def approve_script(self, job_id: str, title: str | None = None,
-                       narration: str | None = None, lines: list | None = None) -> Job:
+                       narration: str | None = None, lines: list | None = None,
+                       reel_edits: dict | None = None) -> Job:
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
@@ -3340,6 +3392,14 @@ class JobManager:
                     ln["text"] for ln in (plan.get("story") or {}).get("lines") or []
                     if ln.get("text", "").strip())
                 extra = (_story_blob(plan),)
+            elif plan.get("reel"):
+                # the scenes ARE the script: the narration is rebuilt from them, so a hook swap or
+                # an edited scene is what gets spoken (the free-text box is not applied here)
+                if reel_edits:
+                    reel.apply_edits(plan["reel"], reel_edits)
+                plan["narration"] = reel.narration(plan["reel"])
+                if not plan["narration"].strip():
+                    raise ValueError("the reel script has no spoken words left")
             elif narration and narration.strip():
                 plan["narration"] = narration.strip()
             if cast.active(job.channel):   # the user may have written characters in or out

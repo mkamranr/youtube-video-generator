@@ -171,6 +171,23 @@
       <div id="apBeats" style="margin-top:10px"></div>
       <div class="hint" id="apStoryTotal" style="margin-top:8px"></div>
     </div>
+    <div id="apReelBlock" hidden>
+      <div class="hint" id="apReelMsg" style="margin-top:12px"></div>
+      <div class="warn" id="apReelIssues" hidden style="margin-top:10px"></div>
+      <label style="margin-top:12px">Hook candidates</label>
+      <div class="hint">Scored 1&ndash;5 on clarity, relevance, curiosity, specificity, factual support and
+        accessibility. A hook without source support or with hype words is struck out. Pick another to
+        make it the first spoken line.</div>
+      <div id="apHooks" style="margin-top:8px"></div>
+      <label style="margin-top:14px">Scenes</label>
+      <div class="hint">What is said, and the on-screen headline, scene by scene. The voiceover of every
+        scene together is the narration. Scenes asking for real evidence can take a screen recording or
+        screenshot that replaces the AI clip.</div>
+      <div id="apScenes" style="margin-top:8px"></div>
+      <label for="apCta" style="margin-top:12px">Call to action (end card)</label>
+      <input type="text" id="apCta" maxlength="140">
+      <div class="hint" id="apReelTotal" style="margin-top:8px"></div>
+    </div>
     <div class="hint" id="apCast" style="margin-top:6px" hidden></div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="approveBtn">Approve &amp; generate video</button>
@@ -423,8 +440,11 @@ async function loadDetails(j) {
     approvalLoaded = true;
     $("#apTitle").value = d.plan.title || "";
     const st = (lastJob.video_mode === "story" && d.plan.story) || null;
+    apReel = (!st && d.plan.reel) || null;
     $("#apStoryBlock").hidden = !st;
-    $("#apScriptBlock").hidden = !!st;
+    $("#apScriptBlock").hidden = !!st || !!apReel;
+    $("#apReelBlock").hidden = !apReel;
+    if (apReel) renderReel();
     if (st) {
       apBeats = (st.beats || []).map(b => ({ ...b }));
       apLines = (st.lines || []).map(l => ({ speaker: l.speaker || STORY_NARRATOR, text: l.text || "" }));
@@ -985,14 +1005,97 @@ function renderStoryLines() {
   storyTotals();
 }
 
+// ---- reel-format script: hook candidates, scenes and the CTA ----
+const REEL_WPS = 2.5;            // mirrors pipeline._length_params
+const SCORE_KEYS = ["clarity", "relevance", "curiosity", "specificity", "factual", "accessibility"];
+let apReel = null;
+
+function reelSync() {
+  if (!apReel) return;
+  document.querySelectorAll("#apScenes .reel-scene").forEach(row => {
+    const sc = apReel.scenes[+row.dataset.i];
+    if (!sc) return;
+    const vo = row.querySelector(".reel-vo").value;
+    if (vo !== sc.voiceover) { sc.voiceover = vo; sc.edited = true; }
+    sc.headline = row.querySelector(".reel-head").value;
+    sc.support_text = row.querySelector(".reel-support").value;
+  });
+}
+
+function reelTotals() {
+  const words = apReel.scenes.reduce((n, s) => n + (s.voiceover.trim() ? s.voiceover.trim().split(/\s+/).length : 0), 0);
+  const secs = Math.round(words / REEL_WPS);
+  $("#apReelTotal").textContent = `${apReel.scenes.length} scenes — about ${words} words, roughly `
+    + `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")} of speech.`;
+}
+
+function chooseHook(i) {
+  reelSync();
+  const first = apReel.scenes[0];
+  if (!first) return;
+  const prev = first.hook_text || "";
+  let rest = first.voiceover;
+  if (prev && rest.startsWith(prev)) rest = rest.slice(prev.length).trim();
+  first.voiceover = (apReel.hooks[i].text + (rest ? " " + rest : "")).trim();
+  first.hook_text = apReel.hooks[i].text;
+  first.edited = true;
+  apReel.chosen = i;
+  renderReel();
+}
+
+function renderReel() {
+  const r = apReel;
+  $("#apReelMsg").innerHTML = `<b>Central message:</b> ${esc(r.central_message || "—")}<br>`
+    + `<b>Viewer benefit:</b> ${esc(r.audience_benefit || "—")} · script v${r.script_version || 1}`;
+  $("#apReelIssues").hidden = !(r.issues || []).length;
+  $("#apReelIssues").innerHTML = "Script check: " + (r.issues || []).map(esc).join("; ");
+  $("#apHooks").innerHTML = (r.hooks || []).map((h, i) => {
+    const sum = SCORE_KEYS.reduce((n, k) => n + ((h.scores || {})[k] || 0), 0);
+    const scores = SCORE_KEYS.map(k => `${k.slice(0, 4)} ${(h.scores || {})[k] || 0}`).join(" · ");
+    const bad = h.rejected ? `style="text-decoration:line-through;opacity:.6"` : "";
+    return `<label class="row" style="gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--line)">
+      <input type="radio" name="apHook" value="${i}" ${i === r.chosen ? "checked" : ""} ${h.rejected ? "disabled" : ""}>
+      <span class="grow"><span ${bad}>${esc(h.text)}</span>
+        <span class="hint" style="display:block">${esc(h.category)} · total ${sum}/30 · ${scores}${h.rejected ? " · rejected: " + esc(h.rejected) : ""}</span></span>
+    </label>`;
+  }).join("");
+  document.querySelectorAll('#apHooks input[name="apHook"]').forEach(el => el.onchange = () => chooseHook(+el.value));
+  $("#apScenes").innerHTML = (r.scenes || []).map((sc, i) => `<div class="reel-scene" data-i="${i}" style="padding:10px 0;border-top:1px solid var(--line)">
+      <div class="hint"><b>Scene ${sc.n} · ${esc(sc.role)}</b>${sc.has_claim ? " · <b>fact to verify</b>" : ""}${sc.visual ? " — " + esc(sc.visual) : ""}</div>
+      ${sc.asset_needed ? `<div class="hint">Evidence: ${esc(sc.asset_needed)}</div>` : ""}
+      <div class="row" style="margin-top:6px;gap:8px">
+        <input type="text" class="reel-head" value="${esc(sc.headline)}" maxlength="60" placeholder="On-screen headline" style="max-width:220px">
+        <input type="text" class="reel-support grow" value="${esc(sc.support_text)}" maxlength="120" placeholder="Supporting text (optional)">
+      </div>
+      <textarea class="reel-vo" style="min-height:60px;margin-top:6px" maxlength="1200">${esc(sc.voiceover)}</textarea>
+      <div class="reel-asset row" style="margin-top:6px;gap:8px" data-n="${sc.n}"></div>
+    </div>`).join("");
+  document.querySelectorAll("#apScenes textarea, #apScenes input").forEach(el =>
+    el.oninput = () => { reelSync(); reelTotals(); });
+  $("#apCta").value = (r.cta || {}).text || "";
+  if (typeof renderReelAssets === "function") renderReelAssets();
+  reelTotals();
+}
+
+function reelEdits() {
+  reelSync();
+  return {
+    chosen: apReel.chosen,
+    cta: { text: $("#apCta").value },
+    scenes: apReel.scenes.map(s => ({ n: s.n, headline: s.headline, support_text: s.support_text,
+                                      ...(s.edited ? { voiceover: s.voiceover } : {}) })),
+  };
+}
+
 $("#approveBtn").onclick = async () => {
   const story = !$("#apStoryBlock").hidden;
   if (story) storyLinesSync();
   const body = { title: $("#apTitle").value };
+  if (apReel && !$("#apReelBlock").hidden) body.reel = reelEdits();
   // a story never sends `narration`: the lines ARE the narration, and a stale textarea would
   // contradict the lines the clips are timed to
   if (story) body.lines = apLines.map(l => ({ speaker: l.speaker, text: l.text }));
-  else body.narration = $("#apScript").value;
+  else if (!body.reel) body.narration = $("#apScript").value;
   try {
     await api(`/jobs/${jobId}/approve`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
@@ -1214,7 +1317,7 @@ $("#redraftGo").onclick = async () => {
   try {
     await api(`/jobs/${jobId}/redraft`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ feedback: $("#redraftFeedback").value }) });
-    apBeats = []; apLines = []; apSpeakers = [];
+    apBeats = []; apLines = []; apSpeakers = []; apReel = null;
     toast("New draft requested");
     approvalLoaded = false; $("#redraftBox").hidden = true;
     startPolling(); refresh();

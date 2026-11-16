@@ -81,6 +81,9 @@
         <label class="switch" style="margin-top:12px"><input type="checkbox" id="chKids"><span class="track"></span>
           Made for kids</label>
         <div class="hint">Uploads from this channel are self-declared as made for kids on YouTube (COPPA). Independent of the audience preset.</div>
+        <label class="switch" style="margin-top:12px"><input type="checkbox" id="chReel"><span class="track"></span>
+          Reel format (9:16)</label>
+        <div class="hint">Vertical videos get a result-first script: five scored hook options, a scene-by-scene plan with one fitting call to action, captions kept inside the Reels safe area, Instagram/Facebook/Shorts captions, automated checks and an "approve for publish" step.</div>
         <label class="switch" style="margin-top:12px"><input type="checkbox" id="chStoryboard"><span class="track"></span>
           Story board overlay by default</label>
         <div class="hint">New videos of this channel get styled fact cards and related images drawn over the footage, timed to the narration (can be switched per video). Preselected for Tech channels.</div>
@@ -899,7 +902,7 @@ async function refreshChannels() {
         ${c.has_logo ? `<img src="/api/channels/${esc(c.id)}/logo?v=${Date.now()}" alt="" style="height:36px;border-radius:6px;border:1px solid var(--line);background:var(--surface-2);padding:3px">` : ""}
         <b style="min-width:140px">${esc(c.name)}</b>${admin ? ownerBadge(c.owner_name) : ""}
         ${c.characters_enabled ? (c.cast || []).filter(x => x.has_portrait).map(x => `<img class="cast-mini" src="/api/channels/${esc(c.id)}/cast/${esc(x.id)}/portrait?v=${Date.now()}" alt="" title="${esc(x.name)}">`).join("") : ""}
-        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : c.video_type === "diy" ? "DIY build shorts" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${!c.characters_enabled ? " " + chBadge("no characters") : (c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
+        ${chBadge(c.audience)} ${chBadge(c.video_type === "real" ? "real videos" : c.video_type === "tech" ? "tech videos" : c.video_type === "diy" ? "DIY build shorts" : "animated")}${c.defaults && c.defaults.storyboard ? " " + chBadge("story board") : ""}${c.made_for_kids ? " " + chBadge("made for kids") : ""}${c.reel_format ? " " + chBadge("reel format") : ""}${!c.characters_enabled ? " " + chBadge("no characters") : (c.cast || []).length ? " " + chBadge(c.cast.length > 6 ? `${c.cast.length} cast characters` : `cast: ${c.cast.map(x => x.name).join(", ")}`) : ""}${(c.rules || "").trim() ? " " + chBadge("style & rules") : ""}${c.has_secret ? " " + chBadge("own OAuth client") : ""}
         <span class="hint">${c.yt_connected ? "YouTube connected" : (c.has_secret || chData.secret) ? "YouTube not connected" : "no OAuth client"}</span>
         <div class="spacer"></div>
         ${(c.has_secret || chData.secret) ? (c.yt_connected
@@ -1037,6 +1040,7 @@ async function chOpen(c) {
   chAvatarRender();
   $("#chCastPortrait").value = c ? (c.cast_portrait || (c.cast_opening === false ? "off" : "opening")) : "opening";
   $("#chDiyBuilder").value = (c && c.diy_builder) || "cast";
+  $("#chReel").checked = !!(c && c.reel_format);
   // the server always sends the key (services/channels.py back-fills it), so trust it exactly
   $("#chCharacters").checked = c ? !!c.characters_enabled : $("#chVideoType").value !== "tech";
   // await: chCastRender draws a voice picker per character, so the library must be loaded first
@@ -1320,6 +1324,7 @@ function chBody() {
     made_for_kids: $("#chKids").checked,
     cast_portrait: $("#chCastPortrait").value,
     diy_builder: $("#chDiyBuilder").value,
+    reel_format: $("#chReel").checked,
     characters_enabled: $("#chCharacters").checked,
     cast: chCast.map(c => ({ id: c.id || "", name: c.name, kind: c.kind, role: c.role,
                              priority: c.priority || "normal", look: c.look,

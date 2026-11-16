@@ -280,6 +280,9 @@ class ApproveBody(BaseModel):
     # story videos: the reviewed spoken lines, one per scene. None = leave them as drafted; an
     # empty list is NOT the same thing and is rejected, so a broken form cannot blank a story.
     lines: list[dict] | None = None
+    # reel-format videos: {"chosen": hook index, "scenes": [{n, voiceover, headline, support_text}],
+    # "cta": {"text"}}. None = approve the reel script as drafted.
+    reel: dict | None = None
 
 
 class RedraftBody(BaseModel):
@@ -345,7 +348,8 @@ def setup_job(job_id: str, body: JobSetup, user: dict = Depends(auth.require_use
 def approve_script(job_id: str, body: ApproveBody, user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)
     try:
-        return _job_json(manager.approve_script(job_id, body.title, body.narration, body.lines))
+        return _job_json(manager.approve_script(job_id, body.title, body.narration, body.lines,
+                                                  reel_edits=body.reel))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:

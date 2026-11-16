@@ -375,31 +375,9 @@ Create a new short video inspired by this content.{_cast_selection_rule(channel)
     return plan
 
 
-def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
-                             words: int | None = None, feedback: str = "",
-                             previous: str | None = None,
-                             channel: dict | None = None, hook: str = "") -> dict:
-    """Draft a video script (title/narration/style) from a user topic, description or pasted transcript.
-
-    hook: the opening line a weekly plan chose for this video (services/planner.py); the script
-    starts from it. Empty for every other job."""
-    words = words or config.NARRATION_WORDS
-    style_rule = _style_rule(art_style, channel)
-    narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
-                      f'no headings, no stage directions, no emojis. It will drive the whole video. '
-                      f'{_narration_rule(channel)} '
-                      f'Stay close to {words} words.')
-    if source_kind == "transcript":
-        text = text[: config.MAX_TRANSCRIPT_CHARS]
-        task = ('The user pasted the COMPLETE script for a video below - a transcript or song lyrics. '
-                'Use it AS the narration: keep their wording, order, content and length. Do NOT expand, '
-                'shorten, summarise, reorder or rewrite it. Only fix real problems: typos and grammar, '
-                'timestamps, cue tags like [Music], speaker labels, section tags like [Verse] or [Chorus], '
-                'and anything a TTS voice could not read aloud naturally. If the text has no problems, '
-                'return it unchanged:\n"""' + text + '"""')
-        narration_rule = ('the corrected script, plain spoken English, no headings, no stage directions, '
-                          'no emojis. It will be read aloud by a TTS voice and drive the whole video.')
-    elif source_kind == "description":
+def _source_task(text: str, source_kind: str, channel: dict | None) -> tuple:
+    """The writing task for a topic, description or repo source: (task, the text as used)."""
+    if source_kind == "description":
         task = ('The user wrote the following description / short script for a video. Build the video '
                 f'script from it, staying FAITHFUL to their {_faithful_keys(channel)} - '
                 'expand and polish it, do not replace it:\n"""' + text + '"""')
@@ -428,6 +406,35 @@ def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
     else:
         task = ('Create an original INFORMATIVE video script for this channel that teaches this topic '
                 'to someone who is not technical, step by step: "' + text + '"')
+    return task, text
+
+
+def write_script_from_prompt(text: str, source_kind: str, art_style: str = "",
+                             words: int | None = None, feedback: str = "",
+                             previous: str | None = None,
+                             channel: dict | None = None, hook: str = "") -> dict:
+    """Draft a video script (title/narration/style) from a user topic, description or pasted transcript.
+
+    hook: the opening line a weekly plan chose for this video (services/planner.py); the script
+    starts from it. Empty for every other job."""
+    words = words or config.NARRATION_WORDS
+    style_rule = _style_rule(art_style, channel)
+    narration_rule = (f'the full script as a voiceover of about {words} words, plain spoken English, '
+                      f'no headings, no stage directions, no emojis. It will drive the whole video. '
+                      f'{_narration_rule(channel)} '
+                      f'Stay close to {words} words.')
+    if source_kind == "transcript":
+        text = text[: config.MAX_TRANSCRIPT_CHARS]
+        task = ('The user pasted the COMPLETE script for a video below - a transcript or song lyrics. '
+                'Use it AS the narration: keep their wording, order, content and length. Do NOT expand, '
+                'shorten, summarise, reorder or rewrite it. Only fix real problems: typos and grammar, '
+                'timestamps, cue tags like [Music], speaker labels, section tags like [Verse] or [Chorus], '
+                'and anything a TTS voice could not read aloud naturally. If the text has no problems, '
+                'return it unchanged:\n"""' + text + '"""')
+        narration_rule = ('the corrected script, plain spoken English, no headings, no stage directions, '
+                          'no emojis. It will be read aloud by a TTS voice and drive the whole video.')
+    else:
+        task, text = _source_task(text, source_kind, channel)
     # a pasted transcript is kept verbatim; the selection then only decides who plays in the visuals
     task += _cast_selection_rule(channel, text[:600] if source_kind == "repo" else text,
                                  verbatim=source_kind == "transcript")
@@ -457,6 +464,112 @@ Return JSON with keys:
             plan["narration"], f'a video about: "{text[:300]}"', channel=channel,
             verbatim=source_kind == "transcript")
     return plan
+
+
+REEL_RULES = """REEL FORMAT (a vertical Instagram Reel / YouTube Short for a technology audience):
+- Lead with the most compelling VERIFIED outcome, result or question. No greeting, no "today we're going
+  to look at", no "in this video", no channel introduction.
+- Order: HOOK (0-2 s, one idea) -> CONTEXT (why the viewer should care) -> DEMO (the actual interface,
+  workflow, output or benchmark that proves the claim) -> PAYOFF (the takeaway, the limitation or the
+  practical use) -> CTA (exactly one, fitted to the content).
+- Translate features into benefits: "4-bit quantization of a 27B model" -> "fit a powerful model into
+  less GPU memory"; "MCP gateway" -> "give AI agents controlled access to your tools"; "RAG pipeline" ->
+  "let an assistant answer from your own documents"; "air-gapped" -> "runs without sending data out".
+- Explain an acronym the first time it matters. Short spoken sentences. Every sentence moves the story.
+- Never claim something is free, open-source, offline, private or runs on a laptop unless the source
+  says so for this exact version and setup. State hardware needs honestly: if it needs a big GPU, lots
+  of RAM or offloading, say so. Use numbers only when the source gives them and they mean something.
+- No hype words (revolutionary, unlimited, best ever, game changer, mind-blowing).
+- Do not reveal the whole explanation before the demonstration; end on a clear final sentence.
+"""
+
+REEL_CTA_RULE = ('one call to action that fits the content: "save" for a useful tool or tutorial ("Save '
+                 'this so you can try it later."), "share" for something a developer would want ("Share '
+                 'this with a developer who would find it useful."), "question" for a comparison or '
+                 'opinion (ask ONE specific question), "follow" for a recurring series, "repo" for an '
+                 'open-source project (invite them to check the project). Never ask for several actions.')
+
+_REEL_SCHEMA = """Return JSON with keys:
+- "title": short title.
+- "central_message": the ONE thing the viewer should remember, one sentence.
+- "audience_benefit": what the viewer can now do, save or try, one sentence.
+- "hooks": at least 5 candidate opening lines (max 15 words each), each from a DIFFERENT category of:
+  outcome, surprise, problem_solution, curiosity, comparison, demo_first, list. Each is an object
+  {{"text", "category", "scores": {{"clarity", "relevance", "curiosity", "specificity", "factual",
+  "accessibility"}} each 1-5, "supported": true only if every claim in it is backed by the source}}.
+  Score honestly: "factual" is how well the source backs it; "accessibility" is how well a viewer with
+  no technical background understands it.
+- "scenes": 4-7 scenes in order. Each is an object {{"role": one of hook|context|demo|payoff|cta,
+  "voiceover": the words spoken in this scene (plain spoken English, no emojis, nothing a TTS voice
+  cannot read), "headline": 2-5 word on-screen headline (do not just repeat the voiceover),
+  "support_text": optional short line under it or "", "visual": what is on screen - the real interface,
+  output, hardware view or diagram that shows it, "asset_needed": the screen recording or screenshot
+  that would prove this scene, or "", "transition": cut|zoom|slide|none, "emphasis": up to 3 key words,
+  "has_claim": true when the scene states a fact that must be verified}}.
+  Scene 1 is the hook; its voiceover STARTS with your best hook. There is at least one "demo" scene,
+  and exactly ONE "cta" scene, the last.
+- "cta": {{"type": save|share|question|follow|repo, "text": the CTA sentence}} - {cta_rule}
+- "style": {style_rule}
+All scene voiceovers together must be about {words} words."""
+
+
+def write_reel_script(text: str, source_kind: str, art_style: str = "",
+                      words: int | None = None, feedback: str = "", previous: dict | None = None,
+                      channel: dict | None = None, hook: str = "") -> dict:
+    """The reel-format draft: scored hook candidates, a scene-by-scene script and one CTA, as the
+    raw JSON services/reel.build normalizes. Only topic, description and repo sources: a pasted
+    transcript is spoken verbatim and never restructured."""
+    words = words or config.NARRATION_WORDS
+    task, text = _source_task(text, source_kind, channel)
+    if source_kind == "repo":
+        task += ("\nIn this REEL the order of the explainer above is replaced by the reel order below: "
+                 "open on the most compelling verified result, then why it matters, then the proof.")
+    task += _cast_selection_rule(channel, text[:600] if source_kind == "repo" else text)
+    if hook.strip():
+        task += ("\nThe weekly plan proposed this opening line - include it, word for word, as one of "
+                 f'the hook candidates: "{hook.strip()}"')
+    revision = ""
+    if feedback:
+        revision = '\n\nThe user reviewed a previous draft and asked for these changes: "' + feedback + '"'
+        if previous:
+            revision += ("\nPrevious draft (scenes):\n" + json.dumps(previous.get("scenes") or [])[:6000]
+                         + "\nRevise it accordingly.")
+    user = (f"{task}{revision}\n\n{REEL_RULES}\n"
+            + _REEL_SCHEMA.format(cta_rule=REEL_CTA_RULE, style_rule=_style_rule(art_style, channel),
+                                  words=words))
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
+                 {"role": "user", "content": user}])
+    out.setdefault("title", "")
+    out.setdefault("style", "")
+    out["cast_chosen"] = _chosen(channel, out.pop("characters", None))
+    if not isinstance(out.get("scenes"), list) or not out["scenes"]:
+        raise RuntimeError("vLLM returned a reel script without scenes")
+    return out
+
+
+def tighten_reel_script(reel: dict, issues: list, words: int | None,
+                        channel: dict | None = None) -> list:
+    """Rewrite the scenes to fix the validator's issues (too long, intro opener, missing demo,
+    extra CTAs...). The answer is shorter writing, never a faster voice. Returns the new raw scenes,
+    or [] when the LLM gave nothing usable."""
+    target = f"about {words} words in total" if words else "the same length or shorter"
+    problems = "\n".join("- " + i for i in issues)
+    user = f"""This reel script has problems that must be fixed before it is spoken:
+{problems}
+
+Current scenes:
+{json.dumps(reel.get("scenes") or [], indent=1)[:8000]}
+
+{REEL_RULES}
+Rewrite the scenes to fix every problem. Keep the facts, the hook line of scene 1 and the
+central message ("{reel.get('central_message', '')}"). Make the voiceovers {target} - cut filler and
+repetition rather than cramming. Return JSON with one key:
+- "scenes": the fixed scenes, same object shape as above (role, voiceover, headline, support_text,
+  visual, asset_needed, transition, emphasis, has_claim)."""
+    out = _chat([{"role": "system", "content": _system(channel, spoken=True)},
+                 {"role": "user", "content": user}])
+    scenes = out.get("scenes")
+    return scenes if isinstance(scenes, list) else []
 
 
 SHORT_SCRIPT_RATIO = 0.85   # a draft below target * this is extended once before it is spoken
