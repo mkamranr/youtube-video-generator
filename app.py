@@ -356,6 +356,45 @@ def approve_script(job_id: str, body: ApproveBody, user: dict = Depends(auth.req
         raise HTTPException(409, str(e))
 
 
+@app.post("/jobs/{job_id}/scenes/{n}/asset")
+async def upload_scene_asset(job_id: str, n: int, file: UploadFile,
+                             user: dict = Depends(auth.require_user)):
+    """Attach a screen recording or screenshot to a reel scene; it replaces that scene's AI clips."""
+    _owned_job(job_id, user)
+    data = await file.read()
+    try:
+        return _job_json(manager.set_scene_asset(job_id, n, data, file.filename or ""))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.delete("/jobs/{job_id}/scenes/{n}/asset")
+def delete_scene_asset(job_id: str, n: int, user: dict = Depends(auth.require_user)):
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.set_scene_asset(job_id, n, None))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/jobs/{job_id}/scenes/{n}/asset")
+def get_scene_asset(job_id: str, n: int, user: dict = Depends(auth.require_user)):
+    job = _owned_job(job_id, user)
+    try:
+        plan = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+        name = plan["reel"]["scenes"][n - 1].get("asset") or ""
+    except (OSError, KeyError, IndexError, ValueError):
+        name = ""
+    path = job.dir / name if name else None
+    if not path or not path.exists():
+        raise HTTPException(404, "no demo footage on this scene")
+    return FileResponse(path)
+
+
 @app.post("/jobs/{job_id}/redraft")
 def redraft_script(job_id: str, body: RedraftBody, user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)

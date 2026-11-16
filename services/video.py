@@ -905,3 +905,82 @@ def mix_audio(video: Path, out_mp4: Path, narration: Path | None = None,
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", str(out_mp4)]
     _run(cmd)
     return out_mp4
+
+
+# ---- demo footage: a user's screen recording or screenshot as one clip of the video ----
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+VIDEO_EXTS = (".mp4", ".mov", ".webm", ".m4v", ".mkv")
+
+
+def stream_shape(path: Path) -> dict:
+    """What a clip has to match to be stream-copied next to `path` by concat_clips: video codec,
+    size, frame rate, timescale, and the audio stream's rate and channels (None = no audio)."""
+    path = Path(path)
+    v = _probe(path, "-select_streams", "v:0", "-show_entries",
+               "stream=codec_name,width,height,r_frame_rate,time_base", "-of", "csv=p=0").split(",")
+    codec, w, h, rate, tb = (v + [""] * 5)[:5]
+    try:
+        num, den = rate.split("/")
+        fps_v = float(num) / float(den or 1)
+    except ValueError:
+        fps_v = float(config.VIDEO_FPS)
+    try:
+        timescale = int(tb.split("/")[1])
+    except (IndexError, ValueError):
+        timescale = 0
+    a = _probe(path, "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels",
+               "-of", "csv=p=0").split(",")
+    audio = None
+    if a and a[0]:
+        try:
+            audio = (int(a[0]), int(a[1]) if len(a) > 1 and a[1] else 2)
+        except ValueError:
+            audio = (44100, 2)
+    return {"codec": codec or "h264", "width": int(w or 0), "height": int(h or 0),
+            "fps": fps_v or float(config.VIDEO_FPS), "timescale": timescale, "audio": audio}
+
+
+def clip_from_asset(src: Path, dest: Path, seconds: float, shape: dict) -> Path:
+    """Turn a screen recording or screenshot into one clip of exactly `seconds`, in `shape`
+    (stream_shape of a rendered clip, or a fallback), so it joins the others by stream copy.
+
+    The whole asset is FITTED over a blurred, cropped copy of itself rather than cropped: a
+    screenshot's edges are usually the interface being shown, and losing them defeats the point
+    of real footage. A still gets a slow push-in so it is not a frozen frame; a recording is
+    trimmed, or looped when it is shorter than the clip."""
+    src, dest = Path(src), Path(dest)
+    w, h = _even(shape["width"]), _even(shape["height"])
+    rate = float(shape.get("fps") or config.VIDEO_FPS)
+    seconds = max(0.5, float(seconds))
+    frames = max(1, int(round(seconds * rate)))
+    still = src.suffix.lower() in IMAGE_EXTS
+    compose = (f"split[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+               f"boxblur=20:2,eq=brightness=-0.08[bg];"
+               f"[b]scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos[fg];"
+               f"[bg][fg]overlay=(W-w)/2:(H-h)/2")
+    if still:
+        cmd = [ffmpeg(), "-y", "-v", "error", "-i", str(src)]
+        # zoompan renders on a 2x canvas so the slow push does not step pixel by pixel
+        vf = (f"[0:v]{compose},scale={2 * w}:{2 * h},"
+              f"zoompan=z='1+0.06*on/{frames}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+              f":d={frames}:s={w}x{h}:fps={rate:g},setsar=1,format=yuv420p[v]")
+    else:
+        cmd = [ffmpeg(), "-y", "-v", "error", "-stream_loop", "-1", "-i", str(src)]
+        vf = f"[0:v]{compose},fps={rate:g},setsar=1,format=yuv420p[v]"
+    audio = shape.get("audio")
+    if audio:
+        layout = "mono" if audio[1] == 1 else "stereo"
+        cmd += ["-f", "lavfi", "-i", f"anullsrc=r={audio[0]}:cl={layout}"]
+    cmd += ["-filter_complex", vf, "-map", "[v]"]
+    if audio:
+        cmd += ["-map", "1:a", "-c:a", "aac", "-ar", str(audio[0]), "-ac", str(audio[1])]
+    else:
+        cmd += ["-an"]
+    enc = "libx265" if shape.get("codec") in ("hevc", "h265") else "libx264"
+    cmd += ["-c:v", enc, "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-r", f"{rate:g}", "-frames:v", str(frames), "-t", f"{seconds:.3f}"]
+    if shape.get("timescale"):
+        cmd += ["-video_track_timescale", str(shape["timescale"])]
+    cmd += [str(dest)]
+    _run(cmd)
+    return dest

@@ -112,6 +112,9 @@ class Job:
     assemble_requested: bool = False
     needs_assemble: bool = False    # clips changed since the final video was assembled
     stale_clips: list = field(default_factory=list)   # clips whose scene prompt was edited
+    # reel format: a person watched the finished video and approved it for publishing. Cleared by
+    # anything that changes the video (reassembly, a regenerated clip, new demo footage).
+    publish_approved: bool = False
     yt_status: str = ""      # "", uploading, uploaded, failed
     yt_progress: int = 0
     yt_video_id: str = ""
@@ -714,9 +717,46 @@ def _render_opening_lead(job: Job, client, i2v, plan: dict):
         client.scrub_file("input", "", upload)
 
 
+DEMO_MAX_BYTES = 200 * 1024 * 1024      # one screen recording or screenshot per reel scene
+
+
+def _asset_for_clip(job: Job, plan: dict, i: int) -> Path | None:
+    """The user's demo footage for clip i (1-based), when its reel scene has one on disk."""
+    rl, cs = plan.get("reel"), plan.get("clip_scene")
+    if not (_reel(job) and rl and cs and 1 <= i <= len(cs)):
+        return None
+    scenes = rl.get("scenes") or []
+    si = cs[i - 1]
+    name = (scenes[si].get("asset") or "") if 0 <= si < len(scenes) else ""
+    path = job.dir / name if name else None
+    return path if path and path.exists() else None
+
+
+def _asset_clip(job: Job, plan: dict, i: int, src: Path, dest: Path):
+    """Build clip i from demo footage, shaped like the rendered clips so the join stays a copy."""
+    n = len(plan.get("scenes") or [])
+    ref = next((job.dir / f"clip_{k:02d}.mp4" for k in range(1, n + 1)
+                if k != i and _asset_for_clip(job, plan, k) is None
+                and _clip_on_disk(job.dir / f"clip_{k:02d}.mp4")), None)
+    if ref is not None:
+        shape = video.stream_shape(ref)
+    else:   # every clip is footage: nothing was rendered to match
+        w, h = config.THUMB_SIZES.get(job.aspect_ratio, (720, 1280))
+        shape = {"codec": "h264", "width": w, "height": h, "fps": float(config.VIDEO_FPS),
+                 "timescale": 0, "audio": None}
+    secs = (plan.get("clip_seconds") or [])[i - 1] if i - 1 < len(plan.get("clip_seconds") or []) \
+        else config.actual_clip_seconds(model=job.video_model)
+    video.clip_from_asset(src, dest, secs, shape)
+    job.add_log(f"clip {i}: built from your demo footage {src.name} ({secs:.1f}s)")
+
+
 def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, label: str):
     """Render clip i from its scene prompt; i > 1 is seeded with clip i-1's last frame."""
     d = job.dir
+    asset = _asset_for_clip(job, plan, i)
+    if asset is not None:      # real footage replaces the render, and needs no GPU
+        _asset_clip(job, plan, i, asset, dest)
+        return
     scene = plan['scenes'][i - 1]
     # cast characters named in the scene get their canonical look prepended (deterministic branding).
     # A DIY build short has its builder in every shot, but a close-up or a "he drills..." line does
@@ -732,7 +772,8 @@ def _generate_clip(job: Job, client, t2v, i2v, plan: dict, i: int, dest: Path, l
     lead = None
     if i == 1 and opening and _reference_only(plan):
         lead = _opening_lead(job, client, i2v, plan)   # None: it held the portrait, clip 1 from text
-    if i > 1 or lead is not None:
+    after_footage = i > 1 and _asset_for_clip(job, plan, i - 1) is not None
+    if (i > 1 and not after_footage) or lead is not None:
         if i > 1:
             frame = video.last_frame(d / f"clip_{i - 1:02d}.mp4", d / f"frame_{i - 1:02d}.jpg")
         else:
@@ -2641,24 +2682,34 @@ def _run(job: Job):
     i2v = client.load_workflow(config.model_workflow(job.video_model, True))
     prev_clip = None
     job.clips = []
+    footage = []           # clips built from demo footage once a rendered clip exists to match
     for i, scene in enumerate(scenes, 1):
         _check_cancel(job)
         dest = d / f"clip_{i:02d}.mp4"
         if _clip_on_disk(dest):
             prev_clip = dest
             job.clips.append(dest.name)
-            job.set(clips_done=i)
+            job.set(clips_done=len(job.clips))
             job.add_log(f"resume: clip {i}/{n} already generated")
+            continue
+        if _asset_for_clip(job, plan, i) is not None:
+            footage.append(i)
             continue
         _generate_clip(job, client, t2v, i2v, plan, i, dest, f"clip {i}/{n}")
         prev_clip = dest
         job.clips.append(dest.name)
-        job.set(clips_done=i)
+        job.set(clips_done=len(job.clips))
         how = ("text-to-video (the lead-in held the portrait)" if i == 1 and (d / OPENING_LEAD_HELD).exists()
                else "first-frame (portrait lead-in)" if i == 1 and _reference_only(plan) and _opening(plan, d)
                else "first-frame (cast portrait)" if i == 1 and _opening(plan, d)
                else "text-to-video" if i == 1 else "first-frame")
         job.add_log(f"clip {i}/{n} done ({how})")
+    for i in footage:
+        _check_cancel(job)
+        _asset_clip(job, plan, i, _asset_for_clip(job, plan, i), d / f"clip_{i:02d}.mp4")
+        job.clips.append(f"clip_{i:02d}.mp4")
+        job.set(clips_done=len(job.clips))
+    job.clips.sort()
 
     _check_cancel(job)
     # 8. assemble
@@ -3665,6 +3716,54 @@ class JobManager:
             if changed:
                 job.add_log(f"scene prompt{plural} edited for clip{plural} "
                             f"{', '.join(map(str, changed))}")
+        return job
+
+    def set_scene_asset(self, job_id: str, n: int, data: bytes | None, filename: str = "") -> Job:
+        """Attach (data) or remove (None) demo footage on reel scene n. Before rendering it is
+        simply used; on a finished video the clips of that scene are marked stale, to be
+        regenerated (instantly, no GPU) from the job page."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status not in ("awaiting_approval", "done"):
+                raise ValueError("demo footage can be changed while the script awaits approval "
+                                 "or once the video is finished")
+            pfile = job.dir / "plan.json"
+            plan = json.loads(pfile.read_text(encoding="utf-8"))
+            scenes = (plan.get("reel") or {}).get("scenes") or []
+            if not 1 <= n <= len(scenes):
+                raise ValueError(f"scene {n} does not exist")
+            sc = scenes[n - 1]
+            old = sc.get("asset") or ""
+            if data is not None:
+                ext = Path(filename or "").suffix.lower()
+                if ext not in video.IMAGE_EXTS + video.VIDEO_EXTS:
+                    raise ValueError("demo footage must be a video (mp4, mov, webm) or an image "
+                                     "(png, jpg, webp)")
+                if len(data) > DEMO_MAX_BYTES:
+                    raise ValueError(f"demo footage too large (max {DEMO_MAX_BYTES // (1024 * 1024)} MB)")
+                name = f"demo_{n:02d}{ext}"
+                if old and old != name:
+                    (job.dir / old).unlink(missing_ok=True)
+                (job.dir / name).write_bytes(data)
+                sc["asset"] = name
+                job.add_log(f"scene {n}: demo footage {filename or name} attached")
+            else:
+                if old:
+                    (job.dir / old).unlink(missing_ok=True)
+                sc["asset"] = ""
+                job.add_log(f"scene {n}: demo footage removed")
+            pfile.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            if job.status == "done":
+                hit = [k + 1 for k, si in enumerate(plan.get("clip_scene") or []) if si == n - 1]
+                if hit:
+                    stale = sorted(set(job.stale_clips) | set(hit))
+                    job.set(stale_clips=stale, publish_approved=False,
+                            detail=f"demo footage changed - regenerate clip{'s' if len(stale) > 1 else ''} "
+                                   f"{', '.join(map(str, stale))}")
+            job.updated = time.time()
+            job.save()
         return job
 
     def request_regen(self, job_id: str, clips: list):

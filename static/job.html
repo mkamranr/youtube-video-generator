@@ -233,6 +233,14 @@
     <div class="sb-grid" id="sbGrid"></div>
   </section>
 
+  <section class="card" id="reelSec" hidden>
+    <h2>Reel scenes</h2>
+    <div class="hint" style="margin-bottom:8px">The scenes this reel was built from. Attaching a screen
+      recording or screenshot to a scene replaces its AI clips; the clips are then marked for
+      regeneration (built locally, no GPU) and the video needs a reassembly.</div>
+    <div id="reelScenesDone"></div>
+  </section>
+
   <section class="card" id="seoSec" hidden>
     <h2>Video title &amp; description <span class="count">(SEO, ready to publish)</span></h2>
     <div class="row" style="align-items:center;margin:0 0 6px">
@@ -457,6 +465,9 @@ async function loadDetails(j) {
     }
   }
   if (d.plan) {
+    const reelDone = d.plan.reel && lastJob && lastJob.status === "done";
+    $("#reelSec").hidden = !reelDone;
+    if (reelDone) { reelPlanScenes = d.plan.reel.scenes || []; renderReelDone(); }
     if (Array.isArray(d.plan.cast_used)) {
       castFromPlan = true;
       $("#castLabel").textContent = d.plan.cast_used.length ? "cast: " + d.plan.cast_used.join(", ") : "cast: none";
@@ -1075,6 +1086,61 @@ function renderReel() {
   $("#apCta").value = (r.cta || {}).text || "";
   if (typeof renderReelAssets === "function") renderReelAssets();
   reelTotals();
+}
+
+// ---- demo footage per reel scene (approval page and finished video) ----
+let reelPlanScenes = [];
+
+function assetControls(sc) {
+  const has = !!sc.asset;
+  const wants = sc.role === "demo" || !!sc.asset_needed;
+  return `<span class="hint" style="${wants && !has ? "font-weight:600" : ""}">${has
+      ? `Footage: <a href="/jobs/${jobId}/scenes/${sc.n}/asset" target="_blank">${esc(sc.asset)}</a>`
+      : wants ? "Real footage recommended for this scene" : "AI clip"}</span>
+    <label class="btn sm secondary" style="cursor:pointer">${has ? "Replace" : "Attach"} footage
+      <input type="file" class="reel-file" data-n="${sc.n}" accept="video/mp4,video/quicktime,video/webm,image/png,image/jpeg,image/webp" hidden></label>
+    ${has ? `<button class="btn sm secondary reel-file-del" data-n="${sc.n}">Remove</button>` : ""}`;
+}
+
+async function sendAsset(n, file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  toast(`Uploading footage for scene ${n}...`);
+  await api(`/jobs/${jobId}/scenes/${n}/asset`, { method: "POST", body: fd });
+}
+
+function wireAssets(root, after) {
+  root.querySelectorAll(".reel-file").forEach(el => el.onchange = async () => {
+    if (!el.files[0]) return;
+    try { await sendAsset(+el.dataset.n, el.files[0]); toast("Footage attached"); after(+el.dataset.n, el.files[0].name); }
+    catch (e) { toast(e.message, true); }
+  });
+  root.querySelectorAll(".reel-file-del").forEach(el => el.onclick = async () => {
+    try { await api(`/jobs/${jobId}/scenes/${el.dataset.n}/asset`, { method: "DELETE" }); toast("Footage removed"); after(+el.dataset.n, ""); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+function renderReelAssets() {
+  if (!apReel) return;
+  document.querySelectorAll("#apScenes .reel-asset").forEach(box => {
+    const sc = apReel.scenes.find(s => s.n === +box.dataset.n);
+    if (sc) box.innerHTML = assetControls(sc);
+  });
+  wireAssets($("#apScenes"), (n, name) => {
+    const sc = apReel.scenes.find(s => s.n === n);
+    if (sc) sc.asset = name ? "demo_" + String(n).padStart(2, "0") + name.slice(name.lastIndexOf(".")).toLowerCase() : "";
+    renderReelAssets();
+  });
+}
+
+function renderReelDone() {
+  $("#reelScenesDone").innerHTML = reelPlanScenes.map(sc => `<div style="padding:8px 0;border-top:1px solid var(--line)">
+      <div class="hint"><b>Scene ${sc.n} · ${esc(sc.role)}</b> — ${esc(sc.headline || "")}</div>
+      <div style="margin:4px 0">${esc(sc.voiceover)}</div>
+      <div class="row" style="gap:8px">${assetControls(sc)}</div>
+    </div>`).join("");
+  wireAssets($("#reelScenesDone"), () => { detailsStamp = null; refresh(); });
 }
 
 function reelEdits() {
