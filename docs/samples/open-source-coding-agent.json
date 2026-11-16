@@ -1,0 +1,176 @@
+{
+  "topic": "An open-source AI coding agent that runs in your terminal, reads your repository, proposes multi-file edits and runs your tests before you accept them",
+  "target_words": 131,
+  "title": "Terminal AI That Tests Before You Commit",
+  "first_draft_issues": [
+    "too short: 76 words for a 131-word target"
+  ],
+  "reel": {
+    "hooks": [
+      {
+        "text": "Your AI agent runs tests before you accept the code.",
+        "category": "outcome",
+        "scores": {
+          "clarity": 5,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 5,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Stop guessing if AI code works; let the agent check.",
+        "category": "problem_solution",
+        "scores": {
+          "clarity": 5,
+          "relevance": 4,
+          "curiosity": 4,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "An open-source agent reads your whole repository first.",
+        "category": "surprise",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Why your terminal AI needs to run your test suite.",
+        "category": "curiosity",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 5,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Multi-file edits are safer when the agent verifies them.",
+        "category": "comparison",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 5,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      }
+    ],
+    "chosen": 0,
+    "scenes": [
+      {
+        "n": 1,
+        "role": "hook",
+        "voiceover": "Your AI agent runs tests before you accept the code.",
+        "headline": "Verify Before Commit",
+        "support_text": "",
+        "visual": "Close-up of a terminal window showing a test suite passing with green checkmarks.",
+        "asset_needed": "Screen recording of terminal test output",
+        "transition": "cut",
+        "emphasis": [
+          "runs tests",
+          "before accept"
+        ],
+        "has_claim": true,
+        "asset": "",
+        "hook_text": "Your AI agent runs tests before you accept the code."
+      },
+      {
+        "n": 2,
+        "role": "context",
+        "voiceover": "Most AI tools guess. This open-source agent reads your entire repository to understand context before proposing changes. It maps dependencies and logic so suggestions fit your specific architecture, not just generic patterns.",
+        "headline": "Full Repo Context",
+        "support_text": "Open-source terminal agent",
+        "visual": "Abstract visualization of file trees being scanned and connected, transitioning to a code editor.",
+        "asset_needed": "Motion graphics of repository structure analysis",
+        "transition": "slide",
+        "emphasis": [
+          "open-source",
+          "reads repository"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 3,
+        "role": "demo",
+        "voiceover": "You type a prompt. It drafts multi-file edits, then automatically executes your local test suite. If a test fails, it stops and reports the error. You see the exact diff and the execution log side-by-side.",
+        "headline": "Draft and Verify",
+        "support_text": "",
+        "visual": "Split screen: left shows code diff, right shows terminal running tests and reporting success.",
+        "asset_needed": "Screen recording of agent proposing changes and running tests",
+        "transition": "zoom",
+        "emphasis": [
+          "multi-file edits",
+          "executes tests"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 4,
+        "role": "payoff",
+        "voiceover": "You only accept changes that pass. This keeps your codebase stable while using AI for complex refactoring. It reduces manual review time significantly, ensuring every merge is verified by your own environment.",
+        "headline": "Stable Codebase",
+        "support_text": "",
+        "visual": "A clean dashboard showing code health metrics remaining stable after AI integration.",
+        "asset_needed": "Dashboard visualization of code stability",
+        "transition": "cut",
+        "emphasis": [
+          "only accept",
+          "stable"
+        ],
+        "has_claim": false,
+        "asset": ""
+      },
+      {
+        "n": 5,
+        "role": "cta",
+        "voiceover": "Check the open-source repository to see how it connects to your local environment. Clone it, configure your test paths, and run your first verified refactor today.",
+        "headline": "Explore the Repo",
+        "support_text": "",
+        "visual": "GitHub repository interface with star count and documentation links highlighted.",
+        "asset_needed": "Screenshot of GitHub repository page",
+        "transition": "none",
+        "emphasis": [
+          "open-source",
+          "repository"
+        ],
+        "has_claim": false,
+        "asset": ""
+      }
+    ],
+    "cta": {
+      "type": "repo",
+      "text": "Check the open-source repository to see how it connects to your local environment."
+    },
+    "central_message": "Open-source terminal agents can analyze your codebase, propose multi-file changes, and verify them with tests before you accept.",
+    "audience_benefit": "You can use local AI to draft and validate complex code changes safely in your terminal.",
+    "script_version": 1,
+    "issues": []
+  },
+  "narration": "Your AI agent runs tests before you accept the code. Most AI tools guess. This open-source agent reads your entire repository to understand context before proposing changes. It maps dependencies and logic so suggestions fit your specific architecture, not just generic patterns. You type a prompt. It drafts multi-file edits, then automatically executes your local test suite. If a test fails, it stops and reports the error. You see the exact diff and the execution log side-by-side. You only accept changes that pass. This keeps your codebase stable while using AI for complex refactoring. It reduces manual review time significantly, ensuring every merge is verified by your own environment. Check the open-source repository to see how it connects to your local environment. Clone it, configure your test paths, and run your first verified refactor today.",
+  "seconds": 267.3
+}

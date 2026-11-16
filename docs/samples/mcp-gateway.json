@@ -1,0 +1,190 @@
+{
+  "topic": "An MCP gateway that gives AI coding agents controlled, audited access to internal tools and APIs instead of handing them raw credentials",
+  "target_words": 131,
+  "title": "Stop Giving AI Agents Raw Passwords",
+  "first_draft_issues": [],
+  "reel": {
+    "hooks": [
+      {
+        "text": "Stop handing your API keys directly to AI agents.",
+        "category": "problem_solution",
+        "scores": {
+          "clarity": 5,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 5,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Raw credentials are the biggest risk for AI coding tools.",
+        "category": "outcome",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 3,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Here is how to audit every AI tool call.",
+        "category": "demo_first",
+        "scores": {
+          "clarity": 5,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Controlled access beats raw credential sharing for security.",
+        "category": "comparison",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 3,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Three steps to secure your AI agent's tool access.",
+        "category": "list",
+        "scores": {
+          "clarity": 5,
+          "relevance": 4,
+          "curiosity": 4,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      }
+    ],
+    "chosen": 0,
+    "scenes": [
+      {
+        "n": 1,
+        "role": "hook",
+        "voiceover": "Stop handing your API keys directly to AI agents. It is the fastest way to lose control of your internal systems.",
+        "headline": "The Credential Risk",
+        "support_text": "",
+        "visual": "Close-up of a glowing red warning icon on a dark dashboard, overlaid with a blurred API key string.",
+        "asset_needed": "Screen recording of a security alert or a generic 'Access Denied' screen.",
+        "transition": "cut",
+        "emphasis": [
+          "API keys",
+          "control"
+        ],
+        "has_claim": true,
+        "asset": "",
+        "hook_text": "Stop handing your API keys directly to AI agents."
+      },
+      {
+        "n": 2,
+        "role": "context",
+        "voiceover": "When an AI coding agent has raw access, it can make mistakes you cannot see. You need a middle layer that checks every move.",
+        "headline": "Why Direct Access Fails",
+        "support_text": "",
+        "visual": "Split screen: left side shows a chaotic flow of data packets; right side shows a calm, structured pipeline.",
+        "asset_needed": "Abstract data flow animation showing uncontrolled vs controlled traffic.",
+        "transition": "slide",
+        "emphasis": [
+          "middle layer",
+          "checks"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 3,
+        "role": "demo",
+        "voiceover": "An MCP gateway sits between your agent and your tools. It translates requests and verifies permissions before anything happens.",
+        "headline": "The MCP Gateway",
+        "support_text": "Model Context Protocol",
+        "visual": "A clean diagram showing an AI Agent node connecting to a Gateway box, which then connects to various API icons.",
+        "asset_needed": "Diagram or UI mockup of an MCP gateway architecture.",
+        "transition": "zoom",
+        "emphasis": [
+          "MCP gateway",
+          "permissions"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 4,
+        "role": "demo",
+        "voiceover": "Look at the audit log. Every tool call is timestamped and recorded. If the agent tries to delete a file, you see it immediately.",
+        "headline": "Full Audit Trail",
+        "support_text": "",
+        "visual": "A scrolling log window highlighting a specific 'DELETE' request being flagged or logged in real-time.",
+        "asset_needed": "Screen recording of a logging interface or audit trail dashboard.",
+        "transition": "cut",
+        "emphasis": [
+          "audit log",
+          "timestamped"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 5,
+        "role": "payoff",
+        "voiceover": "This setup keeps your credentials safe while letting the agent do its job. You get power without the permanent risk of a leak.",
+        "headline": "Secure and Powerful",
+        "support_text": "",
+        "visual": "A lock icon turning green as a code editor continues to run in the background.",
+        "asset_needed": "Visual metaphor of a secure lock combined with a working IDE.",
+        "transition": "none",
+        "emphasis": [
+          "credentials safe",
+          "risk"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 6,
+        "role": "cta",
+        "voiceover": "Save this to implement an MCP gateway in your own workflow today.",
+        "headline": "Secure Your Workflow",
+        "support_text": "",
+        "visual": "The channel logo 'Daily Tech Talks' appearing over a clean, dark background with a subtle tech grid.",
+        "asset_needed": "",
+        "transition": "none",
+        "emphasis": [
+          "Save",
+          "implement"
+        ],
+        "has_claim": false,
+        "asset": ""
+      }
+    ],
+    "cta": {
+      "type": "save",
+      "text": "Save this to implement an MCP gateway in your own workflow today."
+    },
+    "central_message": "Use an MCP gateway to mediate AI access to internal tools, ensuring every action is audited and controlled.",
+    "audience_benefit": "You can secure your internal APIs from AI coding agents without exposing raw credentials.",
+    "script_version": 1,
+    "issues": []
+  },
+  "narration": "Stop handing your API keys directly to AI agents. It is the fastest way to lose control of your internal systems. When an AI coding agent has raw access, it can make mistakes you cannot see. You need a middle layer that checks every move. An MCP gateway sits between your agent and your tools. It translates requests and verifies permissions before anything happens. Look at the audit log. Every tool call is timestamped and recorded. If the agent tries to delete a file, you see it immediately. This setup keeps your credentials safe while letting the agent do its job. You get power without the permanent risk of a leak. Save this to implement an MCP gateway in your own workflow today.",
+  "seconds": 193.1
+}

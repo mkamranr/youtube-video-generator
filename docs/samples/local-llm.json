@@ -1,0 +1,196 @@
+{
+  "topic": "Running Qwen 27B locally with 4-bit quantization on a single 24 GB GPU using vLLM: what fits, how fast it is, and what you give up compared to the full-precision model",
+  "target_words": 131,
+  "title": "Qwen 27B on One GPU",
+  "first_draft_issues": [],
+  "reel": {
+    "hooks": [
+      {
+        "text": "Fit a 27 billion parameter model into one 24GB GPU.",
+        "category": "outcome",
+        "scores": {
+          "clarity": 5,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 5,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "Stop renting cloud GPUs to run Qwen 27B locally.",
+        "category": "problem_solution",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 3,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 5
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "4-bit quantization makes massive models fit on consumer hardware.",
+        "category": "comparison",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 4,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 3
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "See exactly what you lose when you quantize Qwen 27B.",
+        "category": "curiosity",
+        "scores": {
+          "clarity": 5,
+          "relevance": 5,
+          "curiosity": 5,
+          "specificity": 4,
+          "factual": 5,
+          "accessibility": 4
+        },
+        "supported": true,
+        "rejected": ""
+      },
+      {
+        "text": "vLLM lets you serve Qwen 27B on a single card.",
+        "category": "demo_first",
+        "scores": {
+          "clarity": 4,
+          "relevance": 5,
+          "curiosity": 3,
+          "specificity": 5,
+          "factual": 5,
+          "accessibility": 3
+        },
+        "supported": true,
+        "rejected": ""
+      }
+    ],
+    "chosen": 0,
+    "scenes": [
+      {
+        "n": 1,
+        "role": "hook",
+        "voiceover": "Fit a 27 billion parameter model into one 24GB GPU.",
+        "headline": "27B on One GPU",
+        "support_text": "",
+        "visual": "Close-up of a single RTX 3090/4090 GPU card, highlighting the 24GB VRAM label, with a digital overlay showing 'Qwen 27B' fitting inside the memory bar.",
+        "asset_needed": "Screenshot of GPU-Z or nvidia-smi showing 24GB VRAM usage.",
+        "transition": "cut",
+        "emphasis": [
+          "27 billion",
+          "24GB",
+          "single GPU"
+        ],
+        "has_claim": true,
+        "asset": "",
+        "hook_text": "Fit a 27 billion parameter model into one 24GB GPU."
+      },
+      {
+        "n": 2,
+        "role": "context",
+        "voiceover": "Full precision models are too big for your card. But 4-bit quantization compresses the data, letting you run powerful AI locally without cloud costs.",
+        "headline": "Quantization Explained",
+        "support_text": "4-bit vs 16-bit",
+        "visual": "Split screen: left side shows a large, heavy block labeled 'Full Precision' overflowing a container; right side shows a compressed, lighter block labeled '4-bit' fitting neatly inside the same container.",
+        "asset_needed": "Simple animated diagram comparing memory usage of FP16 vs INT4 tensors.",
+        "transition": "slide",
+        "emphasis": [
+          "4-bit",
+          "compresses",
+          "locally"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 3,
+        "role": "demo",
+        "voiceover": "Using vLLM, you load the quantized Qwen 27B. The server starts instantly. You can now generate text directly on your machine, with data staying private.",
+        "headline": "vLLM in Action",
+        "support_text": "",
+        "visual": "A terminal window showing the vLLM startup logs with 'Loading model' and 'Ready' messages. Next to it, a simple chat interface typing a prompt and receiving a response.",
+        "asset_needed": "Screen recording of vLLM server startup and a basic API call via curl or Python.",
+        "transition": "cut",
+        "emphasis": [
+          "vLLM",
+          "private",
+          "instantly"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 4,
+        "role": "demo",
+        "voiceover": "Speed is decent for single-user use. However, compared to full precision, you lose some fine-grained detail in complex reasoning tasks. It’s a trade-off.",
+        "headline": "The Trade-off",
+        "support_text": "Speed vs Accuracy",
+        "visual": "A dashboard showing tokens-per-second metrics. Below, a side-by-side comparison of two AI responses to a complex math problem, highlighting a minor error in the quantized version.",
+        "asset_needed": "Benchmark results screenshot and a text comparison example.",
+        "transition": "zoom",
+        "emphasis": [
+          "trade-off",
+          "detail",
+          "speed"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 5,
+        "role": "payoff",
+        "voiceover": "You get a capable local model that respects your privacy. It’s not perfect, but it fits your hardware and keeps your data on your machine.",
+        "headline": "Local Control",
+        "support_text": "",
+        "visual": "A clean shot of a laptop with a glowing screen, showing a lock icon over the data flow, emphasizing that no data leaves the local network.",
+        "asset_needed": "Graphic illustrating local data flow with a lock icon.",
+        "transition": "none",
+        "emphasis": [
+          "privacy",
+          "hardware",
+          "data"
+        ],
+        "has_claim": true,
+        "asset": ""
+      },
+      {
+        "n": 6,
+        "role": "cta",
+        "voiceover": "Save this to try Qwen 27B locally with vLLM.",
+        "headline": "Try It Yourself",
+        "support_text": "",
+        "visual": "A static end card with the text 'Save for later' and an icon of a bookmark.",
+        "asset_needed": "",
+        "transition": "none",
+        "emphasis": [
+          "Save",
+          "try",
+          "vLLM"
+        ],
+        "has_claim": false,
+        "asset": ""
+      }
+    ],
+    "cta": {
+      "type": "save",
+      "text": "Save this to try Qwen 27B locally with vLLM."
+    },
+    "central_message": "You can run the Qwen 27B model on a single 24GB GPU using 4-bit quantization via vLLM, trading some precision for local accessibility.",
+    "audience_benefit": "You can now test a large language model locally without needing a multi-GPU server or cloud API keys.",
+    "script_version": 1,
+    "issues": []
+  },
+  "narration": "Fit a 27 billion parameter model into one 24GB GPU. Full precision models are too big for your card. But 4-bit quantization compresses the data, letting you run powerful AI locally without cloud costs. Using vLLM, you load the quantized Qwen 27B. The server starts instantly. You can now generate text directly on your machine, with data staying private. Speed is decent for single-user use. However, compared to full precision, you lose some fine-grained detail in complex reasoning tasks. It’s a trade-off. You get a capable local model that respects your privacy. It’s not perfect, but it fits your hardware and keeps your data on your machine. Save this to try Qwen 27B locally with vLLM.",
+  "seconds": 221.8
+}
