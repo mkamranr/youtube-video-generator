@@ -285,6 +285,10 @@ class ApproveBody(BaseModel):
     reel: dict | None = None
 
 
+class PublishBody(BaseModel):
+    approved: bool = True
+
+
 class RedraftBody(BaseModel):
     feedback: str = ""
 
@@ -393,6 +397,30 @@ def get_scene_asset(job_id: str, n: int, user: dict = Depends(auth.require_user)
     if not path or not path.exists():
         raise HTTPException(404, "no demo footage on this scene")
     return FileResponse(path)
+
+
+@app.post("/jobs/{job_id}/publish-approve")
+def approve_publish(job_id: str, body: PublishBody, user: dict = Depends(auth.require_user)):
+    """Approve (or withdraw approval of) a finished video for publishing."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.approve_publish(job_id, body.approved))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/jobs/{job_id}/qa")
+def rerun_qa(job_id: str, user: dict = Depends(auth.require_user)):
+    """Run the automated checks of the finished video again."""
+    _owned_job(job_id, user)
+    try:
+        return _job_json(manager.rerun_qa(job_id))
+    except KeyError:
+        raise HTTPException(404, "job not found")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/jobs/{job_id}/redraft")

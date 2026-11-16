@@ -15,7 +15,7 @@ import config
 from services import (avatar, browser, captions, cast, chapters, channels, comfy, compilation,
                       gpu, llm, lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
                       thumbcover, thumbtext, transcript, tts, video, voices)
-from services import cardtemplates, reel
+from services import cardtemplates, qa, reel
 
 
 PROMPT_SOURCES = ("topic", "description", "transcript")   # the user's text IS the source text
@@ -2132,6 +2132,24 @@ def _run_compilation(job: Job):
     job.add_log(f"compilation of {len(parts)} videos finished ({compilation.fmt_length(total)})")
 
 
+def _run_qa(job: Job):
+    """The automated checks of the finished video, stored in plan["qa"]. Never fails anything."""
+    if not config.QA_ENABLED:
+        return None
+    try:
+        plan = _load_plan(job)
+        res = qa.run(job, plan, _safe(job))
+        plan["qa"] = res
+        _save_plan(job, plan)
+        s = res["summary"]
+        job.add_log(f"checks: {s['pass']} passed, {s['warn']} to look at, {s['fail']} failed"
+                    + "".join(f"; {c['label']}: {c['detail']}" for c in res["checks"] if c["status"] == "fail"))
+        return res
+    except Exception as e:  # noqa: BLE001 - a check that cannot run must not cost the video
+        job.add_log(f"checks could not run ({e})")
+        return None
+
+
 def _do_assemble(job: Job):
     """Re-concat the job's clips, redo the story board overlay and remix its audio into a
     new final.mp4 (story board assets are generated first if they are missing)."""
@@ -2153,8 +2171,9 @@ def _do_assemble(job: Job):
         narration_file = None
     final = _assemble(job, plan, narration_file, music_file)
     _drop_upscales(job)
-    job.set(final=final.name, assemble_requested=False, needs_assemble=False)
+    job.set(final=final.name, assemble_requested=False, needs_assemble=False, publish_approved=False)
     job.add_log("final video reassembled")
+    _run_qa(job)
 
 
 def _run_maintenance(job: Job):
@@ -2183,7 +2202,7 @@ def _run_maintenance(job: Job):
                                f"regenerating clip {i}")
                 job.regen_queue.pop(0)
                 done_count += 1
-                job.set(needs_assemble=True,
+                job.set(needs_assemble=True, publish_approved=False,
                         stale_clips=[c for c in job.stale_clips if c != i])
                 job.add_log(f"clip {i} regenerated (new seed)")
         if job.assemble_requested:
@@ -2718,6 +2737,8 @@ def _run(job: Job):
     gpu.release(job.id)
     job.set("assembling", "concatenating clips and mixing audio")
     final = _assemble(job, plan, narration_file, music_file)
+    job.set(final=final.name, publish_approved=False)
+    _run_qa(job)
     job.set("done", "finished", final=final.name)
     job.add_log("final video ready")
 
@@ -3537,6 +3558,8 @@ class JobManager:
                 raise ValueError("an upload is already in progress for this job")
             if not (job.dir / "final.mp4").exists():
                 raise ValueError("final video not found")
+            if _reel(job) and not job.publish_approved:
+                raise ValueError("watch the finished reel and approve it for publishing first")
             if not youtube.has_secret():
                 raise ValueError("client_secret.json not found - place your OAuth client file in the project folder")
             token_file = channels.token_path(job.channel_id) if job.channel_id else config.YT_TOKEN_FILE
@@ -3716,6 +3739,32 @@ class JobManager:
             if changed:
                 job.add_log(f"scene prompt{plural} edited for clip{plural} "
                             f"{', '.join(map(str, changed))}")
+        return job
+
+    def approve_publish(self, job_id: str, approved: bool = True) -> Job:
+        """A person watched the finished video (and its checks) and approves it for publishing,
+        or takes that back. Anything that changes the video clears it again."""
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if approved and (job.status != "done" or not job.final or not (job.dir / job.final).exists()):
+                raise ValueError("only a finished video can be approved for publishing")
+            if approved and (job.needs_assemble or job.stale_clips):
+                raise ValueError("the video has changes that are not assembled yet - regenerate and "
+                                 "reassemble first")
+            job.set(publish_approved=bool(approved))
+            job.add_log("approved for publishing" if approved else "publishing approval withdrawn")
+        return job
+
+    def rerun_qa(self, job_id: str) -> Job:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job:
+                raise KeyError(job_id)
+            if job.status != "done":
+                raise ValueError("checks run on a finished video")
+        _run_qa(job)
         return job
 
     def set_scene_asset(self, job_id: str, n: int, data: bytes | None, filename: str = "") -> Job:

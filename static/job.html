@@ -210,6 +210,19 @@
       <button class="btn sm" id="ytBtn" hidden></button>
       <button class="btn sm" id="assembleBtn" hidden>Reassemble final video</button>
     </div>
+    <div id="qaBox" hidden style="margin-top:16px">
+      <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <b>Checks</b> <span class="hint" id="qaSummary" style="margin:0"></span>
+        <button class="btn secondary sm" id="qaRerun">Re-run checks</button>
+      </div>
+      <div id="qaList" style="margin-top:6px"></div>
+    </div>
+    <div id="pubBox" hidden style="margin-top:14px">
+      <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
+        <button class="btn sm" id="pubBtn"></button>
+        <span class="hint" id="pubHint" style="margin:0"></span>
+      </div>
+    </div>
     <div id="upscaleBox" hidden style="margin-top:16px">
       <div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">
         <label for="upRes" style="margin:0">Upscale this video</label>
@@ -465,6 +478,7 @@ async function loadDetails(j) {
     }
   }
   if (d.plan) {
+    renderQa(lastJob && lastJob.status === "done" ? d.plan.qa : null);
     const reelDone = d.plan.reel && lastJob && lastJob.status === "done";
     $("#reelSec").hidden = !reelDone;
     if (reelDone) { reelPlanScenes = d.plan.reel.scenes || []; renderReelDone(); }
@@ -675,6 +689,7 @@ function addClipFigure(c, i, ver) {
 
 function update(j) {
   document.title = `VideoGen — ${j.title || j.id}`;
+  renderPublish(j);
   $("#title").textContent = j.title || j.id;
   $("#pill").outerHTML = `<span id="pill">${pillHTML(j)}</span>`;
   $("#jobIdLabel").textContent = j.id;
@@ -1142,6 +1157,53 @@ function renderReelDone() {
     </div>`).join("");
   wireAssets($("#reelScenesDone"), () => { detailsStamp = null; refresh(); });
 }
+
+// ---- automated checks and the publish approval ----
+let qaFails = 0;
+const QA_ICON = { pass: "✓", warn: "⚠", fail: "✗", manual: "👁" };
+const QA_COLOR = { pass: "var(--ok, #2e9e5b)", warn: "var(--warn, #c98a00)", fail: "var(--bad, #d64545)", manual: "inherit" };
+
+function renderQa(q) {
+  $("#qaBox").hidden = !q;
+  if (!q) { qaFails = 0; return; }
+  const s = q.summary || {};
+  qaFails = s.fail || 0;
+  $("#qaSummary").textContent = `${s.pass || 0} passed · ${s.warn || 0} to look at · ${s.fail || 0} failed`
+    + (q.at ? ` · ${new Date(q.at * 1000).toLocaleString()}` : "");
+  $("#qaList").innerHTML = (q.checks || []).map(c => `<div class="hint" style="margin:2px 0">
+      <span style="color:${QA_COLOR[c.status] || "inherit"};font-weight:600">${QA_ICON[c.status] || "·"}</span>
+      ${esc(c.label)}${c.detail ? " — " + esc(c.detail) : ""}</div>`).join("");
+}
+
+function renderPublish(j) {
+  const reelJob = !!(j.channel && j.channel.reel_format);
+  $("#pubBox").hidden = j.status !== "done" || !j.final;
+  $("#pubBtn").textContent = j.publish_approved ? "Withdraw publish approval" : "Approve for publish";
+  $("#pubBtn").className = j.publish_approved ? "btn secondary sm" : "btn sm";
+  $("#pubHint").textContent = j.publish_approved
+    ? "Approved — any change to the video (reassembly, a regenerated clip, new footage) clears this."
+    : reelJob ? "Watch the video and the checks first. YouTube upload stays locked until it is approved."
+              : "Optional for this channel: marks the video as reviewed.";
+}
+
+$("#qaRerun").onclick = async () => {
+  try {
+    toast("Running the checks...");
+    await api(`/jobs/${jobId}/qa`, { method: "POST" });
+    detailsStamp = null; refresh(); toast("Checks updated");
+  } catch (e) { toast(e.message, true); }
+};
+
+$("#pubBtn").onclick = async () => {
+  const approve = !(lastJob && lastJob.publish_approved);
+  if (approve && qaFails && !confirm(`${qaFails} check(s) failed. Approve for publishing anyway?`)) return;
+  try {
+    await api(`/jobs/${jobId}/publish-approve`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ approved: approve }) });
+    toast(approve ? "Approved for publishing" : "Approval withdrawn");
+    refresh();
+  } catch (e) { toast(e.message, true); }
+};
 
 function reelEdits() {
   reelSync();
