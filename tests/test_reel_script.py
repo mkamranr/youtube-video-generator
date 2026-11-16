@@ -114,6 +114,11 @@ class Validation(unittest.TestCase):
         self.assertTrue(any("demonstration" in i for i in issues))
         self.assertTrue(any("exactly one call to action" in i for i in issues))
 
+    def test_cta_with_two_asks(self):
+        r = self._reel()
+        r["scenes"][-1]["voiceover"] = "Save this guide. Check the repository for the flags."
+        self.assertTrue(any("several things" in i for i in reel.validate(r, None)))
+
     def test_too_long(self):
         r = self._reel()
         words = len(reel.narration(r).split())
@@ -136,6 +141,13 @@ class HookSwap(unittest.TestCase):
         reel.apply_edits(r, {"chosen": 0})
         self.assertEqual(r["scenes"][0]["voiceover"],
                          "Run a huge AI model without renting a cloud GPU? " + rest)
+
+    def test_writer_opening_with_another_candidate_is_not_doubled(self):
+        raw = copy.deepcopy(RAW)
+        raw["scenes"][0]["voiceover"] = "What happens when the model is bigger than your GPU? " + _vo(1)
+        r = reel.build(raw)          # hook 0 wins the scoring
+        self.assertEqual(r["scenes"][0]["voiceover"],
+                         "Run a huge AI model without renting a cloud GPU? " + _vo(1))
 
     def test_page_edit_after_swap_is_final(self):
         r = reel.build(copy.deepcopy(RAW))

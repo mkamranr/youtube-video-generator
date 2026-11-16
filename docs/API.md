@@ -160,6 +160,14 @@ Ask the LLM for a new draft (job returns to `drafting`, then `awaiting_approval`
 { "feedback": "make it rhyme" }
 ```
 
+### Reel format (see [REEL_FORMAT.md](REEL_FORMAT.md))
+
+- `POST /jobs/{id}/approve` also takes `reel` for a reel-format draft: `{"chosen": <hook index>, "scenes": [{"n", "voiceover", "headline", "support_text"}], "cta": {"text"}}`. The narration is rebuilt from the scenes; `narration` is ignored for a reel.
+- `POST /jobs/{id}/scenes/{n}/asset` (multipart `file`) attaches demo footage to reel scene `n` (mp4/mov/webm/m4v/mkv/png/jpg/webp, max 200 MB); `DELETE` removes it; `GET` serves it. Allowed at `awaiting_approval` or `done`; on a finished video the scene's clips become stale. `409` otherwise.
+- `PUT /jobs/{id}/social` `{"social": {"instagram": {"caption", "hashtags"}, "facebook": {"caption"}, "youtube": {"title", "description"}}}` edits the reel's post captions (stored in `plan.social`, included in the bundle text).
+- `POST /jobs/{id}/qa` re-runs the automated checks of a finished video (`plan.qa`).
+- `POST /jobs/{id}/publish-approve` `{"approved": true|false}` sets `publish_approved`; refused while clips are stale or a reassembly is pending. Reel-format uploads answer `409` until it is set.
+
 ## Archive
 
 - `POST /jobs/{id}/archive` — hide a finished job from the main list.

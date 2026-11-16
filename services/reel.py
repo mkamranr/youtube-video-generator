@@ -38,6 +38,12 @@ BANNED_OPENERS = (r"^\s*today,? we(?:'re| are| will)", r"^\s*in this video", r"^
                   r"^\s*hi\b", r"^\s*hello\b", r"^\s*welcome\b", r"^\s*what'?s up\b",
                   r"^\s*let'?s (?:take a look|look at|talk about|dive)")
 
+# the asks a call to action can make; more than one kind in the CTA scene is asking too much
+CTA_ASKS = {"save": r"\bsave\b", "share": r"\bshare\b|\bsend (?:this|it)\b",
+            "follow": r"\bfollow\b|\bsubscribe\b", "comment": r"\bcomment\b|\blet me know\b",
+            "repo": r"\bcheck (?:out )?the (?:repo|repository|project|link)\b|\blink in\b",
+            "like": r"\blike (?:this|the video)\b"}
+
 CTA_TEXTS = {
     "save": "Save this so you can try it later.",
     "share": "Share this with a developer who would find it useful.",
@@ -178,10 +184,12 @@ def apply_hook(reel: dict, index: int | None = None) -> dict:
     first = reel["scenes"][0]
     prev = first.get("hook_text", "")
     vo = first["voiceover"]
-    if prev and vo.startswith(prev):
-        vo = vo[len(prev):].lstrip()
-    elif vo.lower().startswith(text.lower()):
-        vo = vo[len(text):].lstrip()
+    # the writer opens scene 1 with ITS favourite hook, which need not be the one that scored best:
+    # whichever candidate the line starts with goes, so the video never speaks two hooks in a row
+    for cand in [prev] + [h["text"] for h in reel["hooks"]]:
+        if cand and vo.lower().startswith(cand.lower()):
+            vo = vo[len(cand):].lstrip()
+            break
     first["voiceover"] = (text + (" " + vo if vo else "")).strip()
     first["hook_text"] = text
     first["role"] = "hook"
@@ -231,6 +239,10 @@ def validate(reel: dict, target_words: int | None) -> list:
         issues.append(f"needs exactly one call to action, found {ctas}")
     elif roles[-1] != "cta":
         issues.append("the call to action must be the last scene")
+    else:
+        asks = [k for k, pat in CTA_ASKS.items() if re.search(pat, scenes[-1]["voiceover"].lower())]
+        if len(asks) > 1:
+            issues.append(f"the call to action asks for several things ({', '.join(asks)}) - keep one")
     if not reel.get("central_message"):
         issues.append("no central message")
     words = len(narration(reel).split())
