@@ -17,6 +17,8 @@ Every template must keep its content inside the safe box (ctx.m / ctx.top_safe /
 portrait frames reserve room for the Shorts UI top and bottom) and must survive image=None: a
 ComfyUI render can fail, and a card that loses its picture still has to read.
 """
+import contextlib
+import contextvars
 import random
 import re
 from dataclasses import dataclass, field
@@ -81,6 +83,21 @@ class CardCtx:
         return self.H - self.bottom_safe
 
 
+# A reel's UI-safe region ({top, bottom, left, right} fractions) while its cards are drawn; set
+# with safe_area() around the assembly of a reel-format video. A ContextVar, so a second job
+# assembling on another thread never sees it.
+SAFE_AREA = contextvars.ContextVar("cardtemplates_safe_area", default=None)
+
+
+@contextlib.contextmanager
+def safe_area(safe: dict | None):
+    token = SAFE_AREA.set(safe)
+    try:
+        yield
+    finally:
+        SAFE_AREA.reset(token)
+
+
 def context(size: tuple, accent: str | None, index: int, total: int) -> CardCtx:
     W, H = int(size[0]), int(size[1])
     portrait = H > W * 1.05
@@ -89,12 +106,20 @@ def context(size: tuple, accent: str | None, index: int, total: int) -> CardCtx:
     # make the text far too large (the original render_card comment, kept)
     s = W / 864.0 if square else min(W, H) / 480.0
     m = int((0.06 if portrait else 0.045) * W)
+    top_safe = int(0.08 * H) if portrait else m
+    bottom_safe = int(0.14 * H) if portrait else m
+    safe = SAFE_AREA.get() if portrait else None
+    if safe:
+        # the side margin is one number here, so it takes the wider (right-hand button) side
+        m = max(m, int(max(float(safe.get("left", 0)), float(safe.get("right", 0))) * W))
+        top_safe = max(top_safe, int(float(safe.get("top", 0)) * H))
+        bottom_safe = max(bottom_safe, int(float(safe.get("bottom", 0)) * H))
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     return CardCtx(W=W, H=H, s=s, portrait=portrait, square=square,
                    accent=storyboard._hex(accent or config.STORYBOARD_ACCENT),
                    m=m,
-                   top_safe=int(0.08 * H) if portrait else m,
-                   bottom_safe=int(0.14 * H) if portrait else m,
+                   top_safe=top_safe,
+                   bottom_safe=bottom_safe,
                    gap=int(14 * s), pad=int(18 * s), bar_w=max(3, int(5 * s)),
                    radius=int(14 * s), index=index, total=total,
                    img_ratio=storyboard.image_spec(W, H)[1],
@@ -843,9 +868,19 @@ def render_end(size: tuple, out_png: Path, channel: str = "", logo=None, line: s
             print(f"end card logo skipped: {e}")
     name = (channel or "").strip()
     line = (line or "").strip()
+    rows, cur = [], ""
+    for word in line.split():            # wrap inside the card's width
+        test = (cur + " " + word).strip()
+        if cur and pd.textlength(test, font=f_body) > 0.84 * ctx.W:
+            rows.append(cur)
+            cur = word
+        else:
+            cur = test
+    if cur:
+        rows.append(cur)
     block = (logo_img.height + ctx.px(16) if logo_img else 0)
     block += int(f_head.size * 1.2) if name else 0
-    block += int(f_body.size * 1.5) if line else 0
+    block += int(f_body.size * 1.5) * len(rows)
     y = ctx.top_safe + max(0, (avail_h - ctx.top_safe - block) // 2)
     if logo_img:
         ctx.canvas.alpha_composite(logo_img, ((ctx.W - logo_img.width) // 2, y))
@@ -856,8 +891,8 @@ def render_end(size: tuple, out_png: Path, channel: str = "", logo=None, line: s
         pd.text(((ctx.W - pd.textlength(name, font=f_head)) // 2, y), name, font=f_head,
                 fill=HEAD_FILL)
         y += int(f_head.size * 1.2)
-    if line:
-        pd.text(((ctx.W - pd.textlength(line, font=f_body)) // 2, y), line, font=f_body,
+    for row in rows:
+        pd.text(((ctx.W - pd.textlength(row, font=f_body)) // 2, y), row, font=f_body,
                 fill=ctx.accent)
         y += int(f_body.size * 1.5)
     out_png = Path(out_png)

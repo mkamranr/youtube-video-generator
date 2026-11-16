@@ -544,6 +544,22 @@ PROGRESS_BAR_HEIGHT = 0.6       # percent of the frame height (0 = off)
 SFX_VOLUME = 0.3                # card whoosh level (0 = silent)
 SFX_FILE = ""                   # your own whoosh; empty = synthesized with ffmpeg once and cached
 LOUDNESS_LUFS = -14.0           # EBU R128 target; YouTube normalises to about this (0 = off)
+NARRATION_TRIM_SILENCE = True   # cut dead air from both ends of the spoken narration
+NARRATION_EDGE_SILENCE = 0.15   # seconds of quiet left at each end after the trim
+# Reel format (a channel's reel_format switch, 9:16 only): where Instagram Reels / Shorts draw
+# their own UI - the header on top, the caption and audio line at the bottom, the like/comment/
+# share column on the right. Fractions of the frame; captions and cards stay inside the rest.
+REEL_SAFE_TOP = 0.12
+REEL_SAFE_BOTTOM = 0.22
+REEL_SAFE_LEFT = 0.06
+REEL_SAFE_RIGHT = 0.17
+REEL_MIN_CAPTION_FONT = 0.045   # caption text never smaller than this fraction of the frame height
+# Automated checks of every finished video (services/qa.py). They flag, they never fail a job.
+QA_ENABLED = True
+QA_FREEZE_SECONDS = 4.0         # a picture that does not change for this long is flagged
+QA_EDGE_SILENCE = 0.4           # silence at the very start or end longer than this is flagged
+QA_GAP_SILENCE = 1.5            # silence inside the video longer than this is flagged
+QA_DURATION_TOLERANCE = 0.6     # seconds the video may differ from its planned clip lengths
 TARGET_VIDEO_SECONDS = 90       # music mode: requested song length (the model may end earlier)
 MIN_TRANSCRIPT_WORDS = 50       # refuse videos whose transcript has fewer words
 MIN_TRANSCRIPT_WPM = 20         # refuse when words-per-minute of caption coverage is below this
@@ -861,6 +877,39 @@ EDITABLE_SETTINGS = {
     "CAPTION_FONT_SCALE": (float, lambda v: 0.6 <= v <= 1.8, "Captions: text size",
                            "Multiplier on the caption text size (0.6-1.8); 1.0 is about 5% of the "
                            "frame height"),
+    "NARRATION_TRIM_SILENCE": (bool, lambda v: True, "Narration: trim silence",
+                               "Cut dead air from the start and end of the spoken narration, so the "
+                               "voice starts promptly and the video does not end on silence. Silence "
+                               "between sentences is never touched"),
+    "NARRATION_EDGE_SILENCE": (float, lambda v: 0.0 <= v <= 1.0, "Narration: quiet kept at each end",
+                               "Seconds of quiet left before the first word and after the last (0-1)"),
+    "REEL_SAFE_TOP": (float, lambda v: 0.0 <= v <= 0.3, "Reel: top safe margin",
+                      "Reel-format videos: fraction of the frame height kept clear at the top (the "
+                      "profile header)"),
+    "REEL_SAFE_BOTTOM": (float, lambda v: 0.1 <= v <= 0.4, "Reel: bottom safe margin",
+                         "Reel-format videos: fraction of the frame height kept clear at the bottom "
+                         "(caption, audio line and progress UI)"),
+    "REEL_SAFE_LEFT": (float, lambda v: 0.0 <= v <= 0.2, "Reel: left safe margin",
+                       "Reel-format videos: fraction of the frame width kept clear on the left"),
+    "REEL_SAFE_RIGHT": (float, lambda v: 0.05 <= v <= 0.3, "Reel: right safe margin",
+                        "Reel-format videos: fraction of the frame width kept clear on the right (the "
+                        "like / comment / share buttons)"),
+    "REEL_MIN_CAPTION_FONT": (float, lambda v: 0.02 <= v <= 0.08, "Reel: smallest caption text",
+                              "Reel-format captions are never smaller than this fraction of the frame "
+                              "height, so they stay readable on a phone"),
+    "QA_ENABLED": (bool, lambda v: True, "Checks: run on finished videos",
+                   "Check every finished video for black or frozen stretches, a blank first frame, "
+                   "silence, clipping, wrong size or aspect, a duration that does not match the plan, "
+                   "speech cut off at the end, caption overflow and missing files. The results are "
+                   "shown on the job page; they never fail a job"),
+    "QA_FREEZE_SECONDS": (float, lambda v: 1.0 <= v <= 30.0, "Checks: frozen picture",
+                          "A picture that does not change for this many seconds is flagged (1-30)"),
+    "QA_EDGE_SILENCE": (float, lambda v: 0.1 <= v <= 5.0, "Checks: silence at the ends",
+                        "Silence at the very start or end longer than this many seconds is flagged"),
+    "QA_GAP_SILENCE": (float, lambda v: 0.5 <= v <= 10.0, "Checks: silence inside",
+                       "Silence inside the video longer than this many seconds is flagged"),
+    "QA_DURATION_TOLERANCE": (float, lambda v: 0.1 <= v <= 5.0, "Checks: duration tolerance",
+                              "Seconds the finished video may differ from its planned clip lengths"),
     "CAPTION_BOTTOM_MARGIN": (float, lambda v: 0.03 <= v <= 0.35, "Captions: bottom margin",
                               "Distance from the bottom of the frame as a fraction of its height "
                               "(0.03-0.35). Portrait videos never go below 0.14, which is what keeps "

@@ -851,7 +851,8 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
                  opening: dict | None = None, used: list | None = None,
                  timelines: list | None = None, clip_secs: list | None = None,
                  aligned: bool = True, beats: list | None = None, model: str = "",
-                 done: list | None = None, on_scene=None, on_review_failed=None) -> list:
+                 done: list | None = None, on_scene=None, on_review_failed=None,
+                 hints: list | None = None) -> list:
     """Step 2: exactly n scene prompts, generated ONE PER CALL so scene i cannot drift
     away from narration segment i (a single big call loses sync on long lists).
 
@@ -877,6 +878,7 @@ def write_scenes(narration: str, style: str, n: int, on_progress=None,
     segments = (list(segments) + [""] * n)[:n]
     timelines = (list(timelines or []) + [""] * n)[:n]
     beats = (list(beats or []) + [None] * n)[:n]
+    hints = (list(hints or []) + [""] * n)[:n]
     clip_secs = (list(clip_secs or []) + [config.actual_clip_seconds(model=model)] * n)[:n]
     cast_rule = ""
     roster = cast.active(channel)
@@ -984,7 +986,7 @@ The soundtrack is a {kind}.
 {prev}
 {nxt}
 {heard}
-{_scene_rules(channel, secs)}{cast_rule}
+{("REEL DIRECTION for this clip: " + hints[i] + chr(10)) if hints[i] else ""}{_scene_rules(channel, secs)}{cast_rule}
 Return JSON: {{"scene": "the scene prompt string"}}"""
         out = _chat([{"role": "system", "content": _system(channel, used=used)},
                      {"role": "user", "content": user}])

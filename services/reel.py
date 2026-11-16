@@ -305,3 +305,33 @@ def clip_scene_map(scenes: list, clip_seconds: list, audio_seconds: float | None
         out.append((scene, " ".join(w for _, w in chunk)))
         t0 += secs
     return out
+
+
+OPENING_RULE = ("This is the reel's OPENING clip: the subject must be clear and recognizable in the very "
+                "first frame - the result, the interface or the hardware itself, filling the frame. No "
+                "fade-in, no empty or dark frame, no logo reveal, no slow establishing shot.")
+ROLE_RULES = {
+    "hook": "Show the most striking result or object straight away, big in frame.",
+    "context": "Show why it matters: the everyday problem or the situation it changes.",
+    "demo": ("Show the actual thing working: a screen with the interface or output clearly visible, "
+             "close enough to read on a phone, the camera pushing in on the key detail."),
+    "payoff": "Show the result in use or the final outcome, calm and clear.",
+    "cta": "A clean, uncluttered closing shot that leaves room for the end card.",
+}
+
+
+def clip_hints(scenes: list, clip_scene: list) -> list:
+    """One direction per clip from the reel scene it belongs to: what the scene's role needs on
+    screen and the writer's own visual instruction. Clip 1 also carries the opening rule."""
+    out = []
+    for ci, si in enumerate(clip_scene):
+        sc = scenes[si] if 0 <= si < len(scenes) else {}
+        parts = []
+        if ci == 0:
+            parts.append(OPENING_RULE)
+        parts.append(f"This clip belongs to scene {sc.get('n', si + 1)} ({sc.get('role', '')}). "
+                     + ROLE_RULES.get(sc.get("role", ""), ""))
+        if sc.get("visual"):
+            parts.append(f"On screen: {sc['visual']}")
+        out.append(" ".join(p.strip() for p in parts if p.strip()))
+    return out

@@ -165,25 +165,48 @@ def _escape(text: str) -> str:
             .replace("\n", " ").strip())
 
 
-def _metrics(size: tuple, bottom_margin: float = 0.0, font_px: int = 0) -> tuple:
+def reel_safe() -> dict:
+    """The Reels UI-safe region from Settings, as fractions of the frame."""
+    return {"top": float(config.REEL_SAFE_TOP), "bottom": float(config.REEL_SAFE_BOTTOM),
+            "left": float(config.REEL_SAFE_LEFT), "right": float(config.REEL_SAFE_RIGHT)}
+
+
+def _metrics(size: tuple, bottom_margin: float = 0.0, font_px: int = 0,
+             safe: dict | None = None) -> tuple:
     """(bottom margin px, font px, outline px) - shared by write_ass and band so the strip the
-    cards are kept clear of is the strip the captions are actually drawn in."""
+    cards are kept clear of is the strip the captions are actually drawn in.
+
+    safe: a reel's UI-safe region (reel_safe()); the captions then sit above its bottom band and
+    are never smaller than REEL_MIN_CAPTION_FONT of the frame height."""
     W, H = int(size[0]), int(size[1])
     margin = bottom_margin or config.CAPTION_BOTTOM_MARGIN
     if H > W * 1.05:                  # portrait: never below the Shorts UI, whatever the setting says
         margin = max(SHORTS_SAFE, margin)
     size_px = int(font_px or round(H * 0.052 * config.CAPTION_FONT_SCALE))
+    if safe:
+        margin = max(margin, float(safe.get("bottom", 0.0)))
+        size_px = max(size_px, int(round(H * float(config.REEL_MIN_CAPTION_FONT))))
     return int(margin * H), size_px, max(2, round(size_px * 0.08))
 
 
-def band(size: tuple, bottom_margin: float = 0.0, font_px: int = 0) -> tuple:
+def side_margins(size: tuple, safe: dict | None = None) -> tuple:
+    """(left px, right px): 6% each side, or the reel's own asymmetric margins - the like /
+    comment / share column takes the right edge, so the captions centre left of it."""
+    W = int(size[0])
+    if not safe:
+        return int(0.06 * W), int(0.06 * W)
+    return (int(max(0.06, float(safe.get("left", 0.06))) * W),
+            int(max(0.06, float(safe.get("right", 0.06))) * W))
+
+
+def band(size: tuple, bottom_margin: float = 0.0, font_px: int = 0, safe: dict | None = None) -> tuple:
     """(x0, y0, x1, y1): the strip at the bottom that up to two wrapped caption lines occupy.
 
     Captions always sit at the bottom - a caption that hops above whatever card is up ends up
     near the top of a portrait frame - so it is the cards that move clear of this strip
     (storyboard.clear_band), not the captions."""
     W, H = int(size[0]), int(size[1])
-    mv, size_px, outline = _metrics(size, bottom_margin, font_px)
+    mv, size_px, outline = _metrics(size, bottom_margin, font_px, safe)
     tall = 2 * int(round(size_px * 1.25)) + 2 * outline
     return (0, max(0, H - mv - tall), W, H)
 
@@ -197,7 +220,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Cap,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00141008,&H64000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,{mx},{mx},{mv},1
+Style: Cap,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00141008,&H64000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,{ml},{mr},{mv},1
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
@@ -205,7 +228,8 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 
 
 def write_ass(phrases, size: tuple, out_ass, accent: str = "", font: str = "",
-              font_px: int = 0, bottom_margin: float = 0.0, highlight: str = "word") -> Path:
+              font_px: int = 0, bottom_margin: float = 0.0, highlight: str = "word",
+              safe: dict | None = None) -> Path:
     """Write the caption track. Returns the path.
 
     Word highlight is done by emitting one event per word-state, each carrying the WHOLE phrase
@@ -213,12 +237,13 @@ def write_ass(phrases, size: tuple, out_ass, accent: str = "", font: str = "",
     reflows the centred line and makes it jump on every single word - and it is also what keeps
     libass's smart wrap (WrapStyle 0) breaking every word-state of a phrase at the same place."""
     W, H = int(size[0]), int(size[1])
-    mv, size_px, outline = _metrics(size, bottom_margin, font_px)
+    mv, size_px, outline = _metrics(size, bottom_margin, font_px, safe)
+    ml, mr = side_margins(size, safe)
     hi = ass_colour(accent or config.CAPTION_ACCENT)
     white = "&H00FFFFFF"
     head = ASS_HEADER.format(W=W, H=H, font=font or "Arial", size=size_px,
                              outline=outline, shadow=max(1, round(size_px * 0.04)),
-                             mx=int(0.06 * W), mv=mv)
+                             ml=ml, mr=mr, mv=mv)
     lines = []
     for p in clamp(phrases, float("inf")):
         over = ",,0,0,0,,"

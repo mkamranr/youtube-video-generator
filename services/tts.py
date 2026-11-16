@@ -41,6 +41,25 @@ def change_tempo(path, factor: float) -> float:
     return audio_duration(path)
 
 
+def trim_silence(path, keep: float = 0.15, threshold_db: float = -45.0) -> float:
+    """Cut leading and trailing silence from a narration file in place, leaving `keep` seconds at
+    each end so the first word is not clipped; returns its new length. Silence INSIDE the speech
+    is never touched - only the two ends. The tail is trimmed by reversing, trimming the start,
+    and reversing back, which is the reliable way to do it with silenceremove."""
+    path = Path(path)
+    tmp = path.with_name(path.stem + ".trim" + path.suffix)
+    head = (f"silenceremove=start_periods=1:start_threshold={threshold_db}dB:"
+            f"start_silence={keep:.3f}")
+    chain = f"{head},areverse,{head},areverse"
+    subprocess.run([ffmpeg(), "-y", "-v", "error", "-i", str(path), "-af", chain, str(tmp)],
+                   check=True)
+    if tmp.exists() and tmp.stat().st_size > 1000:
+        tmp.replace(path)
+    else:                       # an all-silent file: keep the original rather than nothing
+        tmp.unlink(missing_ok=True)
+    return audio_duration(path)
+
+
 def split_chunks(text: str, limit: int = 0) -> list:
     limit = limit or config.TTS_CHUNK_CHARS
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())

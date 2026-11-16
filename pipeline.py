@@ -1312,6 +1312,32 @@ def _upscale_joined(job: Job, joined: Path) -> Path:
     return out
 
 
+def _end_line(job, plan: dict) -> str:
+    """The end card's line: a reel's own call to action, otherwise the global subscribe line."""
+    if _reel(job):
+        cta = ((plan.get("reel") or {}).get("cta") or {}).get("text", "")
+        if cta.strip():
+            return cta.strip()
+    return config.END_CARD_TEXT
+
+
+def _reel_hints(job, plan: dict):
+    """Per-clip directions from the reel scene each clip belongs to (None outside a reel)."""
+    if not (_reel(job) and plan.get("reel") and plan.get("clip_scene")):
+        return None
+    return reel.clip_hints(plan["reel"]["scenes"], plan["clip_scene"])
+
+
+def _safe(job):
+    """A reel's UI-safe region for captions and cards; None for every other video."""
+    return captions.reel_safe() if _reel(job) else None
+
+
+def _hook_start(job) -> float:
+    """A reel's hook card is on the very first frame; other videos let the footage open first."""
+    return 0.0 if _reel(job) else 0.2
+
+
 def _polish_windows(job: Job, total: float) -> tuple:
     """(hook_end, end_start) in seconds. Both collapse to "no card" when the video is too short to
     give those seconds up."""
@@ -1319,7 +1345,7 @@ def _polish_windows(job: Job, total: float) -> tuple:
         return 0.0, float(total)
     hook = config.HOOK_CARD_SECONDS
     tail = config.END_CARD_SECONDS
-    hook_end = round(0.2 + hook, 3) if hook > 0 and total > 2 * hook else 0.0
+    hook_end = round(_hook_start(job) + hook, 3) if hook > 0 and total > 2 * hook else 0.0
     end_start = round(total - tail, 3) if tail > 0 and total > 3 * tail else float(total)
     return hook_end, end_start
 
@@ -1334,20 +1360,24 @@ def _polish_layers(job: Job, plan: dict, size: tuple, total: float, hook_end: fl
     out, hits = [], []
     if hook_end > 0:
         try:
-            text = job.hook or plan.get("seo_title") or plan.get("title") or ""
+            text = (reel.hook_headline(plan.get("reel")) if _reel(job) else "") \
+                or job.hook or plan.get("seo_title") or plan.get("title") or ""
             if text.strip():
                 png = cardtemplates.render_hook(text, size, d / "hook_card.png",
                                                 accent=config.STORYBOARD_ACCENT)
-                out.append({"png": png, "start": 0.2, "end": hook_end, "fade": 0.35})
-                hits.append(0.2)
-                job.add_log(f"hook card 0.2s-{hook_end:.1f}s")
+                t0 = _hook_start(job)
+                # no fade-in on frame 0: the first frame must already say what this is about
+                out.append({"png": png, "start": t0, "end": hook_end, "fade": 0.35,
+                            **({"fade_in": 0.0} if not t0 else {})})
+                hits.append(t0)
+                job.add_log(f"hook card {t0:g}s-{hook_end:.1f}s")
         except Exception as e:  # noqa: BLE001
             job.add_log(f"hook card failed ({e}); assembling without it")
     if end_start < total:
         try:
             png = cardtemplates.render_end(size, d / "end_card.png",
                                            channel=(job.channel or {}).get("name", ""),
-                                           logo=_logo_for(job), line=config.END_CARD_TEXT,
+                                           logo=_logo_for(job), line=_end_line(job, plan),
                                            accent=config.STORYBOARD_ACCENT)
             out.append({"png": png, "start": end_start, "end": total, "fade": 0.4})
             hits.append(end_start)
@@ -1734,7 +1764,7 @@ def _caption_track(job: Job, plan: dict, size: tuple, total: float):
         ass = captions.write_ass(phrases, size, job.dir / "captions.ass",
                                  accent=config.CAPTION_ACCENT, font=family,
                                  bottom_margin=config.CAPTION_BOTTOM_MARGIN,
-                                 highlight=config.CAPTION_HIGHLIGHT)
+                                 highlight=config.CAPTION_HIGHLIGHT, safe=_safe(job))
         if not video.subtitles_ok(ass):
             job.add_log("this ffmpeg build cannot burn subtitles; assembling without captions")
             return None
@@ -1789,7 +1819,12 @@ def upload_description(plan: dict) -> str:
 
 def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
     """Concat the clips, overlay the story board cards (if enabled) and mix the audio
-    for the job's audio mode into final.mp4."""
+    for the job's audio mode into final.mp4. A reel's cards are drawn inside its UI-safe area."""
+    with cardtemplates.safe_area(_safe(job)):
+        return _assemble_layers(job, plan, narration_file, music_file)
+
+
+def _assemble_layers(job: Job, plan: dict, narration_file, music_file) -> Path:
     d = job.dir
     clips = [d / c for c in job.clips]
     joined = video.concat_clips(clips, d / "clips_joined.mp4")
@@ -1823,7 +1858,7 @@ def _assemble(job: Job, plan: dict, narration_file, music_file) -> Path:
                 # captions always sit at the bottom, so a card on their strip rises clear of it
                 # where it can (and is never dropped for it) - see storyboard.clear_band
                 cards = storyboard.clear_band(
-                    cards, captions.band(size, config.CAPTION_BOTTOM_MARGIN), size)
+                    cards, captions.band(size, config.CAPTION_BOTTOM_MARGIN, safe=_safe(job)), size)
                 moved = sum(1 for c in cards if c.get("lifted"))
                 if moved:
                     job.add_log(f"captions: {moved} of {len(cards)} story board cards lifted "
@@ -2440,6 +2475,14 @@ def _run(job: Job):
             if abs(tempo - 1.0) > 1e-3:
                 duration = tts.change_tempo(narration_file, tempo)
                 job.add_log(f"narration sped up x{tempo:g} for the build-short pace")
+            if config.NARRATION_TRIM_SILENCE:
+                try:
+                    before = duration
+                    duration = tts.trim_silence(narration_file, keep=config.NARRATION_EDGE_SILENCE)
+                    if before - duration > 0.05:
+                        job.add_log(f"trimmed {before - duration:.2f}s of silence from the narration ends")
+                except Exception as e:  # noqa: BLE001 - untrimmed narration is still usable
+                    job.add_log(f"narration silence trim skipped ({e})")
             job.add_log(f"narration: {duration:.1f}s")
         durs = config.clip_durations(duration, _clip_seconds(job), job.video_model)
         n = len(durs)
@@ -2448,6 +2491,13 @@ def _run(job: Job):
         timelines = None
         aligned = True
         kind = "voiceover narration"
+        if _reel(job) and plan.get("reel"):
+            # each clip is drawn from the scene being spoken over it, not an equal word slice
+            mapping = reel.clip_scene_map(plan["reel"]["scenes"], durs, duration)
+            plan["clip_scene"] = [si for si, _ in mapping]
+            segments = [words for _, words in mapping]
+        else:
+            plan.pop("clip_scene", None)
 
     # 4. scenes: one per audio segment so each clip matches what is heard
     _check_cancel(job)
@@ -2496,7 +2546,8 @@ def _run(job: Job):
                                           channel=job.channel, used=plan.get("cast_used"),
                                           opening=_opening(plan, d) if not _reference_only(plan) else None,
                                           timelines=timelines, clip_secs=durs, aligned=aligned,
-                                          beats=beats, model=job.video_model)
+                                          beats=beats, model=job.video_model,
+                                          hints=_reel_hints(job, plan))
     plan["segments"] = segments if segments is not None else llm.split_narration(sync_text, n)
     scenes = plan["scenes"]
     (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
