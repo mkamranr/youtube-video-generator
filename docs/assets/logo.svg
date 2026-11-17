@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="VideoGen logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6D5BFF"/>
+      <stop offset="0.55" stop-color="#B14DFF"/>
+      <stop offset="1" stop-color="#FF6B6B"/>
+    </linearGradient>
+    <linearGradient id="play" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFE7F0"/>
+    </linearGradient>
+  </defs>
+  <!-- tile -->
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <!-- film strip perforations -->
+  <g fill="#FFFFFF" fill-opacity="0.28">
+    <rect x="34" y="52" width="18" height="14" rx="4"/>
+    <rect x="34" y="88" width="18" height="14" rx="4"/>
+    <rect x="34" y="124" width="18" height="14" rx="4"/>
+    <rect x="34" y="160" width="18" height="14" rx="4"/>
+    <rect x="34" y="196" width="18" height="14" rx="4"/>
+  </g>
+  <!-- play button -->
+  <path d="M100 74 C100 64 110 58 119 63 L190 106 C198 111 198 123 190 128 L119 171 C110 176 100 170 100 160 Z"
+        fill="url(#play)"/>
+  <!-- AI sparkle -->
+  <path d="M196 158 L203 178 L223 185 L203 192 L196 212 L189 192 L169 185 L189 178 Z" fill="#FFFFFF"/>
+  <path d="M160 196 L163.5 205.5 L173 209 L163.5 212.5 L160 222 L156.5 212.5 L147 209 L156.5 205.5 Z" fill="#FFFFFF" fill-opacity="0.8"/>
+</svg>
