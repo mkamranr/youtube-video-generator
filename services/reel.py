@@ -64,6 +64,16 @@ def _str(v, limit=600) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()[:limit]
 
 
+HEADLINE_WORDS = 6
+
+
+def _headline(v) -> str:
+    """The on-screen headline (the prompt asks for 2-5 words). A sentence is dropped rather than
+    cut: the hook card then falls back to a shorter line instead of showing half of it."""
+    t = _str(v)
+    return t[:60] if len(t.split()) <= HEADLINE_WORDS else ""
+
+
 def total(hook: dict) -> int:
     return sum(int(hook.get("scores", {}).get(k, 0)) for k in SCORE_KEYS)
 
@@ -136,7 +146,7 @@ def normalize_scenes(raw) -> list:
         out.append({"n": len(out) + 1,
                     "role": role if role in ROLES else ("hook" if i == 0 else "context"),
                     "voiceover": vo,
-                    "headline": _str(s.get("headline"), 60),
+                    "headline": _headline(s.get("headline")),
                     "support_text": _str(s.get("support_text"), 120),
                     "visual": _str(s.get("visual"), 600),
                     "asset_needed": _str(s.get("asset_needed"), 200),

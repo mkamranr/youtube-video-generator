@@ -17,7 +17,7 @@ import config
 TMP = Path(tempfile.mkdtemp(prefix="videogen-overlays-"))
 config.OUTPUT_DIR = TMP / "output"
 
-from services import cardtemplates, sfx, storyboard, video  # noqa: E402
+from services import captions, cardtemplates, sfx, storyboard, video  # noqa: E402
 
 SIZE = (1280, 720)
 
@@ -133,6 +133,20 @@ class Cards(unittest.TestCase):
             self.assertTrue(a.getbbox())
             self.assertEqual(a.crop((0, 0, SIZE[0], 8)).getbbox(), None)
             self.assertEqual(a.crop((0, SIZE[1] - 8, SIZE[0], SIZE[1])).getbbox(), None)
+
+    def test_the_hook_card_never_splits_a_word_or_adds_an_ellipsis(self):
+        """The reported first frame read "MiniMax-H3-Ima / ge: 16MP AI / Images in 6..."."""
+        text = "MiniMax-H3-Image: 16MP AI Images in 6 Seconds"
+        with cardtemplates.safe_area(captions.reel_safe()):
+            _f, lines = cardtemplates.hook_layout(text, (1080, 1920))
+        self.assertLessEqual(len(lines), 3)
+        self.assertFalse(any("…" in ln for ln in lines))
+        self.assertEqual(" ".join(lines).replace("- ", "-"), text)
+
+    def test_the_hook_card_takes_the_first_candidate_that_fits_whole(self):
+        long = "Supercalifragilisticexpialidociousness" * 3
+        _f, lines = cardtemplates.hook_layout([long, "ONE GPU, HUGE MODEL"], (1080, 1920))
+        self.assertEqual(" ".join(lines), "ONE GPU, HUGE MODEL")
 
     def test_the_hook_card_renders_in_every_orientation(self):
         for size in (SIZE, (720, 1280), (1080, 1080)):

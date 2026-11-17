@@ -283,5 +283,15 @@ class Prompt(unittest.TestCase):
         self.assertIn("Plan hook line", u)
 
 
+class HeadlineCap(unittest.TestCase):
+
+    def test_a_sentence_headline_is_dropped_not_cut(self):
+        scenes = reel.normalize_scenes([{"voiceover": "Hello there.",
+                                         "headline": "this is a whole sentence posing as a headline"},
+                                        {"voiceover": "More.", "headline": "ONE GPU, HUGE MODEL"}])
+        self.assertEqual(scenes[0]["headline"], "")
+        self.assertEqual(scenes[1]["headline"], "ONE GPU, HUGE MODEL")
+
+
 if __name__ == "__main__":
     unittest.main()

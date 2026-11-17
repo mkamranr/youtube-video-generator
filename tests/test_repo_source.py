@@ -457,6 +457,7 @@ class AssembleOrder(unittest.TestCase):
         self.job.page_scroll = True
         self.job.storyboard = True
         self.job.polish = True
+        self.job.captions = True    # the hook and end cards only exist with captions on
         # keeps _polish_windows real (hook_end=3.2, end_start=36.0) without the PIL card work
         return mock.patch.object(pipeline, "_polish_layers", return_value=([], []))
 

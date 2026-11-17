@@ -33,10 +33,11 @@ REEL = {"hooks": [{"text": "Run a huge model on one GPU?", "category": "outcome"
         "cta": {"type": "save", "text": "Save this if you are experimenting with local AI."}}
 
 
-def _job(reel_on=True, polish=True):
+def _job(reel_on=True, polish=True, captions_on=True):
     ch = dict(CHANNEL, reel_format=reel_on)
     job = pipeline.Job(id="r" + ("1" if reel_on else "0"), url="", aspect_ratio=PORTRAIT,
-                       audio_mode="narration+music", source="topic", channel=ch, polish=polish)
+                       audio_mode="narration+music", source="topic", channel=ch, polish=polish,
+                       captions=captions_on)
     job.dir.mkdir(parents=True, exist_ok=True)
     return job
 
@@ -57,11 +58,35 @@ class PolishCards(unittest.TestCase):
         with mock.patch.object(cardtemplates, "render_hook", spy):
             layers, hits = pipeline._polish_layers(job, {"reel": REEL, "title": "t"}, (720, 1280),
                                                    40.0, hook_end, end_start)
-        self.assertEqual(seen["text"], "ONE GPU, HUGE MODEL")
+        self.assertEqual(seen["text"][0], "ONE GPU, HUGE MODEL")
         hook = layers[0]
         self.assertEqual(hook["start"], 0.0)
         self.assertEqual(hook["fade_in"], 0.0)
         self.assertEqual(hits[0], 0.0)
+
+    def test_captions_off_means_no_hook_or_end_card(self):
+        """A video with captions off carries no text of its own: story board cards only."""
+        job = _job(captions_on=False)
+        hook_end, end_start = pipeline._polish_windows(job, 40.0)
+        self.assertEqual((hook_end, end_start), (0.0, 40.0))
+        with mock.patch.object(cardtemplates, "render_hook") as hook,                 mock.patch.object(cardtemplates, "render_end") as end:
+            layers, hits = pipeline._polish_layers(job, {"reel": REEL, "title": "t"}, (720, 1280),
+                                                   40.0, hook_end, end_start)
+        hook.assert_not_called()
+        end.assert_not_called()
+        self.assertFalse(hits)
+        self.assertTrue(all("progress" in str(x.get("png", "")) or "pre" in x for x in layers))
+
+    def test_captions_switched_off_in_settings_also_drops_the_cards(self):
+        with mock.patch.object(config, "CAPTIONS_ENABLED", False):
+            self.assertEqual(pipeline._polish_windows(_job(), 40.0), (0.0, 40.0))
+
+    def test_short_hook_lines_lead_and_the_seo_title_comes_last(self):
+        job = _job(reel_on=False)
+        plan = {"seo_title": "MiniMax-H3-Image: 16MP AI Images in 6 Seconds", "title": "t",
+                "thumbnail_cover": {"headline": "16MP IN *6 SECONDS*"}}
+        self.assertEqual(pipeline._hook_candidates(job, plan),
+                         ["16MP IN 6 SECONDS", "MiniMax-H3-Image: 16MP AI Images in 6 Seconds", "t"])
 
     def test_reel_end_card_carries_the_cta(self):
         self.assertEqual(pipeline._end_line(_job(), {"reel": REEL}), REEL["cta"]["text"])

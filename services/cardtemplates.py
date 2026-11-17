@@ -808,18 +808,94 @@ MOTION = {
 
 
 # ---- the two cards that are not story board cards --------------------------
-def render_hook(text: str, size: tuple, out_png: Path, accent: str | None = None,
+HOOK_LINES = 3
+HOOK_FLOOR = 26.0          # smallest headline size (before scale) the hook card shrinks to
+HOOK_INK = (8, 10, 14, 255)
+
+
+def _hook_stroke(font) -> int:
+    return max(2, int(font.size * 0.06))
+
+
+def _whole_wrap(draw, text: str, font, max_w: int, max_lines: int) -> list | None:
+    """`text` in at most max_lines lines of whole words, or None when it cannot be done.
+
+    Unlike storyboard._wrap this never splits a word mid-letters and never adds an ellipsis. The
+    one break it allows inside a word is right after a hyphen ("MiniMax-H3-" / "Image:"), which
+    is how a reader would break it anyway."""
+    pieces = []                                   # (text, glued to the previous piece)
+    for word in (text or "").split():
+        parts = re.findall(r"[^-]+-*|-+", word)
+        for i, p in enumerate(parts):
+            pieces.append((p, i > 0))
+    lines, cur = [], ""
+    for p, glued in pieces:
+        if draw.textlength(p, font=font) > max_w:
+            return None
+        trial = cur + p if glued else (cur + " " + p).strip()
+        if draw.textlength(trial, font=font) <= max_w:
+            cur = trial
+            continue
+        lines.append(cur)
+        cur = p
+    if cur:
+        lines.append(cur)
+    return lines if 0 < len(lines) <= max_lines else None
+
+
+def _hook_fit(ctx: CardCtx, texts, max_w: int, head: float) -> tuple:
+    """(font, lines) for the first candidate that fits whole at the largest size from `head` down
+    to HOOK_FLOOR. A split word or a trailing "…" on the very first frame reads as broken, so
+    when nothing fits the shortest candidate loses trailing words instead."""
+    cands = [" ".join(str(t).split()) for t in ([texts] if isinstance(texts, str) else texts or [])]
+    cands = [c for c in cands if c]
+    if not cands:
+        return storyboard.load_font(head * ctx.s, bold=True), []
+    start, floor = head * ctx.s, HOOK_FLOOR * ctx.s
+    step = max(1.0, start * 0.05)
+    for text in cands:
+        size = start
+        while True:
+            f = storyboard.load_font(size, bold=True)
+            lines = _whole_wrap(ctx.draw, text, f, max_w - 2 * _hook_stroke(f), HOOK_LINES)
+            if lines:
+                return f, lines
+            if size <= floor:
+                break
+            size = max(floor, size - step)
+    f = storyboard.load_font(floor, bold=True)
+    words = min(cands, key=len).split()
+    while words:
+        lines = _whole_wrap(ctx.draw, " ".join(words), f, max_w - 2 * _hook_stroke(f), HOOK_LINES)
+        if lines:
+            return f, lines
+        words.pop()
+    # one word wider than the card even at the floor size: the old wrap is all that is left
+    return f, storyboard._wrap(ctx.draw, min(cands, key=len), f, max_w, HOOK_LINES)
+
+
+def hook_layout(texts, size: tuple) -> tuple:
+    """(font, lines) render_hook would draw for `texts` at this frame size (and safe area)."""
+    ctx = context(size, None, 1, 1)
+    return _hook_fit(ctx, texts, int(0.84 * ctx.safe_w), 38.0 if ctx.portrait else 42.0)
+
+
+def render_hook(text, size: tuple, out_png: Path, accent: str | None = None,
                 kicker: str = "") -> Path:
     """The opening card: the hook in big type over a soft scrim, centred.
 
     The hook is already the first spoken line (services/llm.py forces it), so this is not new
     information - it is the same line for the viewer who has not pressed unmute yet, which on a
-    silent autoplay feed is most of them."""
+    silent autoplay feed is most of them.
+
+    `text` may be one line or a list of candidates, best first: the first that fits in whole
+    words wins (see _hook_fit)."""
     ctx = context(size, accent, 1, 1)
     fonts = _fonts(ctx, head=38.0 if ctx.portrait else 42.0, body=18.0)
-    f_kick, f_head, _f_body, _ = fonts
+    f_kick, _f_head, _f_body, _ = fonts
     text_w = int(0.84 * ctx.safe_w)
-    lines = storyboard._wrap(ctx.draw, text or "", f_head, text_w, 3)
+    f_head, lines = _hook_fit(ctx, text, text_w, 38.0 if ctx.portrait else 42.0)
+    sw = _hook_stroke(f_head)
     lh = int(f_head.size * 1.15)
     block = lh * len(lines)
     kick = (kicker or "").strip().upper()[:28]
@@ -836,7 +912,9 @@ def render_hook(text: str, size: tuple, out_png: Path, accent: str | None = None
         storyboard._spaced(pd, ((ctx.W - kw) // 2, y), kick, f_kick, ctx.accent, 1.6 * ctx.s)
         y += int(f_kick.size * 1.3) + ctx.px(10)
     for ln in lines:
-        pd.text(((ctx.W - pd.textlength(ln, font=f_head)) // 2, y), ln, font=f_head, fill=HEAD_FILL)
+        # a dark outline keeps the line readable where the scrim sits over a bright screen
+        pd.text(((ctx.W - pd.textlength(ln, font=f_head)) // 2, y), ln, font=f_head, fill=HEAD_FILL,
+                stroke_width=sw, stroke_fill=HOOK_INK)
         y += lh
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)

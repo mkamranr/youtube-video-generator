@@ -24,8 +24,9 @@ Everything else (other channels, other aspects, songs, stories) works exactly as
 | Script check | extend if short | `reel.validate`, then one `tighten_reel_script` rewrite if it fails (never a faster voice) |
 | Approval page | edit the paragraph | pick the hook, edit scene voiceovers, headlines and the CTA, attach footage |
 | Clip prompts | equal word split per clip | each clip gets the scene spoken over it, plus that scene's visual direction; clip 1 gets an opening rule |
-| Hook card | 0.2 s, `job.hook` or SEO title | **0.0 s with no fade-in**, the hook scene's headline |
+| Hook card | 0.2 s, `job.hook`, cover headline or SEO title | **0.0 s with no fade-in**, the hook scene's headline (a headline over 6 words is dropped); in both, the first candidate that fits in whole words, shrinking the type before falling back, never a split word or "…" |
 | End card | "Subscribe for more" | the reel's own CTA sentence (wrapped) |
+| Captions off | no hook card and no end card: the story board cards are the only text on the video | same |
 | Captions and cards | Shorts bottom margin (14%) | Reels safe area: top 12%, bottom 22%, left 6%, right 17%; caption text ≥ 4.5% of the frame height |
 | Demo footage | n/a | an uploaded screen recording or screenshot replaces a scene's AI clips |
 | Post copy | YouTube SEO only | YouTube SEO **plus** Instagram, Facebook and Shorts captions |

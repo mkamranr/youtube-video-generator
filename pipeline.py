@@ -1379,16 +1379,43 @@ def _hook_start(job) -> float:
     return 0.0 if _reel(job) else 0.2
 
 
+def _text_cards(job: Job) -> bool:
+    """Whether the hook and end cards may be drawn. A video with captions off carries no text of
+    its own: the story board cards are the only words on screen. Deliberately not tied to the word
+    timings, so a failed whisper pass does not change the layout."""
+    return bool(job.captions and config.CAPTIONS_ENABLED)
+
+
 def _polish_windows(job: Job, total: float) -> tuple:
     """(hook_end, end_start) in seconds. Both collapse to "no card" when the video is too short to
-    give those seconds up."""
-    if not job.polish:
+    give those seconds up, and when captions are off (see _text_cards)."""
+    if not job.polish or not _text_cards(job):
         return 0.0, float(total)
     hook = config.HOOK_CARD_SECONDS
     tail = config.END_CARD_SECONDS
     hook_end = round(_hook_start(job) + hook, 3) if hook > 0 and total > 2 * hook else 0.0
     end_start = round(total - tail, 3) if tail > 0 and total > 3 * tail else float(total)
     return hook_end, end_start
+
+
+def _hook_candidates(job: Job, plan: dict) -> list:
+    """The opening card's text, best first. Short hook-style lines lead, so the card only falls
+    back to the long SEO title when nothing punchier exists; render_hook takes the first one that
+    fits in whole words."""
+    cover = plan.get("thumbnail_cover") if isinstance(plan.get("thumbnail_cover"), dict) else {}
+    texts = plan.get("thumbnail_texts") or []
+    cands = [reel.hook_headline(plan.get("reel")) if _reel(job) else "",
+             job.hook,
+             str(cover.get("headline") or "").replace("*", ""),
+             str(texts[0]) if texts else "",
+             plan.get("seo_title"),
+             plan.get("title")]
+    out = []
+    for c in cands:
+        c = " ".join(str(c or "").split())
+        if c and c not in out:
+            out.append(c)
+    return out
 
 
 def _polish_layers(job: Job, plan: dict, size: tuple, total: float, hook_end: float,
@@ -1399,11 +1426,12 @@ def _polish_layers(job: Job, plan: dict, size: tuple, total: float, hook_end: fl
         return [], []
     d = job.dir
     out, hits = [], []
+    if not _text_cards(job):
+        job.add_log("captions off: no hook or end card (story board cards only)")
     if hook_end > 0:
         try:
-            text = (reel.hook_headline(plan.get("reel")) if _reel(job) else "") \
-                or job.hook or plan.get("seo_title") or plan.get("title") or ""
-            if text.strip():
+            text = _hook_candidates(job, plan)
+            if text:
                 png = cardtemplates.render_hook(text, size, d / "hook_card.png",
                                                 accent=config.STORYBOARD_ACCENT)
                 t0 = _hook_start(job)
