@@ -88,6 +88,10 @@ class Job:
     thumb_variant: int = -1         # active thumbnail text variant (0 = plain render,
                                     # -1 = nobody has chosen, so the model's best line wins)
     script_approved: bool = False
+    # a YouTube job created since URL scripts are reviewed too: it drafts and waits for approval
+    # like a prompt job. False on older YouTube jobs, which planned their script inside the render,
+    # so resuming one of those must not throw its plan away for a fresh draft.
+    script_review: bool = False
     # weekly planner (services/planner.py): the plan row this job was created from. A planned job
     # rests at status "planned" until the user sets its parameters on the job page.
     plan_id: str = ""
@@ -3060,9 +3064,10 @@ class JobManager:
                   storyboard=sb, captions=cap, polish=pol, thumb_text=thumb_text, lyrics=lyrics,
                   avatar_id=av_id, avatar_model=av_model, avatar_coverage=av_cov,
                   owner=owner or (channel or {}).get("owner", ""),
-                  video_mode=video_mode,
-                  status="drafting" if video_mode == "story" else "queued",
-                  detail="writing the story with the LLM" if video_mode == "story" else "",
+                  video_mode=video_mode, script_review=True,
+                  status="drafting",
+                  detail=("writing the story with the LLM" if video_mode == "story"
+                          else "fetching the transcript and writing the script"),
                   music_upload=(up or {}).get("name", ""),
                   music_seconds=float((up or {}).get("seconds", 0.0)))
         job.save()
@@ -3070,12 +3075,9 @@ class JobManager:
         _install_upload(job, up)
         with self.lock:
             self.jobs[job.id] = job
-            if video_mode != "story":
-                self.queue.append(job.id)
-        # a story is always reviewed before anything renders, whatever it was created from, so even
-        # a URL story job drafts in its own thread instead of going straight into the GPU queue
-        if video_mode == "story":
-            self._start_draft(job)
+        # a URL job's script is reviewed before anything renders, like every other source: the
+        # transcript is fetched and the script drafted in its own thread, never in the GPU queue
+        self._start_draft(job)
         return job
 
     def _next_job(self) -> str | None:
@@ -3176,7 +3178,8 @@ class JobManager:
                         error="", archived=False)
                 job.add_log("restored by user - waiting to be set up")
                 return job
-            restart_draft = job.source in DRAFT_SOURCES and not job.script_approved
+            restart_draft = ((job.source in DRAFT_SOURCES or job.script_review)
+                             and not job.script_approved)
             # a compilation needs nothing from the GPU, so it resumes in its own thread rather
             # than queueing behind renders - the same routing its submit uses
             restart_stitch = job.source == compilation.SOURCE
@@ -3474,6 +3477,10 @@ class JobManager:
                     previous = None
             target_words = _length_params(job)[0]
             source_text, content_y = job.topic, 0
+            if job.source == "youtube":
+                # reused from transcript.txt once fetched, so a redraft keeps the user's edits
+                source_text = _youtube_transcript(job, "drafting")
+                job.set("drafting", "writing script with the LLM")
             if job.lyrics:
                 # the story seeds the title, SEO, thumbnail and story board cards, while the visuals
                 # follow the sung words - without this they can end up about different things
@@ -3572,13 +3579,27 @@ class JobManager:
             self.queue.append(job_id)
         return job
 
-    def redraft_script(self, job_id: str, feedback: str = "") -> Job:
+    def redraft_script(self, job_id: str, feedback: str = "", transcript: str | None = None) -> Job:
+        """Write the script again. transcript: the user's edit of a YouTube job's fetched
+        transcript, saved over transcript.txt first so the new draft, and the render after it
+        (SEO, viewer resource), all work from the edited text. None leaves the transcript alone."""
         with self.lock:
             job = self.jobs.get(job_id)
             if not job:
                 raise KeyError(job_id)
             if job.status != "awaiting_approval":
                 raise ValueError("job is not awaiting script approval")
+            if transcript is not None:
+                if job.source != "youtube":
+                    raise ValueError("only a YouTube video's transcript can be edited")
+                text = transcript.strip()
+                # _youtube_transcript refetches anything this short, which would undo the edit
+                if len(text) <= 50:
+                    raise ValueError("the transcript is too short - keep at least a few sentences")
+                tfile = job.dir / "transcript.txt"
+                if not tfile.exists() or tfile.read_text(encoding="utf-8").strip() != text:
+                    tfile.write_text(text, encoding="utf-8")
+                    job.add_log(f"transcript edited by user ({len(text.split())} words)")
             job.set("drafting", "rewriting script with the LLM", cancel_requested=False)
         self._start_draft(job, feedback=feedback)
         return job

@@ -359,11 +359,11 @@ class StoryJobs(unittest.TestCase):
         self.assertEqual(self.mgr.queue, [])                  # it must reach the approval step
         self.draft.assert_called_once()
 
-    def test_a_song_url_job_still_queues(self):
+    def test_a_song_url_job_also_drafts_for_approval(self):
         job = self.mgr.submit("https://youtu.be/x", channel=_channel(), owner="u1")
-        self.assertEqual(job.status, "queued")
-        self.assertEqual(self.mgr.queue, [job.id])
-        self.draft.assert_not_called()
+        self.assertEqual(job.status, "drafting")
+        self.assertEqual(self.mgr.queue, [])
+        self.draft.assert_called_once()
 
     def test_a_legacy_job_loads_as_a_song_video(self):
         job = pipeline.Job(id="legacy", url="")

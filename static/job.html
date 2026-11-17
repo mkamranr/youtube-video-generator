@@ -189,6 +189,14 @@
       <div class="hint" id="apReelTotal" style="margin-top:8px"></div>
     </div>
     <div class="hint" id="apCast" style="margin-top:6px" hidden></div>
+    <details id="apTranscriptBlock" hidden style="margin-top:12px">
+      <summary>Source transcript <span class="count" id="apTranscriptCount"></span></summary>
+      <div class="hint" style="margin-top:8px">The script above was written from this transcript of the
+        YouTube video. Edit it (cut the parts you do not want, fix mistakes, add context) and redraft
+        to get a new script written from your version.</div>
+      <textarea id="apTranscript" style="min-height:200px;margin-top:8px"></textarea>
+      <div class="row" style="margin-top:8px"><button class="btn sm secondary" id="apTranscriptGo">Redraft from this transcript</button></div>
+    </details>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="approveBtn">Approve &amp; generate video</button>
       <button class="btn secondary" id="redraftBtn">Request new draft</button>
@@ -478,6 +486,13 @@ async function loadDetails(j) {
   if (d.plan && lastJob && lastJob.status === "awaiting_approval" && !approvalLoaded) {
     approvalLoaded = true;
     $("#apTitle").value = d.plan.title || "";
+    const editTranscript = lastJob.source === "youtube" && !!d.transcript;
+    $("#apTranscriptBlock").hidden = !editTranscript;
+    if (editTranscript) {
+      apTranscriptOrig = d.transcript;
+      $("#apTranscript").value = d.transcript;
+      $("#apTranscriptCount").textContent = `(${d.transcript.trim().split(/\s+/).length} words)`;
+    }
     const st = (lastJob.video_mode === "story" && d.plan.story) || null;
     apReel = (!st && d.plan.reel) || null;
     $("#apStoryBlock").hidden = !st;
@@ -1012,6 +1027,7 @@ $("#cancelBtn").onclick = async () => {
 const STORY_WPS = 2.2;            // mirrors config.STORY_WPS, for the live length estimate
 const STORY_NARRATOR = "Narrator";   // mirrors config.STORY_NARRATOR
 let apBeats = [], apLines = [], apSpeakers = [];
+let apTranscriptOrig = "";   // a YouTube job's transcript as fetched, to send only an edit
 
 function storyLinesSync() {   // read the edited rows back (re-rendering would lose typed text)
   document.querySelectorAll("#apBeats .story-row").forEach(row => {
@@ -1498,14 +1514,35 @@ $("#startBtn").onclick = async () => {
 
 $("#redraftBtn").onclick = () => { $("#redraftBox").hidden = !$("#redraftBox").hidden; };
 
+// the transcript travels with every redraft of a YouTube job, but only once it was changed
+function redraftBody(feedback) {
+  const body = { feedback };
+  const t = $("#apTranscript").value;
+  if (!$("#apTranscriptBlock").hidden && t.trim() !== apTranscriptOrig.trim()) body.transcript = t;
+  return body;
+}
+
+async function requestRedraft(feedback) {
+  await api(`/jobs/${jobId}/redraft`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(redraftBody(feedback)) });
+  apBeats = []; apLines = []; apSpeakers = []; apReel = null;
+  approvalLoaded = false; $("#redraftBox").hidden = true;
+  startPolling(); refresh();
+}
+
+$("#apTranscriptGo").onclick = async () => {
+  if ($("#apTranscript").value.trim() === apTranscriptOrig.trim()
+      && !confirm("The transcript is unchanged. Redraft the script from it anyway?")) return;
+  try {
+    await requestRedraft($("#redraftFeedback").value);
+    toast("New draft requested from your transcript");
+  } catch (e) { toast(e.message, true); }
+};
+
 $("#redraftGo").onclick = async () => {
   try {
-    await api(`/jobs/${jobId}/redraft`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: $("#redraftFeedback").value }) });
-    apBeats = []; apLines = []; apSpeakers = []; apReel = null;
+    await requestRedraft($("#redraftFeedback").value);
     toast("New draft requested");
-    approvalLoaded = false; $("#redraftBox").hidden = true;
-    startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
 };
 

@@ -295,6 +295,8 @@ class PublishBody(BaseModel):
 
 class RedraftBody(BaseModel):
     feedback: str = ""
+    # a YouTube job: the user's edit of the fetched transcript. None = keep it as it is.
+    transcript: str | None = None
 
 
 class JobSetup(BaseModel):
@@ -443,7 +445,7 @@ def rerun_qa(job_id: str, user: dict = Depends(auth.require_user)):
 def redraft_script(job_id: str, body: RedraftBody, user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)
     try:
-        return _job_json(manager.redraft_script(job_id, body.feedback))
+        return _job_json(manager.redraft_script(job_id, body.feedback, body.transcript))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:

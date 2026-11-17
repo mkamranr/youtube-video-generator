@@ -376,7 +376,7 @@ Create a new short video inspired by this content.{_cast_selection_rule(channel)
 
 
 def _source_task(text: str, source_kind: str, channel: dict | None) -> tuple:
-    """The writing task for a topic, description or repo source: (task, the text as used)."""
+    """The writing task for a topic, description, repo or YouTube source: (task, the text as used)."""
     if source_kind == "description":
         task = ('The user wrote the following description / short script for a video. Build the video '
                 f'script from it, staying FAITHFUL to their {_faithful_keys(channel)} - '
@@ -401,6 +401,10 @@ def _source_task(text: str, source_kind: str, channel: dict | None) -> tuple:
                 'plain spoken English - say "one pip install and three lines of Python", never '
                 'dictate a snippet, a flag or a file path character by character, because a TTS '
                 'voice reads this aloud:\n"""' + text + '"""')
+    elif source_kind == "youtube":
+        text = text[: config.MAX_TRANSCRIPT_CHARS]
+        task = ('Below is the transcript of a source video. Create a new short video inspired by '
+                'this content:\n"""' + text + '"""')
     elif cast.enabled(channel):
         task = 'Create an original video script for this channel about this topic: "' + text + '"'
     else:
