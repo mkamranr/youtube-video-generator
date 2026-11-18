@@ -14,7 +14,7 @@ from pathlib import Path
 import config
 from services import (avatar, browser, captions, cast, chapters, channels, comfy, compilation,
                       gpu, llm, lyrics, music_upload, repo, resource, schedule, sfx, story, storyboard,
-                      thumbcover, thumbtext, transcript, tts, video, voices)
+                      thumbcover, thumbmodern, thumbtext, transcript, tts, video, voices)
 from services import cardtemplates, qa, reel
 
 
@@ -1133,19 +1133,26 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
     Non-fatal throughout: the clean render is always a perfectly good thumbnail."""
     d = job.dir
     base = d / "thumb_base.jpg"
+    modern = d / MODERN_BASE
     if not base.exists():
         # a job made before variants existed: adopt its finished thumbnail as the base, so the
-        # feature works retroactively on every video ever made
-        if (d / "thumbnail.jpg").exists():
+        # feature works retroactively on every video ever made. Not when the only thumbnail is a
+        # modern poster: thumbnail.jpg is then that poster, not a clean render.
+        if (d / "thumbnail.jpg").exists() and not modern.exists():
             shutil.copyfile(d / "thumbnail.jpg", base)
-        else:
+        elif not modern.exists():
             return 0
+    if base.exists():
+        _unletterbox(job, base)
+    prev = plan.get("thumbnail_variants") or []
+    cur = job.thumb_variant if isinstance(job.thumb_variant, int) else -1
+    was_modern = select is None and 0 < cur <= len(prev) and prev[cur - 1].get("layout") == "modern"
     # A video with a presenter gets a SECOND base as well: the same thumbnail with the
     # presenter cut out of its own clip and composited in the corner it occupies in the video.
     # Both are then offered, because which one earns the click is a judgement call - the face
     # draws the eye, the clean render shows more of the picture - and neither costs a render.
-    pres = _presenter_base(job, plan, base)
-    bases = [(base, False)] + ([(pres, True)] if pres else [])
+    pres = _presenter_base(job, plan, base) if base.exists() else None
+    bases = ([(base, False)] if base.exists() else []) + ([(pres, True)] if pres else [])
     recs = []
     texts = (plan.get("thumbnail_texts") or [])[:config.THUMB_TEXT_VARIANTS]
     for src, is_pres in bases:
@@ -1174,11 +1181,54 @@ def _thumb_variants(job: Job, plan: dict, select=None) -> int:
                     recs.append({**r, "presenter": is_pres})
             except Exception as e:  # noqa: BLE001
                 job.add_log(f"thumbnail text failed ({e}); the plain thumbnail is kept")
+    # The modern poster goes LAST, so adding one never shifts the index of a variant already
+    # picked. It is drawn whatever the text switches say: someone asked for it explicitly, and
+    # without its words it is no poster at all.
+    has_modern = False
+    if modern.exists() and plan.get("thumbnail_modern"):
+        try:
+            path = thumbmodern.render(modern, thumbtext.variant_path(d, len(recs) + 1),
+                                      plan["thumbnail_modern"],
+                                      brand=str((job.channel or {}).get("name") or ""),
+                                      logo=_logo_for(job))
+            recs.append({"file": path.name, "text": thumbmodern.summary(plan["thumbnail_modern"]),
+                         "layout": "modern", "presenter": False})
+            has_modern = True
+        except Exception as e:  # noqa: BLE001 - the classic variants still stand
+            job.add_log(f"modern thumbnail skipped ({e})")
+    if select == MODERN or was_modern:
+        # asked for the poster, or it was the active one and the classic variants before it
+        # changed in number (an edited line): keep pointing at the poster, not at its old index
+        select = len(recs) if has_modern else None
     thumbtext.drop_stale(d, len(recs))
     plan["thumbnail_variants"] = recs
     k = thumbtext.activate(d, recs, job.thumb_variant if select is None else select)
     job.set(thumb_variant=k)
     return k
+
+
+MODERN_BASE = "thumb_base_modern.jpg"
+MODERN = "modern"     # _thumb_variants(select=MODERN): make the modern poster the active one
+
+
+def _unletterbox(job: Job, base: Path):
+    """Fill the flat bars the stills model sometimes leaves above and below a portrait thumbnail.
+
+    New renders are fixed in video.make_thumbnail; this repairs a base saved before that, putting
+    the channel logo back, since it sat in the bar that just got painted over."""
+    try:
+        from PIL import Image
+        with Image.open(base) as im:
+            fixed, changed = video.fill_letterbox(im.convert("RGB"))
+        if not changed:
+            return
+        logo = _logo_for(job)
+        if logo:
+            video.overlay_logo(fixed, logo)
+        fixed.save(base, "JPEG", quality=92)
+        job.add_log("thumbnail: filled the empty bands above and below the picture")
+    except Exception as e:  # noqa: BLE001 - a barred thumbnail is still a thumbnail
+        job.add_log(f"thumbnail letterbox fill skipped ({e})")
 
 
 def _presenter_base(job: Job, plan: dict, base: Path) -> Path | None:
@@ -1212,7 +1262,8 @@ def _presenter_base(job: Job, plan: dict, base: Path) -> Path | None:
         return None
 
 
-def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None) -> tuple:
+def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should_stop=None,
+                      prompt_key: str = "thumbnail_prompt", logo: bool = True) -> tuple:
     """Render plan["thumbnail_prompt"] into dest (JPG at the job's thumbnail size, logo overlaid).
 
     The canonical looks of every character in the video are always prepended, so the thumbnail
@@ -1224,7 +1275,7 @@ def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should
     d = job.dir
     client = comfy.ComfyClient()
     parts = [plan.get("style", ""), cast.looks_prefix(job.channel, plan.get("cast_used")),
-             plan["thumbnail_prompt"]]
+             plan[prompt_key]]
     prompt = "\n\n".join(p.strip() for p in parts if p and p.strip())
     opening = plan.get("opening") or {}
     portrait = d / "cast_opening.jpg"
@@ -1241,7 +1292,8 @@ def _render_thumbnail(job: Job, plan: dict, dest: Path, on_progress=None, should
     raw = client.run(wf, d / "thumb_raw.mp4", on_progress=on_progress, should_stop=should_stop,
                      cleanup=config.COMFY_CLEANUP, on_cleanup_failed=_cleanup_warn(job))
     tw, th = config.THUMB_SIZES.get(job.aspect_ratio, (1280, 720))
-    video.make_thumbnail(raw, dest, tw, th, logo=_logo_for(job), last=first_frame is not None)
+    video.make_thumbnail(raw, dest, tw, th, logo=_logo_for(job) if logo else None,
+                         last=first_frame is not None)
     if first_frame is not None:
         job.add_log(f"thumbnail seeded from {opening['name']}'s portrait")
         if config.COMFY_CLEANUP:
@@ -3699,14 +3751,51 @@ class JobManager:
             job.add_log(f"viewer resource regeneration failed: {e}")
             job.set("done", "viewer resource unchanged")
 
-    def regen_thumbnail(self, job_id: str) -> Job:
-        """Re-render the thumbnail with a fresh concept and seed. Runs in a side thread -
-        it is a single ~30 s render, so it does not go through the job queue."""
+    def regen_thumbnail(self, job_id: str, style: str = "classic") -> Job:
+        """Render a new thumbnail with a fresh concept and seed. Runs in a side thread -
+        it is a single ~30 s render, so it does not go through the job queue.
+
+        style "classic" replaces the classic render and its text variants; "modern" renders the
+        poster-style thumbnail (services/thumbmodern.py) and ADDS it to the choices, leaving the
+        classic ones as they are - a second "modern" replaces only the previous modern one."""
+        if style not in ("classic", "modern"):
+            raise ValueError(f"unknown thumbnail style {style!r}")
         with self.lock:
             job = self._maintenance_target(job_id)
-            job.set("thumbnail", "regenerating the thumbnail")
-        threading.Thread(target=self._regen_thumbnail, args=(job,), daemon=True).start()
+            if style == "modern" and not thumbcover.eligible_aspect(job.aspect_ratio):
+                raise ValueError("modern thumbnails are for 9:16 (portrait) videos")
+            job.set("thumbnail", f"generating a {style} thumbnail")
+        target = self._regen_thumbnail_modern if style == "modern" else self._regen_thumbnail
+        threading.Thread(target=target, args=(job,), daemon=True).start()
         return job
+
+    def _regen_thumbnail_modern(self, job: Job):
+        d = job.dir
+        try:
+            plan = json.loads((d / "plan.json").read_text(encoding="utf-8"))
+            job.set("thumbnail", "designing a modern thumbnail with vLLM")
+            plan.update(llm.write_thumbnail_modern(plan.get("title", ""), plan.get("narration", ""),
+                                                   plan.get("style", ""), channel=job.channel,
+                                                   used=plan.get("cast_used"),
+                                                   idea=plan.get("thumbnail_idea", ""),
+                                                   reel=plan.get("reel") if _reel(job) else None))
+            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            schedule.wait_until_open(on_wait=lambda s: job.set("thumbnail", schedule.describe_wait()))
+            gpu.wait_until_free(job.id, on_wait=lambda h: job.set(
+                "thumbnail", "waiting for the GPU - another video is rendering"))
+            job.set("thumbnail", "rendering the modern thumbnail")
+            # no logo on the picture: the poster puts it in its brand header, top-left
+            tw, th = _render_thumbnail(job, plan, d / MODERN_BASE, on_progress=_progress(job, "thumbnail"),
+                                       prompt_key="thumbnail_modern_prompt", logo=False)
+            _thumb_variants(job, plan, select=MODERN)
+            (d / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            job.set("done", "modern thumbnail generated")
+            job.add_log(f"modern thumbnail generated ({tw}x{th})")
+        except Exception as e:  # noqa: BLE001
+            job.add_log(f"modern thumbnail failed: {e}")
+            job.set("done", f"modern thumbnail failed: {e}")
+        finally:
+            gpu.release(job.id)
 
     def _regen_thumbnail(self, job: Job):
         d = job.dir

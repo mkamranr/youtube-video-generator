@@ -138,7 +138,12 @@ Regenerate specific clips of a finished job with their (possibly edited) scene p
 The request goes to the **front of the queue**; a currently running job pauses at its next clip boundary and automatically resumes afterwards. Regenerated clips clear their stale flag and set `needs_assemble`.
 
 ### `POST /jobs/{id}/regen-thumbnail`
-Generate a brand-new thumbnail for a finished job (fresh LLM concept + render, ~1 minute; runs in a side thread, not the job queue). The channel logo, if uploaded, is overlaid top-right. `409` if the job is running, queued, or archived.
+Generate a brand-new thumbnail for a finished job (fresh LLM concept + render, ~1 minute; runs in a side thread, not the job queue). Optional body `{ "style": "classic" | "modern" }` (default `classic`):
+
+- **classic**: replaces the clean render (`thumb_base.jpg`) and its text variants. The channel logo, if uploaded, is overlaid top-right.
+- **modern**: a tech-ad poster (`services/thumbmodern.py`) with the channel brand top-left, a stacked headline with a yellow brush strip, a feature badge, four icon cards and a bottom banner, all drawn over a letterless render (`thumb_base_modern.jpg`). It is **added** to the job's thumbnail choices as the last variant (`layout: "modern"`) and made the active one; the classic thumbnails are kept. Another `modern` request replaces only the previous poster. 9:16 videos only.
+
+`409` if the job is running, queued, or archived, or for `modern` on a non-portrait video.
 
 ### `POST /jobs/{id}/regen-resource`
 Re-decide and rewrite the document that ships with a finished video (LLM + file writes only, ~10 seconds; runs in a side thread, not the job queue). Re-reads the final narration: if it promises the viewer an artifact, that artifact is written; otherwise, for a repo/Hugging Face video, the project's setup guide is written from the cached `transcript.txt`. Rewrites `resource.md`/`.txt`/`.pdf` and the `resource` record in `plan.json`, restoring the writer's own `seo_description` first so the description block is never appended twice. This is the way back for a video made before the feature existed, or one whose script was edited afterwards. `409` if the job is running, queued, or archived.

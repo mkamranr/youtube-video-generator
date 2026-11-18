@@ -136,7 +136,7 @@ class LlmField(unittest.TestCase):
     def test_cover_asked_and_parsed(self):
         res, prompt = self._thumb({"thumbnail_prompt": "p", "thumbnail_cover": FULL}, True)
         self.assertIn('"thumbnail_cover"', prompt)
-        self.assertIn("MIDDLE BAND", prompt)
+        self.assertIn("no letterbox", prompt)        # the frame is filled, never barred
         self.assertEqual(res["thumbnail_cover"]["strip"], "The 0.8B Model")
 
     def test_no_cover_unless_asked(self):

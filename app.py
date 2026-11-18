@@ -1512,11 +1512,16 @@ def set_thumbnail(job_id: str, body: ThumbBody, user: dict = Depends(auth.requir
         raise HTTPException(409, str(e))
 
 
+class RegenThumbBody(BaseModel):
+    style: str = "classic"       # "classic" (render + text variants) or "modern" (the 9:16 poster)
+
+
 @app.post("/jobs/{job_id}/regen-thumbnail")
-def regen_thumbnail(job_id: str, user: dict = Depends(auth.require_user)):
+def regen_thumbnail(job_id: str, body: RegenThumbBody | None = None,
+                    user: dict = Depends(auth.require_user)):
     _owned_job(job_id, user)
     try:
-        return _job_json(manager.regen_thumbnail(job_id))
+        return _job_json(manager.regen_thumbnail(job_id, style=(body.style if body else "classic")))
     except KeyError:
         raise HTTPException(404, "job not found")
     except ValueError as e:

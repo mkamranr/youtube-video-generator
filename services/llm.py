@@ -1725,9 +1725,12 @@ _THUMB_TOP_FRAME = (
     "  simple and uncluttered (sky, wall, soft gradient) - a headline is drawn there afterwards.\n")
 
 _THUMB_COVER_FRAME = (
-    "  This is a TALL 9:16 frame. Put the subject in the MIDDLE BAND (roughly 35%-75% of the height),\n"
-    "  and keep the TOP 35% and the BOTTOM 25% simple and dark-ish (a soft gradient, a desk, a wall):\n"
-    "  stacks of headline text are drawn there afterwards.\n")
+    "  This is a TALL 9:16 vertical frame and the scene must fill ALL of it, edge to edge, top to\n"
+    "  bottom - a full-bleed vertical photograph, never a widescreen picture with bars above and below.\n"
+    "  Put the subject in the MIDDLE of the frame; above it the scene continues as a calm area (wall,\n"
+    "  ceiling, softly lit room, bokeh) and below it as a calm area (desk surface, floor, table top):\n"
+    "  stacks of headline text are drawn there afterwards, so keep those areas uncluttered but part\n"
+    "  of the same lit scene. No black bars, no letterbox, no border, no frame within the frame.\n")
 
 _THUMB_COVER_KEY = """- "thumbnail_cover": the copy for a poster-style reel cover drawn over this picture, an object:
   "headline": 1-3 words, at most 22 characters - the product, tool or topic name. Wrap the one
@@ -1835,6 +1838,70 @@ something. Return JSON with key:
             texts.append(t)
     return {"thumbnail_prompt": tp, "thumbnail_texts": texts,
             "thumbnail_cover": thumbcover.normalize(out.get("thumbnail_cover")) if cover else None}
+
+
+def write_thumbnail_modern(title: str, narration: str, style: str, channel: dict | None = None,
+                           used: list | None = None, idea: str = "", reel: dict | None = None) -> dict:
+    """The "modern" thumbnail (services/thumbmodern.py): a premium tech-advert poster.
+
+    Returns {"thumbnail_modern_prompt": the scene to render, "thumbnail_modern": the poster copy}.
+    The scene is composed for the poster - one hero visual in the middle band, a dark navy tech
+    environment above and below where the headline stack, cards and banner are drawn - and, like
+    every thumbnail render, contains no lettering: every word is drawn by Pillow afterwards."""
+    from services import thumbmodern   # lazy, like write_thumbnail's imports
+
+    wish = (f'\nThe thumbnail must show this, as planned for the video: "{idea.strip()}"'
+            if idea.strip() else "")
+    if reel:
+        hooks = reel.get("hooks") or []
+        hook = hooks[reel["chosen"]]["text"] if 0 <= reel.get("chosen", -1) < len(hooks) else ""
+        wish += (f'\nThis is a REEL. It opens on: "{hook}". Its one message: '
+                 f'"{reel.get("central_message", "")}". The poster must sell exactly that promise.')
+    icons = ", ".join(thumbmodern.ICONS)
+    user = f"""We produced a short video titled "{title}".
+Its story: \"\"\"{narration[:2500]}\"\"\"
+Its visual style: {style}{wish}
+
+Design a premium, high-impact 9:16 cover in the style of a futuristic technology advertising
+poster (think product launch ad): dark navy background, electric blue neon light with cyan
+highlights and subtle orange accents, ultra-realistic 3D product photography. Return JSON with:
+- "thumbnail_modern_prompt": a prompt for an image generator. ONE hero visual that shows what the
+  video is about - e.g. a premium laptop on a desk next to a powerful AI server with blue LED
+  lights and glowing cyan light trails between them, a glowing chip, a phone, a robot arm -
+  whatever the video's subject really is, as concrete hardware or objects. Photorealistic,
+  cinematic product photography, sharp details, subtle depth of field, soft cyan reflections.
+  Setting: a modern dark technology lab or server room in deep navy blue, server racks glowing
+  in the background. This is a TALL vertical frame filled edge to edge: the hero visual sits in
+  the MIDDLE band (about 40%-72% of the height); above it the dark lab continues (ceiling lights,
+  server racks, bokeh), below it a reflective desk surface - calm areas where text is drawn
+  afterwards. Screens show only abstract glowing UI shapes, never readable words. Keep the
+  TOP-LEFT corner calm (the channel brand is placed there). It must end with: "No text, letters,
+  numbers, captions, logos or watermarks. No black bars, no letterbox, no border."
+- "thumbnail_modern": the poster copy, an object:
+  "title": the product, tool or topic name, 1-3 words, at most 20 characters (e.g. "Local AI Coder").
+  "title_icon": one icon drawn beside the title, from: {icons} - or "" for none.
+  "strip": the core promise, 1-3 words, at most 16 characters, printed huge black on a yellow
+    brush stroke (e.g. "Run Offline").
+  "line": a follow-up qualifier, 1-3 words, at most 16 characters (e.g. "Air-Gapped").
+  "split": two short parts of the closing headline line, each 1-2 words / at most 12 characters;
+    the first is printed yellow, the second white with a red underline (e.g. ["vLLM", "Setup Guide"]).
+  "badge": {{"icon": one icon from the list, "text": 2-4 words / at most 22 characters}} - the
+    single strongest differentiator (e.g. {{"icon": "wifi_off", "text": "No Internet Needed"}}).
+  "cards": exactly 4 feature cards, each {{"icon": one icon from the list, "text": 2-3 words / at
+    most 24 characters}} - concrete things the video covers (e.g. {{"icon": "shield", "text":
+    "Secure & Local"}}). Use 4 different icons.
+  "banner": 2 lines of at most 26 characters each for the bottom banner - the payoff, the second
+    line finishing the first, ending with "!" (e.g. ["Self-Hosted AI Coding", "in Restricted Networks!"]).
+  "banner_icon": one icon from the list (usually "rocket").
+  "tagline": the channel's 3-word tagline separated by " • " (e.g. "AI • Tech • Innovation").
+  Title Case everywhere. Every word must be true to the video - never invent a feature or figure.
+  The copy may use the product or tool names the title itself uses; never real people's names."""
+    out = _chat([{"role": "system", "content": _system(channel, used=used)}, {"role": "user", "content": user}])
+    tp = str(out.get("thumbnail_modern_prompt", "")).strip()
+    copy = thumbmodern.normalize(out.get("thumbnail_modern"))
+    if not tp or not copy:
+        raise RuntimeError("vLLM returned no usable modern thumbnail")
+    return {"thumbnail_modern_prompt": tp, "thumbnail_modern": copy}
 
 
 MUSIC_CAPTION_EXAMPLE = ("Global Metadata: Lo-fi hip-hop, chillhop. 78 BPM, D flat major. Laid-back and dreamy "

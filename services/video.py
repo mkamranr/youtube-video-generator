@@ -207,6 +207,14 @@ def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 
               "-vf", vf, "-frames:v", "1", "-q:v", "2", str(out_jpg)])
     if not out_jpg.exists():
         raise RuntimeError("could not extract thumbnail frame")
+    try:
+        from PIL import Image
+        with Image.open(out_jpg) as im:
+            fixed, changed = fill_letterbox(im.convert("RGB"))
+        if changed:
+            fixed.save(out_jpg, "JPEG", quality=92)
+    except Exception as e:  # noqa: BLE001 - a barred thumbnail is still a thumbnail
+        print(f"letterbox fill failed: {e}")
     if logo is not None and Path(logo).exists():
         try:
             from PIL import Image
@@ -216,6 +224,59 @@ def make_thumbnail(video: Path, out_jpg: Path, width: int = 1280, height: int = 
         except Exception as e:  # noqa: BLE001 - logo overlay must never break the pipeline
             print(f"logo overlay failed: {e}")
     return out_jpg
+
+
+def letterbox_rows(img, max_std: float = 9.0, max_mean: float = 60.0) -> tuple:
+    """(top, bottom): how many rows at the top and bottom of `img` are flat dark bars.
+
+    The stills model sometimes answers a portrait request with a widescreen picture between two
+    flat bars; a row counts as a bar when it is dark, nearly uniform (JPEG noise allowed) and as
+    bright as the outermost row - a bar is flat vertically too, which is what tells it apart from
+    a smooth dark gradient such as a night sky."""
+    from PIL import ImageStat
+    g = img.convert("L")
+    w, h = g.size
+    g = g.crop((0, 0, max(1, int(w * 0.75)), h))   # the top-right logo corner never counts
+    w = g.width
+
+    def stat(y):
+        st = ImageStat.Stat(g.crop((0, y, w, y + 1)))
+        return st.mean[0], st.stddev[0]
+
+    def run(rows):
+        n, ref = 0, None
+        for y in rows:
+            mean, std = stat(y)
+            if ref is None:
+                ref = mean
+            if std > max_std or mean > max_mean or abs(mean - ref) > 4:
+                break
+            n += 1
+        return n
+    top = run(range(h))
+    bottom = run(range(h - 1, top - 1, -1))
+    return top, bottom
+
+
+def fill_letterbox(img, min_fraction: float = 0.10):
+    """Fill flat bars above/below the picture with a blurred, zoomed copy of the picture itself.
+
+    Returns (image, changed). Leaves the image alone when the bars are thin (a dark sky is not a
+    bar) or when almost nothing but bar is left (a genuinely black frame)."""
+    from PIL import Image, ImageEnhance, ImageFilter
+    w, h = img.size
+    top, bottom = letterbox_rows(img)
+    if (top + bottom) < min_fraction * h or (h - top - bottom) < 0.2 * h:
+        return img, False
+    pad = max(2, h // 200)                      # drop the soft seam the model leaves at the edge
+    band = img.crop((0, top + pad, w, h - bottom - pad))
+    scale = max(w / band.width, h / band.height)
+    bg = band.resize((int(band.width * scale) + 1, int(band.height * scale) + 1), Image.LANCZOS)
+    bg = bg.crop(((bg.width - w) // 2, (bg.height - h) // 2, (bg.width - w) // 2 + w, (bg.height - h) // 2 + h))
+    bg = ImageEnhance.Brightness(bg.filter(ImageFilter.GaussianBlur(max(12, w // 24)))).enhance(0.7)
+    bg = bg.convert(img.mode)
+    bg.paste(band, (0, top + pad))
+    return bg, True
 
 
 def overlay_logo(img, logo):

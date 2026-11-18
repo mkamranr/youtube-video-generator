@@ -324,8 +324,10 @@
     </div>
     <div class="row" style="margin-top:12px">
       <a class="btn secondary sm" id="thumbDl">Download thumbnail</a>
-      <button class="btn sm" id="thumbRegen" hidden>Regenerate thumbnail</button>
+      <button class="btn sm" id="thumbRegen" hidden>New classic thumbnail</button>
+      <button class="btn sm" id="thumbModern" hidden title="A tech-ad poster: brand header, big headline, feature cards and a banner. Added next to the existing thumbnails.">New modern thumbnail</button>
     </div>
+    <div class="hint" id="thumbStyleHint" hidden style="margin-top:6px">Classic: the picture with a short headline. Modern: a dense tech-ad poster. A new modern thumbnail is added to the choices above; the classic ones stay.</div>
   </section>
 
   <section class="card" id="partsSec" hidden>
@@ -568,7 +570,8 @@ function renderThumbVariants(variants, j) {
   if ($("#thumbVars").hidden) return;
   const active = j.thumb_variant;
   // 0 is a real choice ("no text"), not just the absence of one
-  const opts = [{ k: 0, text: "No text", file: "thumb_base.jpg", presenter: false }]
+  // a job whose only thumbnail is a modern poster has no clean render to offer
+  const opts = (files.has("thumb_base.jpg") ? [{ k: 0, text: "No text", file: "thumb_base.jpg", presenter: false }] : [])
     .concat(live.map(r => ({ k: recs.indexOf(r) + 1, text: r.text, file: r.file,
                              presenter: !!r.presenter })));
   // a video with a presenter offers every thumbnail twice, so the label has to say which is
@@ -845,7 +848,11 @@ function update(j) {
   $("#thumbNone").hidden = hasThumb;
   $("#thumbImg").hidden = !hasThumb;
   $("#thumbDl").hidden = !hasThumb;
-  $("#thumbRegen").textContent = hasThumb ? "Regenerate thumbnail" : "Generate thumbnail";
+  $("#thumbRegen").textContent = hasThumb ? "New classic thumbnail" : "Generate classic thumbnail";
+  // the modern poster is designed on a 9:16 canvas
+  const portrait = /^9:16/.test(j.aspect_ratio || "");
+  $("#thumbModern").hidden = j.status !== "done" || !portrait;
+  $("#thumbStyleHint").hidden = $("#thumbModern").hidden;
   if (hasThumb) {
     // re-rendered whenever the job changes, not once: switching variant rewrites thumbnail.jpg
     $("#thumbSec").hidden = false;
@@ -1561,14 +1568,21 @@ $("#regenBtn").onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 
-$("#thumbRegen").onclick = async () => {
-  if (!confirm("Generate a new thumbnail? A fresh concept and image are created (~1 minute).")) return;
+async function regenThumb(style) {
+  const msg = style === "modern"
+    ? "Generate a modern thumbnail? A poster-style cover is designed and rendered (~1 minute). It is added next to the existing thumbnails."
+    : "Generate a new classic thumbnail? A fresh concept and image are created (~1 minute). The current classic thumbnails are replaced.";
+  if (!confirm(msg)) return;
   try {
-    await api(`/jobs/${jobId}/regen-thumbnail`, { method: "POST" });
-    toast("Thumbnail regeneration started");
+    await api(`/jobs/${jobId}/regen-thumbnail`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style }) });
+    toast(`${style === "modern" ? "Modern" : "Classic"} thumbnail started`);
     startPolling(); refresh();
   } catch (e) { toast(e.message, true); }
-};
+}
+$("#thumbRegen").onclick = () => regenThumb("classic");
+$("#thumbModern").onclick = () => regenThumb("modern");
 
 let ynResolve = null;
 function askConfirm(msg, title = "Confirm") {
